@@ -1,3 +1,16 @@
+from audit.services.change_audit import (
+    AuditRecordIntegrityError,
+    AuditRecordWriteResult,
+    DataChangeIntegrityError,
+    DataChangeWriteResult,
+    InvalidAuditRecord,
+    InvalidDataChange,
+    SensitiveAuditRecordValue,
+    SensitiveDataChangeValue,
+    record_data_change,
+    record_system_action,
+    record_user_action,
+)
 from audit.services.raw_data import (
     InvalidRawDataRequest,
     InvalidRawDataTimestamp,
@@ -30,6 +43,12 @@ from audit.services.sync_runs import (
 )
 
 __all__ = [
+    "AuditRecordIntegrityError",
+    "AuditRecordWriteResult",
+    "DataChangeIntegrityError",
+    "DataChangeWriteResult",
+    "InvalidAuditRecord",
+    "InvalidDataChange",
     "InvalidRawDataRequest",
     "InvalidRawDataTimestamp",
     "InvalidEvidenceReference",
@@ -40,6 +59,8 @@ __all__ = [
     "PayloadTooLarge",
     "RawDataIngestResult",
     "RawDataIntegrityError",
+    "SensitiveAuditRecordValue",
+    "SensitiveDataChangeValue",
     "SensitiveEvidenceValue",
     "SourceEvidenceIntegrityError",
     "SourceEvidenceWriteResult",
@@ -51,7 +72,10 @@ __all__ = [
     "mark_sync_run_partial",
     "mark_sync_run_succeeded",
     "record_raw_data_observation",
+    "record_data_change",
     "record_source_evidence",
+    "record_system_action",
+    "record_user_action",
     "start_sync_run",
     "update_sync_run_counts",
 ]

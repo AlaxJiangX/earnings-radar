@@ -27,7 +27,7 @@
 - 若前置阶段未完成，只补齐本任务不可缺少的最小前置，并明确报告；不要扩大范围。
 - 市场热门、Reddit、Telegram、Web Push、PWA、自选股分组、Celery、Redis、微服务和 SPA 均不属于 MVP，除非用户明确进入相应第二阶段。
 
-当前仓库已完成阶段 1 工程骨架、阶段 2.1A 的 DataSource/SyncRun 基础、阶段 2.1B-1 的 RawDataRecord/RawDataObservation 原始数据基础，以及阶段 2.1B-2 的 SourceEvidence 来源证据基础。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建 DataChange、AuditRecord、财报、指数、SEC、Provider、自选股或通知业务实现。
+当前仓库已完成阶段 1 工程骨架、阶段 2.1A 的 DataSource/SyncRun 基础、阶段 2.1B-1 的 RawDataRecord/RawDataObservation、阶段 2.1B-2 的 SourceEvidence，以及阶段 2.1B-3 的 DataChange/AuditRecord。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建财报、指数、SEC、Provider、自选股或通知业务实现。
 
 ## 3. 固定技术基线
 
@@ -81,6 +81,7 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 - 重复运行不得产生重复 Company、EarningsEvent、Filing、IndexChangeEvent、Notification 或原始正文；
 - 值没有变化时不创建 DataChange、日期变化或通知；
 - 当前值变化时，在可靠事务中保存旧值、新值、来源、任务 ID、操作者/系统身份和原因；
+- DataChange 和 AuditRecord 只能通过 `audit.services` 的公开写入函数追加；不得用 Admin、模型实例更新、QuerySet update/delete 或通用写库接口改写/删除历史；
 - 关键历史记录使用结束有效期、停用、取消或修正，不物理删除；
 - 指数偏移保留底层加入/移除原子事实，再创建聚合事件；
 - 通知使用稳定 `idempotency_key`，发送尝试单独追加记录。

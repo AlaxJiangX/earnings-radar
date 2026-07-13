@@ -123,6 +123,19 @@ MVP Provider 类型：
 - SEC MVP 只保留元数据、链接和必要的解析证据，不复制全量文件正文；
 - 原始数据保留期限和容量上限待确认。
 
+### 4.4 自动变更与操作审计
+
+`DataChange` 与 `AuditRecord` 使用不同职责和公开 Service，不能合并成“万能审计写库接口”：
+
+- `record_data_change` 记录关键领域字段的 old/new、规则版本和稳定来源；规范化后值相同直接跳过；自动变化至少关联 SourceEvidence 或 SyncRun，人工修正必须有关联 User、原因和稳定操作键；
+- `record_user_action` 记录人工操作，必须有 actor、reason 和非空 request_id；可选原始 IP 在内存中规范化后使用 Django SECRET_KEY 派生的 keyed HMAC-SHA256，只保存带版本的哈希；
+- `record_system_action` 只记录明确关联 SyncRun 的系统操作；
+- DataChange 的 change_key 和 AuditRecord 的 audit_key 由规范化、无凭据的不可变输入生成，并以数据库唯一约束处理并发重跑；
+- old/new/before/after、原因、来源键和 request_id 复用 audit 集中安全模块，递归拒绝密码、API key、Session、Cookie、Authorization、Basic/Bearer 和 URL 凭据；
+- 两类记录只追加：普通 Admin 仅能按目标、动作、时间、用户和任务筛选并查看截断 JSON 预览，不能新增、编辑或删除；业务代码也不得使用模型 update/delete 绕过 Service。
+
+audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，也不导入未来的公司、指数、财报或 Filing app。目标存在性由未来领域 Service 在写当前值的同一事务中确认。
+
 ## 5. 领域流程
 
 ### 5.1 公司与监控池

@@ -350,6 +350,8 @@ def test_service_rejects_observation_with_mismatched_source(sync_run: SyncRun) -
         ({"headers": {"AUTHORIZATION": "Bearer fixture-secret"}}, "NVDA"),
         ("Basic dXNlcjpwYXNz", "NVDA"),
         ("nvda", "Bearer fixture-secret"),
+        ("https://user:fixture-secret@example.test/data", "NVDA"),
+        ("nvda", "https://example.test/data?api_key=fixture-secret"),
     ),
 )
 def test_service_rejects_sensitive_evidence_values(

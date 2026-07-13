@@ -32,6 +32,7 @@ DataSource 1---* RawDataRecord *---1 SyncRun (first_sync_run)
                      +---* RawDataObservation *---1 SyncRun
                      +---* SourceEvidence ---* domain records
 
+User / SyncRun / SourceEvidence 1---* DataChange
 User / SyncRun 1---* AuditRecord
 ```
 
@@ -444,15 +445,35 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | 字段 | 说明 |
 |---|---|
 | `id` | UUID PK |
-| `entity_type`, `entity_id` | 受限领域对象 |
-| `field_name` | 变化字段 |
-| `old_value`, `new_value` | JSON |
-| `source_evidence_id` | 来源证据 nullable |
-| `sync_run_id` | 自动任务 nullable |
-| `actor_user_id` | 手工操作人 nullable |
-| `reason` | 管理员修正必填 |
-| `change_key` | unique 幂等键 |
-| `changed_at` | UTC |
+| `target_type`, `target_id` | 受限领域枚举 + 稳定 UUID；不使用 GenericForeignKey |
+| `field_name` | 非空变化字段；不得是密码、Token 等敏感字段名 |
+| `old_value`, `new_value` | 规范化 JSON；必须不同并通过集中凭据检查 |
+| `source_evidence_id` | 导致变化的来源证据 nullable，`PROTECT` |
+| `sync_run_id` | 自动任务 nullable，`PROTECT` |
+| `actor_user_id` | 手工操作人 nullable，`PROTECT` |
+| `reason` | 人工修正必填；自动变化可空 |
+| `origin_key` | 稳定变化来源；人工使用调用方请求/操作键，自动从 SourceEvidence 或 SyncRun 派生 |
+| `rule_version` | 非空变化检测/修正规则版本 |
+| `change_key` | 64 位小写 SHA-256，unique |
+| `changed_at`, `created_at` | 时区感知 UTC 时刻 |
+
+`target_type` 与 SourceEvidence 使用相同的领域集合：Company、SecurityListing、MarketIndex、IndexMembership、IndexChangeEvent、IndexChangeLeg、EarningsEvent、EarningsDateChange、Filing、FilingDocument 和 FilingEarningsLink。audit app 只保存类型和值，不导入未来业务 app；领域 service 负责确认目标 UUID 存在。
+
+`change_key` 的规范化输入为：
+
+```text
+target_type
++ target_id
++ field_name
++ canonical_old_value
++ canonical_new_value
++ source_identity
++ rule_version
+```
+
+`source_identity` 对人工修正使用 `actor_user_id + origin_key`，对自动变化优先使用 `source_evidence_id`，没有证据时使用 `sync_run_id`。因此同一来源和规则的相同变化重跑时复用原记录；不同证据，或无证据时的不同任务，可以分别追溯。人工修正必须提供 actor、reason 和稳定 origin_key；自动变化必须至少提供 SourceEvidence 或 SyncRun。SourceEvidence 与 SyncRun 同时提供时，service 验证该任务确实观察过证据对应的 RawDataRecord，且 DataSource 一致。
+
+数据库限制 target_type、非空字段/版本/来源键、change_key 格式、人工/自动来源组合，并用 PostgreSQL JSON 相等性拒绝 old_value 与 new_value 相同。Service 先做规范化比较，值相同直接返回 skipped，不创建记录。
 
 专门业务表（如 `EarningsDateChange`）用于产品语义和通知；`DataChange` 用于统一字段级追踪，两者可通过相同 change key/引用关联。
 
@@ -463,16 +484,20 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | 字段 | 说明 |
 |---|---|
 | `id` | UUID PK |
-| `actor_user_id` | 用户 nullable；系统任务为空 |
-| `sync_run_id` | 自动任务 nullable |
-| `action` | create / update / deactivate / manual_sync / retry / login_sensitive_action 等 |
-| `object_type`, `object_id` | 目标对象 |
-| `before`, `after` | 受控 JSON；不保存密码/令牌 |
-| `reason` | 管理修正必填 |
-| `request_id`, `ip_hash` | 可选追踪信息；保留政策待确认 |
+| `actor_user_id` | 人工操作者 nullable，`PROTECT` |
+| `sync_run_id` | 自动任务或人工触发任务 nullable，`PROTECT` |
+| `action` | create / update / deactivate / manual_correction / manual_sync / retry / login_sensitive_action |
+| `target_type`, `target_id` | 受限枚举 + 稳定 UUID；不使用 GenericForeignKey |
+| `before`, `after` | 受控 JSON；递归拒绝密码、Session、Cookie、认证头、Token、API key 和 URL 凭据 |
+| `reason` | 任何带 actor_user 的人工操作必填 |
+| `request_id` | 非空请求/任务操作 ID；不要求全表唯一 |
+| `ip_hash` | 可空；仅保存 `v1:` + keyed HMAC-SHA256，不保存原始 IP |
+| `audit_key` | 64 位小写 SHA-256，unique，用于相同操作重试幂等复用 |
 | `created_at` | UTC |
 
-审计记录追加写入、普通管理员不可编辑。保留期限和谁能查看待确认。
+AuditRecord 的 target_type 首版允许 User、DataSource、SyncRun、RawDataRecord、RawDataObservation、SourceEvidence、DataChange 以及上述领域目标。人工操作必须有 actor_user 和 reason；系统操作必须有 SyncRun；两者可以同时存在，但至少要有一个明确来源。`audit_key` 由 actor/sync、action、target、canonical before/after、reason 和 request_id 生成。ip_hash 不参与幂等键，避免哈希密钥轮换改变同一操作的身份；重试复用首次记录的 ip_hash。相同输入连续执行两次复用原记录，不提供可更新审计内容的 Service。
+
+DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和删除，Admin 只提供受权限控制的查看、筛选和截断 JSON 预览。QuerySet update/delete 与直接 SQL 仍可绕过模型方法，因此长期规范禁止业务代码使用这些路径；只有经过评审的数据库迁移可处理历史数据。保留期限和具体查看角色仍待确认。
 
 ## 12. 关键唯一约束与幂等键
 
@@ -492,6 +517,7 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | RawDataRecord | source + request_fingerprint + content_hash unique |
 | SourceEvidence | evidence_key unique；raw data record + target + field + normalized value + normalizer version |
 | DataChange | change_key unique |
+| AuditRecord | audit_key unique；actor/sync + action + target + before/after + reason + request |
 
 并发写入必须捕获唯一冲突后读取已存在记录，不能依赖“先查后写”。
 
@@ -516,4 +542,4 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 8. 用户级与公司级 ReminderRule 的覆盖/叠加规则。
 9. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
 10. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
-11. AuditRecord 的 polymorphic 目标引用方式仍待实现阶段确认；SourceEvidence 已使用受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。
+11. AuditRecord 和 DataChange 的保留期限、IP 哈希保留期及具体查看角色仍需在阶段 8.1 前确认；目标引用已确定为受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。

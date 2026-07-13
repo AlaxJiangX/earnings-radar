@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A、2.1B-1 和 2.1B-2 数据来源/原始数据/来源证据基础已完成；核心领域模型和真实 Provider 仍未开始。
+> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A 和 2.1B-1 至 2.1B-3 的来源、原始数据、证据、变更与操作审计基础已完成；核心领域模型和真实 Provider 仍未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -157,6 +157,13 @@
 - 管理修正要求原因，普通管理员不能编辑历史审计；
 - 日志和审计不保存密钥；
 - 同一未变化输入重跑不产生重复 DataChange 或 AuditRecord。
+- target 和 action 使用受限枚举 + UUID，不依赖未来业务 app，不使用 GenericForeignKey；
+- DataChange 规范化值相同直接跳过；变化使用包含 old/new、稳定来源和规则版本的唯一 SHA-256 change_key；
+- 自动变化至少关联 SourceEvidence 或 SyncRun，人工修正关联 User、reason 和稳定 origin_key；可实现的不变量同时落到 PostgreSQL 检查/唯一约束；
+- AuditRecord 的人工与系统入口分开，至少有 User 或 SyncRun，request_id 非空，原始 IP 只转换为带版本的 keyed HMAC；
+- old/new/before/after 复用集中递归安全检查，拒绝密码、Token、Session、Cookie、认证头、API key 和 URL 凭据；
+- DataChange/AuditRecord 模型实例和 Admin 均不可改写或删除，Admin 不显示完整 JSON；
+- 测试覆盖正常、失败、数据库约束、来源、权限、幂等、UTC 与敏感信息路径，且不访问真实网络。
 
 #### 2.2 Provider 契约和测试夹具
 
