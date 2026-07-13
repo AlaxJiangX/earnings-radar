@@ -49,7 +49,7 @@ Web 请求不直接访问外部数据源。Cron Job 调用 Django management com
 |---|---|---|---|
 | `accounts` | 自定义用户、认证、时区和用户偏好 | Django auth | 公司及事件业务 |
 | `companies` | 公司、CIK、股票代码/上市身份、公司搜索、监控状态 | `audit` 的来源引用接口 | 直接抓取第三方数据 |
-| `indexes` | 指数、成分历史、加入/移除、偏移聚合 | `companies`, `providers`, `audit` | 用户通知投递 |
+| `indexes` | 证券级指数成分历史、加入/移除、偏移聚合 | `companies`, `providers`, `audit` | 用户通知投递 |
 | `earnings` | 财报事件生命周期、日期变更、来源核对 | `companies`, `filings`, `providers`, `audit` | 外部 HTTP 细节 |
 | `filings` | SEC 文件、财报关联、公开列表 | `companies`, `providers`, `audit` | 复制 SEC 全文 |
 | `watchlists` | 自选股、普通/重点关注、公司级提醒开关 | `accounts`, `companies` | 全局通知策略 |
@@ -87,6 +87,7 @@ Provider 适配器不得写入业务表；它返回标准化结果，并通过�
 - 限速及重试分类；
 - 原始响应（正文或对象存储引用；MVP 可先存 PostgreSQL）；
 - 内容类型、抓取时间、来源 URL、HTTP 元数据和内容哈希；
+- 不含凭据的请求身份：URL userinfo 被拒绝，敏感查询值统一替换为稳定标记，fragment 不参与持久化或指纹；
 - 标准化结果及逐字段来源；
 - 可区分的临时错误、永久错误和数据校验错误。
 
@@ -115,6 +116,8 @@ MVP Provider 类型：
 
 - 原始数据与标准化业务表分离；
 - 以 `source + request_fingerprint + content_hash` 去重相同响应；
+- audit 模块统一使用一套安全处理函数识别大小写及下划线/短横线变体；安全查询条件保留并规范化排序，凭据值不进入 URL、请求指纹、同步 scope、来源证据或错误摘要；
+- 明显包含认证字段、Authorization、Basic 或 Bearer 凭据的原始正文在写库前拒绝，Provider 必须修正上游响应或安全过滤后再重试；普通单词 `basic`/`bearer` 不按凭据处理；
 - 每次同步运行仍记录“已获取但内容未变”的统计，不重复保存相同正文；
 - 原始记录不可原地修改；解析器升级时可从原始记录重放并产生新的解析版本；
 - SEC MVP 只保留元数据、链接和必要的解析证据，不复制全量文件正文；
@@ -126,31 +129,36 @@ MVP Provider 类型：
 
 CIK 是发行人监管身份，股票代码是可变的上市身份。公司主记录按 CIK 优先去重；股票代码必须支持交易所、有效期和主代码标记，不能把 ticker 当永久唯一标识。
 
-`monitoring_status` 是可重算的派生状态：公司属于任一启用指数，或存在任一有效用户自选股时为启用。指数或自选股变化后，在同一事务中重新计算。退出监控池只停止未来同步和普通提醒，历史记录不删除。
+IndexMembership 绑定 `SecurityListing`，而不是直接绑定 Company。每个 listing 表达具体 ticker、交易所和 share class，并保留有效期；Company 层面的指数归属通过其全部有效 listing 聚合。因此，同一公司可凭不同 share class 同时拥有不同指数身份，历史 ticker 也不会被当前 ticker 覆盖。
+
+`monitoring_status` 是公司级、可重算的派生状态：只要公司的任一有效 SecurityListing 属于任一启用指数，或公司存在任一有效用户自选股，该公司即为启用。指数或自选股变化后，在同一事务中重新计算。多个 listing 命中同一指数只计为一个公司级归属展示，但底层成员关系全部保留。退出监控池只停止未来同步和普通提醒，历史记录不删除。该决策见 `docs/decisions/ADR-002-index-migration-rules.md`。
 
 ### 5.2 指数同步与偏移
 
-每次指数同步先保存完整或可验证的来源快照，再与某一生效时间点的有效成分关系比较：
+每次指数同步先把来源中的成分解析到具体 SecurityListing，保存完整或可验证的来源快照，再与某一生效时间点的有效证券级成分关系比较：
 
-1. 新关系生成 `ADDED`；
-2. 结束关系生成 `REMOVED`；
-3. 相近时间窗口内同一公司的移除和加入，保留两个原子变动，并聚合为一个 `TRANSFERRED` 展示事件；
-4. 仍在其他基础指数时可归类为 `PARTIAL_EXIT`；全部退出时为 `FULL_EXIT`；
-5. 来源修正和取消不删除历史，生成 `UPDATED` 或 `CANCELLED` 状态变化。
+1. IndexChangeLeg 只保存 `ADDED` 或 `REMOVED` 原子事实；
+2. 同一公司加入/移除生效日期相同则自动合并偏移；相差 1–7 个自然日形成待复核候选；超过 7 日保持独立；
+3. `movement_direction` 仅按以下规则计算：Russell 2000 → 任一大型指数为 `UPGRADE`，任一大型指数 → Russell 2000 为 `DOWNGRADE`，S&P 500/Nasdaq 100/Dow 30 之间为 `CROSS_INDEX`，其他为 `NONE`；
+4. 聚合事件根据公司全部有效 listing 和历史计算 `monitoring_impact`：`CONTINUES`、`ENTERS_BASE_POOL`、`EXITS_BASE_POOL` 或 `REENTERS_BASE_POOL`；REENTERS 仅用于历史上曾退出后重新进入；
+5. 修正与取消是事件状态/版本变化，不与原子动作、偏移方向或监控影响混在同一枚举；
+6. 多 share class 同时变化时逐条保留 leg，再按公司聚合展示。
 
-“相近时间窗口”、指数层级顺序、多指数同时变化的合并规则均需产品确认。聚合事件不能替代底层成分关系历史。
+以上窗口和方向规则已经由 ADR-002 确定。聚合事件不能替代底层证券级成分关系历史，1–7 日候选也不得在人工确认前触发正式偏移通知。
 
 ### 5.3 财报事件生命周期
 
-财报事件以公司、财年和规范化财务期间识别。为避免“Q4”和“全年”冲突，模型必须包含 `fiscal_period`/`period_type`，唯一键的最终形式待产品确认。
+财报正式身份由 `company_id + period_end_date + period_type` 确定，并保存稳定的 `identity_key` 与 `identity_rule_version`。年度财报内部统一为 `period_type=FY` 且 `includes_q4=true`，不另建 Q4 正式事件。52/53 周财年使用 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不扩张 period_type。财年标签是展示/来源属性，不参与正式唯一身份。`period_end_date` 未知时只建立候选事件，候选记录必须依赖来源事件标识并等待核对，不能用 `company + fiscal_year + fiscal_period` 冒充正式唯一键。该决策见 `docs/decisions/ADR-001-earnings-event-identity.md`。
 
-标准状态推进为 `ESTIMATED -> CONFIRMED -> RELEASED -> FILED`，`CANCELLED` 为终止状态。晚到数据不得无审计地使状态倒退；管理员修正必须写原因和审计记录。预计、确认、实际发布、电话会及 SEC 提交时间分别保存。
+财报发布生命周期只使用 `SCHEDULED_ESTIMATED`、`SCHEDULED_CONFIRMED`、`RELEASED` 和 `CANCELLED`。晚到数据不得无审计地使状态倒退；管理员修正必须写原因和审计记录。预计、确认、实际发布和电话会时间分别保存。
+
+SEC Filing 不属于 EarningsEvent 的单向状态机。`Filing` 保存每份监管文件，`FilingEarningsLink` 保存它与财报事件的关系。Release filing 使用 `YES`、`NO`、`REVIEW_REQUIRED` 三态分类，并保存分类原因与规则版本；只有 YES 推导 `has_release_filing=true`。`has_periodic_filing` 独立推导。页面因此可以同时展示“财报已发布、8-K 已提交、10-Q 待提交”，也能表达外国发行人的 6-K/20-F/40-F 和不同提交顺序。该决策见 `docs/decisions/ADR-003-release-filing-classification.md`。
 
 任何影响用户理解的日期或状态变化都写入 `EarningsDateChange`/通用变更历史；只有值确实变化才生成记录和通知。相同数据重复同步只增加运行统计，不生成新变更。
 
 ### 5.4 SEC 文件
 
-按 SEC accession number 全局去重。文件先关联公司，再通过报告期、表单类型和时间窗口关联一个或多个财报事件。自动关联必须保存规则版本和置信度；不确定关联可由管理员复核，不能静默覆盖。
+按 SEC accession number 全局去重。文件先关联公司，再通过报告期、表单类型和时间窗口关联一个或多个财报事件。自动关联必须保存规则版本和置信度；不确定关联可由管理员复核，不能静默覆盖。release filing 与 periodic filing 的可用性分别从已确认的 FilingEarningsLink 推导，任何一类文件都不推动 EarningsEvent.status。
 
 ### 5.5 通知
 
@@ -181,6 +189,20 @@ MVP 使用 Django management commands 作为所有后台入口。建议生产调
 每类任务以 `SyncRun` 记录开始、结束、计数和错误；使用 PostgreSQL advisory lock 或任务锁表防止同类任务重叠。任务按稳定业务键 upsert，并在数据库层设置唯一约束。外部请求重试只覆盖明确的临时故障，带超时、最大次数和抖动退避。
 
 生产环境可配置多个 Cron Job，也可用一个每 5 分钟运行的短生命周期 dispatcher 检查哪些任务到期并执行；最终方案取决于托管平台对计划任务频率、并发和最长运行时间的限制，部署前必须验证。不得在 Web 进程内启常驻 scheduler。
+
+### 6.1 数据新鲜度目标
+
+新鲜度从上游可观察时间起算，到 Earnings Radar 中对应标准化记录可查询或通知被邮件供应商接受为止。下表是已确认的首版内部工程目标，不是对外 SLA；统计口径与发布门槛见 ADR-004。
+
+| 数据/动作 | 建议目标 | 起点与终点 | 状态 |
+|---|---:|---|---|
+| SEC 文件发现 | 15 分钟内 | SEC `accepted_at` 至 Filing 可查询 | 初始目标 |
+| 财报日历更新 | 上游变化后 24 小时内 | Provider 可见变化至 EarningsEvent 更新 | 初始目标 |
+| IR 官方确认更新 | 官方页面发布后 6 小时内 | IR 公告可见至确认状态更新 | 初始目标 |
+| 指数公告更新 | 官方公告后 24 小时内 | 公告发布至 IndexChangeEvent 可查询 | 初始目标 |
+| P0/P1 通知发送延迟 | 事件入库后 5 分钟内 | 领域变化提交至邮件供应商接受/站内通知可见 | 初始目标 |
+
+每项目标都要记录 `source_observed_at`、`fetched_at`、`normalized_at` 和需要时的 `notification_sent_at`，以区分上游延迟、同步延迟和发送延迟。数据源细节与测量方法见 `docs/data-sources.md`。
 
 ## 7. Web、权限与页面策略
 
@@ -267,14 +289,13 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 
 升级到 Celery/Redis 不能仅按日期决定；应以任务明显超出 Cron 时限、并发需求、通知延迟或数据库队列争用的实测指标为依据。
 
-## 13. 已识别的需求张力
+## 13. 已识别的需求张力与已决澄清
 
 1. SEC 和通知要求 5 分钟级任务，而生产基线只给出 Cron Job、且禁用常驻 Worker；必须验证托管平台频率和运行时限制，必要时用单一短生命周期 dispatcher，但不引入 Celery。
-2. PRD 建议财报唯一键为 `company + fiscal_year + fiscal_quarter`，同时区分 Q4 与全年报告；该键可能不能唯一表达两者。
-3. “每条关键数据保存每次抓取的原始响应”与“重复同步不得产生重复原始响应”存在表述张力；本方案对相同内容只存一份正文，同时每次运行保留获取/未变统计。
-4. 指数偏移要求合并成一条事件，但来源事实是两个指数的独立加入/移除；本方案保留原子变动，再建立聚合展示事件。
-5. MVP 验收要求用户可以注册，待确认项又建议开发阶段关闭公开注册；开发环境关闭和正式 MVP 是否开放需要明确。
-6. “所有数据库时间保存 UTC”不适用于只精确到自然日的公告日/生效日；本方案将其保存为 `date`，只有具体时刻使用 UTC。
+2. “每条关键数据保存每次抓取的原始响应”与“重复同步不得产生重复原始响应”存在表述张力；本方案对相同内容只存一份正文，同时每次运行保留获取/未变统计。
+3. MVP 验收要求用户可以注册，待确认项又建议开发阶段关闭公开注册；路线图已拆为关闭注册的 alpha 和开放注册的 beta。
+4. “所有数据库时间保存 UTC”不适用于只精确到自然日的公告日/生效日；本方案将其保存为 `date`，只有具体时刻使用 UTC。
+5. PRD 使用公司级 IndexMembership、单一 `FILED` 状态和早期财报唯一键作为需求草案表达；ADR-001/002/003 已确定更精确的技术模型，产品范围未改变。
 
 ## 14. 待产品负责人确认
 
@@ -285,8 +306,9 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 - 财报日历供应商、字段语义、许可和更新频率；
 - IR Provider 首批公司范围与维护方式；
 - 来源冲突优先级、置信度规则和管理员复核流程；
-- 财年/财季（尤其 Q4 与 FY）的规范化规则；
-- 指数“相近时间”窗口、层级顺序及多指数变动合并规则；
+- 候选财报事件跨 Provider 的自动合并阈值和取消后重排规则；
+- 1–7 日指数偏移候选的人工复核负责人、时限与默认处理；
+- release filing 首版允许使用的 exhibit/文本证据清单与复核时限；
 - 日期提醒按美东自然日还是用户本地自然日计算；
 - 摘要发送时间、每周摘要星期和 DST 行为；
 - 原始数据保留期限、最大体积和删除政策；

@@ -9,12 +9,14 @@
 1. `docs/product-requirements.md`：长期产品需求基线；
 2. `docs/architecture.md`：模块边界、数据流和部署约束；
 3. `docs/data-model.md`：实体、历史、来源和幂等约束；
-4. `docs/development-roadmap.md`：阶段、前置条件和验收标准；
-5. 当前目录或子目录中更具体的 `AGENTS.md`（若未来存在）。
+4. `docs/data-sources.md`：外部来源边界、许可检查和数据新鲜度目标；
+5. `docs/decisions/` 中所有 ADR：已接受决策与仍待确认的实现门；
+6. `docs/development-roadmap.md`：阶段、前置条件和验收标准；
+7. 当前目录或子目录中更具体的 `AGENTS.md`（若未来存在）。
 
 不得只依赖聊天摘要或记忆代替仓库文件。开始工作前用 `git status`、`git branch --show-current` 和相关文件检查当前状态，保留用户已有改动。
 
-若 PRD、架构、数据模型、路线图互相冲突：PRD 的产品范围优先；安全、隐私和数据完整性约束不得降低；不要自行猜测会改变产品行为的规则，应停止相关实现并列出需要产品负责人确认的决策。
+若 PRD、架构、数据模型、ADR、数据源文档和路线图互相冲突：PRD 的产品范围优先，已接受 ADR 的技术建模决策优先于较早的技术草案；安全、隐私和数据完整性约束不得降低。不要自行猜测会改变产品行为的规则，应停止相关实现并列出需要产品负责人确认的决策。
 
 ## 2. 一次只完成一个明确任务
 
@@ -25,7 +27,7 @@
 - 若前置阶段未完成，只补齐本任务不可缺少的最小前置，并明确报告；不要扩大范围。
 - 市场热门、Reddit、Telegram、Web Push、PWA、自选股分组、Celery、Redis、微服务和 SPA 均不属于 MVP，除非用户明确进入相应第二阶段。
 
-当前仓库仍处于阶段 0 规划。除非用户在后续任务中明确授权开始某个实现阶段，否则不要初始化 Django、安装依赖或编写业务代码。
+当前仓库已完成阶段 1 工程骨架、阶段 2.1A 的 DataSource/SyncRun 基础、阶段 2.1B-1 的 RawDataRecord/RawDataObservation 原始数据基础，以及阶段 2.1B-2 的 SourceEvidence 来源证据基础。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建 DataChange、AuditRecord、财报、指数、SEC、Provider、自选股或通知业务实现。
 
 ## 3. 固定技术基线
 
@@ -88,8 +90,15 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 ## 7. 数据与时间约束
 
 - CIK 作为字符串保存并保留前导零；ticker 是可变上市身份，不能当永久公司主键。
+- IndexMembership 必须关联 SecurityListing；Company 的指数归属和监控状态通过其 listing 聚合，不能把多 share class 压成一条公司级成员关系。
 - SEC Filing 按 accession number 去重。
-- 财报预计、确认、实际发布、电话会和文件提交时间分字段保存。
+- EarningsEvent 只表达预计、确认、发布和取消生命周期；不得把 `FILED` 放入单向财报状态机。
+- 年度财报内部统一为 `FY + includes_q4=true`；52/53 周使用 `fiscal_calendar_type` 和 `period_length_weeks`，不得扩张 period_type。
+- SEC 文件可用性由 Filing 和 FilingEarningsLink 独立表达；release filing 使用 YES/NO/REVIEW_REQUIRED 并保存分类原因和规则版本。
+- 指数变化的底层事实只有 IndexChangeLeg 的 `ADDED` / `REMOVED`；同日加入/移除自动合并，1–7 日进入待复核，超过 7 日保持独立。
+- Russell 2000 与三个大型指数之间才使用 UPGRADE/DOWNGRADE；三个大型指数内部为 CROSS_INDEX。
+- 监控影响必须区分 ENTERS_BASE_POOL 与 REENTERS_BASE_POOL，后者仅用于历史上退出后重新进入。
+- 财报预计、确认、实际发布和电话会时间分字段保存；SEC 提交时间保存在 Filing 中。
 - 页面必须明确显示时区；用户时区只影响显示和提醒窗口，不改变存储值。
 - 时间相关测试覆盖 UTC、美东时间、用户本地时间和 DST 切换。
 - 用户资源的每个 query 和 mutation 都必须按当前用户过滤；前端隐藏不等于权限控制。

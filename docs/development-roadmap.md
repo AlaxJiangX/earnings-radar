@@ -1,13 +1,13 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。当前任务只完成阶段 0 文档，不开始 Django、依赖安装或业务代码。
+> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A、2.1B-1 和 2.1B-2 数据来源/原始数据/来源证据基础已完成；核心领域模型和真实 Provider 仍未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
 ## 1. 阶段规则
 
 - MVP 为阶段 0–8；阶段 9 为第二阶段，不阻塞 MVP 发布。
-- 每个小阶段开始前必须阅读 `docs/product-requirements.md`、`docs/architecture.md`、`docs/data-model.md`、本路线图和根目录 `AGENTS.md`。
+- 每个小阶段开始前必须阅读 `docs/product-requirements.md`、`docs/architecture.md`、`docs/data-model.md`、`docs/data-sources.md`、全部 ADR、本路线图和根目录 `AGENTS.md`。
 - 开始阶段前检查其前置条件；尚未确认且会改变实现的产品决策，必须先记录并请产品负责人确认。
 - 每阶段提交应小而可审查，包含实现、迁移、测试和必要文档；不得把多个阶段捆成一次“大提交”。
 - 所有 Provider、同步、变更检测和通知阶段都必须包含幂等重跑测试与来源追溯测试。
@@ -22,7 +22,7 @@
 交付：
 
 - 将 PRD v0.1 放入 `docs/product-requirements.md`；
-- 创建架构、数据模型、开发路线图；
+- 创建架构、数据模型、数据源规划、ADR 和开发路线图；
 - 创建根目录 `AGENTS.md`；
 - 标记冲突与待确认项。
 
@@ -38,11 +38,11 @@
 
 交付：
 
-- 产品负责人确认至少这些阻塞项：注册策略、财报事件唯一规则、提醒“提前一天”的时区语义；
+- 产品负责人确认注册策略、提醒“提前一天”的时区语义；初始数据新鲜度和 alpha/beta 门槛已由 ADR-004 确定；
 - 选定并记录财报日历和四个指数的数据来源、许可、字段与频率；
 - 选定邮件供应商；
-- 定义指数偏移窗口与来源冲突矩阵；
-- 为重要决定创建简短 ADR 或 `docs/decisions/` 记录。
+- 来源冲突矩阵仍待确认；指数偏移窗口和方向已由 ADR-002 确定；
+- 落实已接受 ADR-001（财报身份）、ADR-002（证券级成员与偏移）、ADR-003（release filing 分类）和 ADR-004（发布门槛）的实现门。
 
 验收标准：
 
@@ -101,17 +101,62 @@
 
 ### 阶段 2：来源与公司主数据
 
-#### 2.1 来源、同步运行和原始数据底座
+#### 2.1A 数据来源与同步运行基础
 
-交付：DataSource、SyncRun、RawDataRecord、SourceEvidence、DataChange、AuditRecord 的模型与 Admin 只读/受控界面。
+交付：DataSource、SyncRun、受控状态转换 service 和默认只读的 SyncRun Admin。
 
 验收标准：
 
-- 相同原始正文重复获取不会复制 payload；
-- 每次运行保留统计和状态；
-- 原始数据与标准化数据分离；
-- 管理修正要求原因并记录前后值；
-- 日志和审计不保存密钥。
+- 同一来源、任务和计划窗口的幂等键不重复，service 重试返回已有运行；
+- 每次运行保存状态、开始/结束/心跳时间、版本和五类计数；
+- 计数非负、终态必须有结束时间、结束时间不早于开始时间；
+- 失败摘要经受控 service 压缩和常见凭据脱敏后保存；
+- DataSource.base_url 通过模型和 Admin 校验拒绝 userinfo、真实敏感查询值与明显认证凭据；
+- SyncRun scope 使用统一递归安全检查，凭据字段不写入审计 JSON；
+- SyncRun 不能通过 Admin 新增、修改状态或删除；
+- 不访问真实网络，不创建原始数据或核心领域模型。
+
+#### 2.1B-1 原始数据正文与观察
+
+交付：RawDataRecord、RawDataObservation、受控写入/解析状态 service 和只读 Admin。
+
+验收标准：
+
+- 相同来源、请求指纹和正文重复获取不会复制 payload；
+- 同一运行幂等重跑不复制 observation，后续运行观察相同正文会追加自己的 observation；
+- 内容 SHA-256、脱敏请求指纹、payload 实际大小和解析状态受 service 与数据库约束保护；
+- source URL 拒绝 userinfo、移除 fragment，并以稳定标记替换敏感查询值；安全查询条件参与规范化指纹；
+- 明显包含认证字段或 Authorization/Basic/Bearer 凭据的原始正文在落库前拒绝；
+- 初始单条 payload 数据库硬上限为 1 MiB，运行配置只能下调；
+- RawDataRecord 和 RawDataObservation 在 Admin 中不可新增、修改或删除；
+- 测试不访问真实网络，不创建来源证据、变更审计或核心领域模型。
+
+#### 2.1B-2 SourceEvidence 来源证据
+
+交付：SourceEvidence 模型、受控幂等写入 service 和只读 Admin。
+
+验收标准：
+
+- 来源证据能追溯 RawDataRecord、RawDataObservation、SyncRun、DataSource、原始值、标准化值和规则版本；
+- target 使用受限枚举和 UUID，不依赖未来领域 app，也不使用 GenericForeignKey；
+- 数据库复合外键保证 sync_run/raw record 对应已存在 observation，service 额外校验来源一致；
+- confidence、normalizer version、evidence_key 和 target type 有数据库约束；
+- raw/normalized JSON 中的凭据键和显式认证文本被拒绝；
+- URL、请求身份、同步 scope、来源证据和错误摘要共用集中安全规则，不在不同 Service 维护互相漂移的名单；
+- 同一 RawDataRecord、目标、字段、标准化值和规则版本连续写入两次只保留一条证据；不同 RawDataRecord 的相同标准化事实分别留证；
+- SourceEvidence Admin 可按权限查看，但不可新增、修改或删除；
+- 不访问真实网络，不创建 DataChange、AuditRecord 或核心领域模型。
+
+#### 2.1B-3 DataChange 与 AuditRecord
+
+交付：DataChange、AuditRecord 的模型、受控写入 service 和只读/严格受控 Admin。
+
+验收标准：
+
+- 关键变化保存旧值、新值、来源证据、任务/操作者和原因；
+- 管理修正要求原因，普通管理员不能编辑历史审计；
+- 日志和审计不保存密钥；
+- 同一未变化输入重跑不产生重复 DataChange 或 AuditRecord。
 
 #### 2.2 Provider 契约和测试夹具
 
@@ -140,13 +185,15 @@
 
 #### 3.1 指数与成分历史
 
-交付：四个 MarketIndex、IndexMembership 及有效期逻辑。
+交付：四个 MarketIndex、绑定 SecurityListing 的 IndexMembership 及有效期逻辑。
 
 验收标准：
 
 - 四指数可启用/停用；
-- 同公司可同时属于多个指数；
-- 成分区间不重叠，历史结束不删除；
+- 同公司可通过不同 listing/share class 同时属于多个指数；
+- 同一 SecurityListing 与指数的成分区间不重叠，历史结束不删除；
+- Company 指数归属通过 listing 聚合，多个 share class 的底层事实不丢失；
+- 单个 share class 移除后，监控池计算会检查其他 listing 和自选股；
 - 给定日期可重建指数成分；
 - 重复快照不产生重复关系。
 
@@ -164,13 +211,15 @@
 
 #### 3.3 加入、移除和偏移识别
 
-交付：IndexChangeEvent、IndexChangeLeg、ADDED/REMOVED/TRANSFERRED/PARTIAL_EXIT/FULL_EXIT 等分类。
+交付：IndexChangeEvent、证券级 IndexChangeLeg，以及独立的原子动作、偏移方向和监控影响维度。
 
 验收标准：
 
-- 原子加入/移除历史完整；
-- 已确认窗口内的跨指数变化聚合为一条偏移；
-- 部分退出与全部退出正确区分；
+- IndexChangeLeg 的原子动作仅为 ADDED/REMOVED，历史完整；
+- 同一生效日期自动合并，1–7 日形成待复核候选，超过 7 日保持独立；
+- Russell 2000 与 LARGE 之间使用 UPGRADE/DOWNGRADE，三个 LARGE 指数内部使用 CROSS_INDEX，其他为 NONE；
+- 监控影响独立使用 CONTINUES/ENTERS_BASE_POOL/EXITS_BASE_POOL/REENTERS_BASE_POOL，首次进入与历史重入正确区分；
+- 同一事件可以同时表达偏移方向和监控影响，不互相覆盖；
 - 修正/取消保留旧状态和来源；
 - 重跑不重复创建事件。
 
@@ -190,12 +239,17 @@
 
 #### 4.1 财报事件领域模型
 
-交付：EarningsEvent、EarningsDateChange、状态机和 Admin。
+交付：EarningsEvent、EarningsDateChange、候选/正式身份、财报发布状态机和 Admin。开始编码前必须再次核对 ADR-001 与 ADR-003。
 
 验收标准：
 
-- 财年/期间唯一规则通过 Q1–Q4、FY 和外国发行人测试；
-- 预计、确认、发布、电话会、8-K、定期报告时间独立；
+- 正式身份使用 company + period_end_date + period_type，并保存 identity_key/rule_version；
+- period_end_date 未知时只创建可追溯、幂等的候选事件；
+- 上游年度/Q4 标签统一为 FY 且 includes_q4=true，不产生 Q4/FY 双记录；
+- 52/53 周使用 fiscal_calendar_type 和 period_length_weeks，不新增 period_type；
+- 唯一规则通过 Q1–Q3、FY、H1/H2、外国发行人和 52/53 周财年测试；
+- 状态只包含 SCHEDULED_ESTIMATED/SCHEDULED_CONFIRMED/RELEASED/CANCELLED，不包含 FILED；
+- 预计、确认、发布和电话会时间独立；SEC 时间保存在 Filing；
 - 非法状态倒退被阻止或必须走有审计的修正；
 - 日期值不变时不生成变化；变化时保留旧值、新值和来源。
 
@@ -243,7 +297,11 @@
 
 - 8-K 和定期报告可按规则关联财报事件；
 - 不确定关联可复核且不会静默覆盖；
-- IR 官方确认可将 ESTIMATED 推进至 CONFIRMED；
+- IR 官方确认可将 SCHEDULED_ESTIMATED 推进至 SCHEDULED_CONFIRMED；
+- release filing 与 periodic filing 由 FilingEarningsLink 独立表达，不改变 EarningsEvent.status；
+- release filing 使用 YES/NO/REVIEW_REQUIRED，并保存分类原因和规则版本；
+- 只有 YES 推导 has_release_filing，REVIEW_REQUIRED 不触发“已提交”通知；
+- 页面查询可同时得到“财报已发布、8-K 已提交、10-Q 待提交”；
 - 首批 IR 公司范围有清单；
 - 所有字段可回溯到原始来源。
 
@@ -347,13 +405,14 @@
 
 - Web 存活与数据新鲜度检查分离；
 - 任务过期、来源失败和通知积压可发现；
+- SEC、财报日历、IR、指数公告和 P0/P1 通知的新鲜度均可按 `docs/data-sources.md` 的统一起止点测量；
 - 关键用户旅程、四指数、日期变化、SEC 和通知端到端测试通过；
 - 全套同步连续运行两次无重复关键数据和通知；
 - 测试结果对应 PRD 第 17 节逐项记录。
 
-### 阶段 8：生产发布 v0.1.0
+### 阶段 8：v0.1 alpha、beta 与正式发布
 
-#### 8.1 部署准备
+#### 8.1 共同部署准备
 
 验收标准：
 
@@ -363,15 +422,52 @@
 - Cron 频率、并发、超时经平台实测满足 SEC/通知要求；
 - 数据库备份已开启并完成一次恢复演练。
 
-#### 8.2 上线与开源发布
+#### 8.2 v0.1.0-alpha.1：个人/内部测试
 
 验收标准：
 
 - README 能让新用户按 `git clone`、复制 `.env`、`docker compose up` 启动；
 - GitHub CI 通过，许可证与安全政策已确认；
-- 云端核心页面、登录策略、Provider 新鲜度和测试邮件 smoke test 通过；
-- 发布 `v0.1.0` 并记录已知限制；
+- 云端核心页面、Provider 新鲜度和测试邮件 smoke test 通过；
+- 公开注册关闭，只允许管理员创建或邀请的个人/内部测试账号；
+- 单条关键提醒可验证，完整每日/每周摘要不作为 alpha 开放条件；
+- 发布 `v0.1.0-alpha.1`，明确测试数据范围、已知限制和反馈渠道；
 - 没有把第二阶段能力标为已实现。
+
+#### 8.3 alpha 退出评审
+
+验收标准：
+
+- 连续 14 个自然日没有 P0 事故、重复关键记录或重复 P0/P1 通知；
+- 排除已确认上游中断后，同步成功率不低于 95%；
+- SEC 与 P0/P1 通知至少 95% 可测样本达标，财报日历、IR 与指数公告至少 90% 可测样本达标；
+- 无真实样本的类别使用 fixture 验证并明确披露，不能按 100% 达标；
+- 指数多 share class、财报候选身份和 Filing 独立状态经过真实样本复核；
+- 数据源失败、通知失败和管理员修正流程经过演练；
+- alpha 发现的阻塞缺陷关闭，剩余限制进入 beta 发布说明。
+
+#### 8.4 v0.1.0-beta.1：开放注册与完整摘要
+
+验收标准：
+
+- 开放注册策略、安全防护、邮件验证和滥用控制符合已确认方案；
+- 每日摘要和每周摘要按用户时区、稳定时间桶和幂等键生成；
+- 完整摘要在重跑、并发和失败重试时不重复发送；
+- 用户权限隔离、退订/渠道开关和通知历史端到端测试通过；
+- 连续 30 个自然日无 P0 事故和任何重复关键记录/通知/摘要；
+- 排除已确认上游中断后，同步成功率不低于 99%；
+- 五类新鲜度至少 95% 可测样本达到 ADR-004 初始目标；
+- 邮件与站内摘要成功率不低于 99%；
+- 发布 `v0.1.0-beta.1` 并记录已知限制。
+
+#### 8.5 v0.1.0 正式版评审
+
+验收标准：
+
+- PRD 第 17 节 MVP 验收项全部通过并有证据；
+- alpha/beta 未关闭的阻塞问题为零；
+- 数据备份恢复、回滚、健康检查和运维手册完成；
+- 发布 `v0.1.0`，仍不包含任何第二阶段能力。
 
 ## 3. 第二阶段路线（不属于 MVP）
 
@@ -403,14 +499,16 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 
 | 决策 | 最晚确认阶段 |
 |---|---|
-| 默认语言、公开注册、开源协议 | 1.1/1.4 前 |
+| 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前 |
 | 财报/指数来源与许可 | 2.2 前，真实 Provider 开发前必须完成 |
 | 邮件服务、摘要时间、重试规则 | 6.4 前 |
-| 财报事件唯一规则与 FILED 语义 | 4.1 前 |
-| 指数偏移窗口、层级、多 share class | 3.3 前 |
+| 候选财报事件跨 Provider 合并阈值与取消重排 | 4.1 前；FY/52-53 周规则已由 ADR-001 确定 |
+| 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
+| release filing 证据清单、复核展示和时限 | 4.5 前；三态分类已由 ADR-003 确定 |
 | 来源冲突与人工锁定策略 | 2.3 前 |
 | 提前一天的时区/DST 语义 | 6.1 前 |
 | 原始/通知/审计数据保留 | 8.1 前 |
+| 新鲜度与 alpha/beta 门槛的后续调整 | 仅在 alpha 实测支持时修订 ADR-004 |
 | 生产平台及 Cron 能力 | 8.1 前 |
 
 ## 5. 完成定义（适用于每个小阶段）
