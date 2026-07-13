@@ -1,5 +1,6 @@
 import hashlib
 from datetime import UTC, datetime
+from urllib.parse import unquote
 
 import pytest
 from django.db import IntegrityError, transaction
@@ -22,20 +23,84 @@ from audit.services import (
 )
 
 
-def test_request_fingerprint_is_stable_and_ignores_secret_values() -> None:
+@pytest.mark.parametrize("credential_field", ("key", "auth", "api_key", "X-API-KEY"))
+def test_request_fingerprint_is_stable_and_ignores_secret_values(
+    credential_field: str,
+) -> None:
     first = build_request_fingerprint(
         method="get",
-        source_url="https://EXAMPLE.test/data?page=2&api_key=first-secret",
-        request_identity={"cursor": "next", "Authorization": "Bearer first"},
+        source_url=f"https://EXAMPLE.test/data?page=2&{credential_field}=first-fixture-secret",
+        request_identity={"cursor": "next", "Authorization": "Bearer first-fixture-token"},
     )
     second = build_request_fingerprint(
         method="GET",
-        source_url="https://example.test/data?api_key=second-secret&page=2",
-        request_identity={"Authorization": "Bearer second", "cursor": "next"},
+        source_url=(f"https://example.test/data?{credential_field}=second-fixture-secret&page=2"),
+        request_identity={"Authorization": "Bearer second-fixture-token", "cursor": "next"},
     )
 
     assert first == second
     assert len(first) == 64
+
+
+def test_request_fingerprint_preserves_safe_request_conditions() -> None:
+    first = build_request_fingerprint(
+        method="GET",
+        source_url="https://example.test/data?limit=25&page=1",
+        request_identity={"cursor": "first"},
+    )
+    reordered = build_request_fingerprint(
+        method="get",
+        source_url="https://EXAMPLE.test/data?page=1&limit=25#ignored-fragment",
+        request_identity={"cursor": "first"},
+    )
+    different_page = build_request_fingerprint(
+        method="GET",
+        source_url="https://example.test/data?limit=25&page=2",
+        request_identity={"cursor": "first"},
+    )
+
+    assert first == reordered
+    assert first != different_page
+
+
+def test_request_fingerprint_redacts_nested_identity_credentials() -> None:
+    first = build_request_fingerprint(
+        method="GET",
+        source_url="https://example.test/data",
+        request_identity={
+            "nested": [
+                {"AuTh": "Basic dXNlcjpwYXNz"},
+                ({"headers": {"Authorization": "Bearer first-fixture-token"}},),
+            ]
+        },
+    )
+    second = build_request_fingerprint(
+        method="GET",
+        source_url="https://example.test/data",
+        request_identity={
+            "nested": [
+                {"AuTh": "Basic YWRtaW46c2VjcmV0"},
+                ({"headers": {"Authorization": "Bearer second-fixture-token"}},),
+            ]
+        },
+    )
+
+    assert first == second
+
+
+def test_plain_basic_and_bearer_words_are_not_treated_as_credentials() -> None:
+    basic = build_request_fingerprint(
+        method="GET",
+        source_url="https://example.test/data",
+        request_identity={"description": "basic"},
+    )
+    bearer = build_request_fingerprint(
+        method="GET",
+        source_url="https://example.test/data",
+        request_identity={"description": "bearer"},
+    )
+
+    assert basic != bearer
 
 
 @pytest.mark.django_db
@@ -61,6 +126,61 @@ def test_raw_data_service_calculates_hash_size_and_sanitizes_url(sync_run: SyncR
     assert "REDACTED" in result.record.source_url
     assert timezone.is_aware(result.record.fetched_at)
     assert timezone.is_aware(result.observation.observed_at)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("credential_field", ("key", "auth", "api_key", "API-KEY"))
+def test_raw_data_service_redacts_sensitive_query_values(
+    sync_run: SyncRun,
+    credential_field: str,
+) -> None:
+    result = record_raw_data_observation(
+        sync_run=sync_run,
+        source_url=(
+            f"https://example.test/data?page=1&{credential_field}=fixture-query-secret"
+            "#fragment-secret"
+        ),
+        payload=b"safe-payload",
+    )
+
+    stored_url = unquote(result.record.source_url)
+    assert "fixture-query-secret" not in stored_url
+    assert "fragment-secret" not in stored_url
+    assert "[REDACTED]" in stored_url
+    assert "page=1" in stored_url
+
+
+@pytest.mark.django_db
+def test_raw_data_service_rejects_url_userinfo_without_echoing_it(sync_run: SyncRun) -> None:
+    source_url = "https://fixture-user:fixture-password@example.test/data"
+
+    with pytest.raises(InvalidRawDataRequest) as error:
+        record_raw_data_observation(
+            sync_run=sync_run,
+            source_url=source_url,
+            payload=b"safe-payload",
+        )
+
+    assert "fixture-user" not in str(error.value)
+    assert "fixture-password" not in str(error.value)
+    assert RawDataRecord.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_raw_data_service_rejects_credential_payload_without_echoing_it(
+    sync_run: SyncRun,
+) -> None:
+    payload = b'{"nested":{"ToKeN":"fixture-payload-secret"}}'
+
+    with pytest.raises(InvalidRawDataRequest) as error:
+        record_raw_data_observation(
+            sync_run=sync_run,
+            source_url="https://example.test/data",
+            payload=payload,
+        )
+
+    assert "fixture-payload-secret" not in str(error.value)
+    assert RawDataRecord.objects.count() == 0
 
 
 @pytest.mark.django_db

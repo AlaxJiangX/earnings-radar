@@ -1,32 +1,21 @@
 import hashlib
 import json
-import re
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
-from django.core.validators import URLValidator
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from audit.models import RawDataObservation, RawDataRecord, SyncRun
-from audit.services.sync_runs import sanitize_error_summary
-
-_URL_VALIDATOR = URLValidator(schemes=("http", "https"))
-_NON_ALPHANUMERIC_RE = re.compile(r"[^a-z0-9]")
-_SENSITIVE_KEY_MARKERS = (
-    "apikey",
-    "accesstoken",
-    "authorization",
-    "credential",
-    "password",
-    "secret",
-    "signature",
-    "token",
+from audit.security import (
+    AuditSecurityError,
+    ensure_payload_has_no_credentials,
+    normalize_request_identity,
+    sanitize_error_summary,
+    sanitize_url,
 )
 
 
@@ -63,9 +52,13 @@ def build_request_fingerprint(
     normalized_method = method.strip().upper()
     if not normalized_method:
         raise InvalidRawDataRequest("Request method must not be empty.")
-    _, canonical_url = _sanitize_urls(source_url)
+    try:
+        canonical_url = sanitize_url(source_url).canonical
+        normalized_identity = normalize_request_identity(dict(request_identity or {}))
+    except AuditSecurityError as error:
+        raise InvalidRawDataRequest(str(error)) from None
     descriptor = {
-        "identity": _redact_identity(dict(request_identity or {})),
+        "identity": normalized_identity,
         "method": normalized_method,
         "url": canonical_url,
     }
@@ -109,7 +102,11 @@ def record_raw_data_observation(
 
     fetched_timestamp = _aware_timestamp(fetched_at)
     observed_timestamp = _aware_timestamp(observed_at or fetched_timestamp)
-    stored_url, _ = _sanitize_urls(source_url)
+    try:
+        stored_url = sanitize_url(source_url).stored
+        ensure_payload_has_no_credentials(payload)
+    except AuditSecurityError as error:
+        raise InvalidRawDataRequest(str(error)) from None
     request_fingerprint = build_request_fingerprint(
         method=request_method,
         source_url=source_url,
@@ -269,45 +266,6 @@ def _get_or_create_observation(
         except RawDataObservation.DoesNotExist:
             raise error from None
         return observation, False
-
-
-def _sanitize_urls(source_url: str) -> tuple[str, str]:
-    try:
-        _URL_VALIDATOR(source_url)
-    except ValidationError as error:
-        raise InvalidRawDataRequest("source_url must be a valid HTTP(S) URL.") from error
-
-    parts = urlsplit(source_url)
-    if parts.username is not None or parts.password is not None:
-        raise InvalidRawDataRequest("source_url must not contain user credentials.")
-    query_pairs = parse_qsl(parts.query, keep_blank_values=True, max_num_fields=1000)
-    sanitized_pairs = [
-        (key, "[REDACTED]" if _is_sensitive_key(key) else value) for key, value in query_pairs
-    ]
-    normalized_base = (parts.scheme.lower(), parts.netloc.lower(), parts.path, "", "")
-    stored_url = urlunsplit((*normalized_base[:3], urlencode(sanitized_pairs), ""))
-    canonical_url = urlunsplit((*normalized_base[:3], urlencode(sorted(sanitized_pairs)), ""))
-    return stored_url, canonical_url
-
-
-def _redact_identity(value: object) -> object:
-    if isinstance(value, Mapping):
-        result: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise InvalidRawDataRequest("request_identity keys must be strings.")
-            result[key] = "[REDACTED]" if _is_sensitive_key(key) else _redact_identity(item)
-        return result
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [_redact_identity(item) for item in value]
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    raise InvalidRawDataRequest("request_identity must contain JSON-compatible data.")
-
-
-def _is_sensitive_key(key: str) -> bool:
-    normalized = _NON_ALPHANUMERIC_RE.sub("", key.lower())
-    return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)
 
 
 def _aware_timestamp(value: datetime | None) -> datetime:

@@ -1,6 +1,7 @@
 from datetime import UTC, timedelta
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -21,6 +22,44 @@ def test_data_source_key_is_unique(data_source: DataSource) -> None:
 def test_data_source_rejects_unknown_source_type(data_source: DataSource) -> None:
     with pytest.raises(IntegrityError), transaction.atomic():
         DataSource.objects.filter(pk=data_source.pk).update(source_type="unknown")
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    (
+        "https://fixture-user:fixture-password@example.test/data",
+        "https://example.test/data?key=fixture-secret",
+        "https://example.test/data?AuTh=fixture-secret",
+        "https://example.test/data?API-KEY=fixture-secret",
+        "https://example.test/data?next=Bearer%20fixture-token",
+    ),
+)
+def test_data_source_base_url_model_validation_rejects_credentials(base_url: str) -> None:
+    source = DataSource(
+        key="unsafe-fixture-source",
+        name="Unsafe fixture source",
+        source_type=DataSource.SourceType.MANUAL,
+        base_url=base_url,
+    )
+
+    with pytest.raises(ValidationError) as error:
+        source.full_clean(validate_unique=False, validate_constraints=False)
+
+    message = str(error.value)
+    assert "fixture-secret" not in message
+    assert "fixture-password" not in message
+    assert "fixture-token" not in message
+
+
+def test_data_source_base_url_model_validation_allows_safe_query_conditions() -> None:
+    source = DataSource(
+        key="safe-fixture-source",
+        name="Safe fixture source",
+        source_type=DataSource.SourceType.MANUAL,
+        base_url="https://example.test/data?limit=25&page=2",
+    )
+
+    source.full_clean(validate_unique=False, validate_constraints=False)
 
 
 @pytest.mark.django_db

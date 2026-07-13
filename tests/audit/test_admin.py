@@ -4,12 +4,13 @@ from django.test import RequestFactory
 
 from accounts.models import User
 from audit.admin import (
+    DataSourceAdmin,
     RawDataObservationAdmin,
     RawDataRecordAdmin,
     SourceEvidenceAdmin,
     SyncRunAdmin,
 )
-from audit.models import RawDataObservation, RawDataRecord, SourceEvidence, SyncRun
+from audit.models import DataSource, RawDataObservation, RawDataRecord, SourceEvidence, SyncRun
 
 
 @pytest.mark.django_db
@@ -75,3 +76,28 @@ def test_source_evidence_admin_requires_view_permission() -> None:
     )
 
     assert model_admin.has_view_permission(request) is False
+
+
+@pytest.mark.django_db
+def test_data_source_admin_rejects_base_url_credentials() -> None:
+    model_admin = DataSourceAdmin(DataSource, AdminSite())
+    request = RequestFactory().post("/admin/audit/datasource/add/")
+    request.user = User.objects.create_superuser(
+        email="datasource-admin@example.com",
+        password="fixture-password-only",
+    )
+    form_class = model_admin.get_form(request)
+    form = form_class(
+        data={
+            "key": "unsafe-admin-source",
+            "name": "Unsafe admin source",
+            "source_type": DataSource.SourceType.MANUAL,
+            "base_url": "https://example.test/data?auth=fixture-admin-secret",
+            "provider_adapter": "",
+            "license_notes": "",
+            "is_enabled": "on",
+        }
+    )
+
+    assert form.is_valid() is False
+    assert "fixture-admin-secret" not in str(form.errors)

@@ -6,6 +6,7 @@ from django.db.models.functions import Length
 from django.utils import timezone
 
 from audit.constants import RAW_DATA_PAYLOAD_DB_LIMIT_BYTES
+from audit.security import validate_safe_base_url
 
 
 class DataSource(models.Model):
@@ -20,7 +21,7 @@ class DataSource(models.Model):
     key = models.SlugField(max_length=64, unique=True)
     name = models.CharField(max_length=200)
     source_type = models.CharField(max_length=32, choices=SourceType.choices)
-    base_url = models.URLField(blank=True)
+    base_url = models.URLField(blank=True, validators=(validate_safe_base_url,))
     is_official = models.BooleanField(default=False)
     provider_adapter = models.CharField(max_length=255, blank=True)
     license_notes = models.TextField(blank=True)

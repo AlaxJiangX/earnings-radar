@@ -1,4 +1,3 @@
-import re
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
@@ -7,18 +6,14 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from audit.models import DataSource, SyncRun
+from audit.security import (
+    InvalidAuditValue,
+    SensitiveAuditData,
+    normalize_json_without_credentials,
+    sanitize_error_summary,
+)
 
 MAX_ERROR_SUMMARY_LENGTH = 2000
-
-_AUTHORIZATION_RE = re.compile(
-    r"(?i)([\"']?authorization[\"']?\s*[:=]\s*)(?:bearer|basic)?\s*[\"']?[^\s,;}\"']+[\"']?"
-)
-_BEARER_RE = re.compile(r"(?i)\bbearer\s+[^\s,;}]+")
-_SENSITIVE_VALUE_RE = re.compile(
-    r"(?i)([\"']?(?:api[_-]?key|access[_-]?token|token|secret|password)[\"']?"
-    r"\s*[:=]\s*)[\"']?[^\s,;}\"']+[\"']?"
-)
-_URL_QUERY_RE = re.compile(r"(https?://[^\s?#]+)\?[^\s#]*")
 
 
 class InvalidSyncRunTransition(RuntimeError):
@@ -31,15 +26,6 @@ class InvalidSyncRunCount(ValueError):
 
 class InvalidSyncRunTimestamp(ValueError):
     pass
-
-
-def sanitize_error_summary(summary: str) -> str:
-    compact = " ".join(summary.split())
-    compact = _AUTHORIZATION_RE.sub(r"\1[REDACTED]", compact)
-    compact = _BEARER_RE.sub("Bearer [REDACTED]", compact)
-    compact = _SENSITIVE_VALUE_RE.sub(r"\1[REDACTED]", compact)
-    compact = _URL_QUERY_RE.sub(r"\1?[REDACTED]", compact)
-    return compact[:MAX_ERROR_SUMMARY_LENGTH]
 
 
 def _aware_timestamp(value: datetime | None = None) -> datetime:
@@ -63,6 +49,15 @@ def start_sync_run(
     normalized_key = idempotency_key.strip()
     if not normalized_job_type or not normalized_key:
         raise ValueError("job_type and idempotency_key must not be empty.")
+    try:
+        normalized_scope = normalize_json_without_credentials(
+            dict(scope or {}),
+            value_name="SyncRun scope",
+        )
+    except (InvalidAuditValue, SensitiveAuditData) as error:
+        raise ValueError(str(error)) from None
+    if not isinstance(normalized_scope, dict):
+        raise ValueError("SyncRun scope must be a JSON object.")
 
     timestamp = _aware_timestamp(started_at)
     with transaction.atomic():
@@ -71,7 +66,7 @@ def start_sync_run(
                 return SyncRun.objects.create(
                     job_type=normalized_job_type,
                     source=source,
-                    scope=dict(scope or {}),
+                    scope=normalized_scope,
                     idempotency_key=normalized_key,
                     started_at=timestamp,
                     heartbeat_at=timestamp,
@@ -180,7 +175,10 @@ def _finish_sync_run(
         if timestamp < sync_run.started_at:
             raise InvalidSyncRunTimestamp("finished_at must not be earlier than started_at.")
 
-        sanitized_summary = sanitize_error_summary(error_summary)
+        sanitized_summary = sanitize_error_summary(
+            error_summary,
+            maximum_length=MAX_ERROR_SUMMARY_LENGTH,
+        )
         if status in (SyncRun.Status.PARTIAL, SyncRun.Status.FAILED) and not sanitized_summary:
             raise ValueError("Partial and failed SyncRuns require a non-empty error summary.")
         if status == SyncRun.Status.SUCCEEDED and sync_run.failed_count:

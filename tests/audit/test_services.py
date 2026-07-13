@@ -132,17 +132,34 @@ def test_mark_sync_run_failed_redacts_credentials_and_url_queries(
     finished = mark_sync_run_failed(
         sync_run.pk,
         error_summary=(
-            "Authorization: Bearer secret-token password=secret-password "
-            "https://example.test/path?token=url-secret"
+            "Authorization: Bearer fixture-header-token password=fixture-password "
+            "https://example.test/path?key=fixture-query-secret auth=Basic dXNlcjpwYXNz"
         ),
     )
 
     assert finished.status == SyncRun.Status.FAILED
     assert finished.finished_at is not None
-    assert "secret-token" not in finished.error_summary
-    assert "secret-password" not in finished.error_summary
-    assert "url-secret" not in finished.error_summary
-    assert finished.error_summary.count("[REDACTED]") >= 3
+    assert "fixture-header-token" not in finished.error_summary
+    assert "fixture-password" not in finished.error_summary
+    assert "fixture-query-secret" not in finished.error_summary
+    assert "dXNlcjpwYXNz" not in finished.error_summary
+    assert finished.error_summary.count("[REDACTED]") >= 4
+
+
+@pytest.mark.django_db
+def test_start_sync_run_rejects_nested_scope_credentials_without_echoing_them(
+    data_source: DataSource,
+) -> None:
+    with pytest.raises(ValueError) as error:
+        start_sync_run(
+            job_type="fixture.sync",
+            source=data_source,
+            scope={"nested": [{"ToKeN": "fixture-scope-secret"}]},
+            idempotency_key="fixture.sync:unsafe-scope",
+        )
+
+    assert "fixture-scope-secret" not in str(error.value)
+    assert SyncRun.objects.count() == 0
 
 
 @pytest.mark.django_db

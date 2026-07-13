@@ -345,6 +345,11 @@ def test_service_rejects_observation_with_mismatched_source(sync_run: SyncRun) -
         ("nvda", {"access_token": "fixture-secret"}),
         ("token=fixture-secret", "NVDA"),
         ("nvda", "Authorization: Bearer fixture-secret"),
+        ({"auth": "Basic dXNlcjpwYXNz"}, "NVDA"),
+        ({"nested": {"ToKeN": "fixture-secret"}}, "NVDA"),
+        ({"headers": {"AUTHORIZATION": "Bearer fixture-secret"}}, "NVDA"),
+        ("Basic dXNlcjpwYXNz", "NVDA"),
+        ("nvda", "Bearer fixture-secret"),
     ),
 )
 def test_service_rejects_sensitive_evidence_values(
@@ -358,7 +363,7 @@ def test_service_rejects_sensitive_evidence_values(
         payload=b"company-fixture",
     )
 
-    with pytest.raises(SensitiveEvidenceValue):
+    with pytest.raises(SensitiveEvidenceValue) as error:
         record_source_evidence(
             raw_data_record=raw_result.record,
             sync_run=sync_run,
@@ -371,6 +376,8 @@ def test_service_rejects_sensitive_evidence_values(
             normalizer_version="company-normalizer-v1",
         )
 
+    assert "fixture-secret" not in str(error.value)
+    assert "dXNlcjpwYXNz" not in str(error.value)
     assert SourceEvidence.objects.count() == 0
 
 

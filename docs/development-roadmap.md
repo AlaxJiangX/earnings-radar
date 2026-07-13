@@ -111,6 +111,8 @@
 - 每次运行保存状态、开始/结束/心跳时间、版本和五类计数；
 - 计数非负、终态必须有结束时间、结束时间不早于开始时间；
 - 失败摘要经受控 service 压缩和常见凭据脱敏后保存；
+- DataSource.base_url 通过模型和 Admin 校验拒绝 userinfo、真实敏感查询值与明显认证凭据；
+- SyncRun scope 使用统一递归安全检查，凭据字段不写入审计 JSON；
 - SyncRun 不能通过 Admin 新增、修改状态或删除；
 - 不访问真实网络，不创建原始数据或核心领域模型。
 
@@ -123,6 +125,8 @@
 - 相同来源、请求指纹和正文重复获取不会复制 payload；
 - 同一运行幂等重跑不复制 observation，后续运行观察相同正文会追加自己的 observation；
 - 内容 SHA-256、脱敏请求指纹、payload 实际大小和解析状态受 service 与数据库约束保护；
+- source URL 拒绝 userinfo、移除 fragment，并以稳定标记替换敏感查询值；安全查询条件参与规范化指纹；
+- 明显包含认证字段或 Authorization/Basic/Bearer 凭据的原始正文在落库前拒绝；
 - 初始单条 payload 数据库硬上限为 1 MiB，运行配置只能下调；
 - RawDataRecord 和 RawDataObservation 在 Admin 中不可新增、修改或删除；
 - 测试不访问真实网络，不创建来源证据、变更审计或核心领域模型。
@@ -138,6 +142,7 @@
 - 数据库复合外键保证 sync_run/raw record 对应已存在 observation，service 额外校验来源一致；
 - confidence、normalizer version、evidence_key 和 target type 有数据库约束；
 - raw/normalized JSON 中的凭据键和显式认证文本被拒绝；
+- URL、请求身份、同步 scope、来源证据和错误摘要共用集中安全规则，不在不同 Service 维护互相漂移的名单；
 - 同一 RawDataRecord、目标、字段、标准化值和规则版本连续写入两次只保留一条证据；不同 RawDataRecord 的相同标准化事实分别留证；
 - SourceEvidence Admin 可按权限查看，但不可新增、修改或删除；
 - 不访问真实网络，不创建 DataChange、AuditRecord 或核心领域模型。

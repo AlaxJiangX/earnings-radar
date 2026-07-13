@@ -1,9 +1,6 @@
 import hashlib
 import json
-import math
-import re
 import uuid
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -11,31 +8,14 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from audit.models import RawDataObservation, RawDataRecord, SourceEvidence, SyncRun
+from audit.security import (
+    InvalidAuditValue,
+    SensitiveAuditData,
+    is_sensitive_field_name,
+    normalize_json_without_credentials,
+)
 
 _CONFIDENCE_QUANTUM = Decimal("0.0001")
-_NON_ALPHANUMERIC_RE = re.compile(r"[^a-z0-9]")
-_SENSITIVE_KEY_SUFFIXES = (
-    "accesstoken",
-    "apikey",
-    "authorization",
-    "clientsecret",
-    "cookie",
-    "password",
-    "refreshtoken",
-    "secret",
-    "session",
-    "sessionid",
-    "signature",
-    "token",
-)
-_SENSITIVE_TEXT_RE = re.compile(
-    r"(?i)(?:"
-    r"\bauthorization\b\s*[:=]\s*(?:bearer|basic)?\s*[^\s,;}]+"
-    r"|\bbearer\s+[^\s,;}]+"
-    r"|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|token)\b"
-    r"\s*[:=]\s*[^\s,;}]+"
-    r")"
-)
 
 
 class InvalidSourceEvidence(ValueError):
@@ -168,7 +148,7 @@ def _normalize_field_name(field_name: str) -> str:
     normalized = field_name.strip()
     if len(normalized) > 100:
         raise InvalidSourceEvidence("field_name must be at most 100 characters.")
-    if normalized and _is_sensitive_key(normalized):
+    if normalized and is_sensitive_field_name(normalized):
         raise SensitiveEvidenceValue("field_name must not identify a credential field.")
     return normalized
 
@@ -195,7 +175,12 @@ def _normalize_confidence(value: Decimal | int | float | str) -> Decimal:
 
 
 def _canonicalize_json(value: object, *, value_name: str) -> tuple[object, str]:
-    normalized = _normalize_json_value(value, path=value_name)
+    try:
+        normalized = normalize_json_without_credentials(value, value_name=value_name)
+    except SensitiveAuditData as error:
+        raise SensitiveEvidenceValue(str(error)) from None
+    except InvalidAuditValue as error:
+        raise InvalidSourceEvidence(str(error)) from None
     try:
         canonical = json.dumps(
             normalized,
@@ -207,38 +192,6 @@ def _canonicalize_json(value: object, *, value_name: str) -> tuple[object, str]:
     except (TypeError, ValueError, OverflowError) as error:
         raise InvalidSourceEvidence(f"{value_name} must be valid JSON data.") from error
     return normalized, canonical
-
-
-def _normalize_json_value(value: object, *, path: str) -> object:
-    if isinstance(value, Mapping):
-        result: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise InvalidSourceEvidence(f"{path} JSON object keys must be strings.")
-            if _is_sensitive_key(key):
-                raise SensitiveEvidenceValue(f"{path} contains a credential-like key.")
-            result[key] = _normalize_json_value(item, path=f"{path}.{key}")
-        return result
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [
-            _normalize_json_value(item, path=f"{path}[{index}]") for index, item in enumerate(value)
-        ]
-    if value is None or isinstance(value, bool | int):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise InvalidSourceEvidence(f"{path} must not contain NaN or infinity.")
-        return value
-    if isinstance(value, str):
-        if _SENSITIVE_TEXT_RE.search(value):
-            raise SensitiveEvidenceValue(f"{path} contains credential-like text.")
-        return value
-    raise InvalidSourceEvidence(f"{path} must contain JSON-compatible data.")
-
-
-def _is_sensitive_key(key: str) -> bool:
-    normalized = _NON_ALPHANUMERIC_RE.sub("", key.lower())
-    return any(normalized.endswith(suffix) for suffix in _SENSITIVE_KEY_SUFFIXES)
 
 
 def _build_evidence_key(

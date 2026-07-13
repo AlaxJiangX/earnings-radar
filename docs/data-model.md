@@ -356,7 +356,7 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | `id` | UUID PK |
 | `key`, `name` | 稳定唯一键/展示名 |
 | `source_type` | sec / ir / earnings_calendar / index / manual |
-| `base_url` | 来源入口 |
+| `base_url` | 来源入口；模型/Admin 校验禁止 URL userinfo、真实敏感查询值和明显认证凭据 |
 | `is_official` | boolean |
 | `provider_adapter` | 适配器标识，不存密钥 |
 | `license_notes` | 许可摘要/链接 |
@@ -384,8 +384,8 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | `id` | UUID PK |
 | `source_id` | FK DataSource |
 | `first_sync_run_id` | 首次获取任务 |
-| `source_url` | 具体 URL |
-| `request_fingerprint` | 去除密钥后的稳定请求指纹 |
+| `source_url` | 具体 URL；userinfo 被拒绝，敏感查询值替换为稳定标记，fragment 不保存 |
+| `request_fingerprint` | 去除密钥后的稳定请求指纹；保留并排序安全查询条件，不包含 fragment |
 | `fetched_at` | UTC |
 | `http_status`, `content_type`, `encoding` | 响应元数据 |
 | `content_hash` | 原始字节哈希 |
@@ -394,7 +394,7 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | `parser_status`, `parser_version`, `parse_error` | 解析状态 |
 | `created_at` | UTC |
 
-唯一约束：`source + request_fingerprint + content_hash`。请求指纹不包含凭据值，内容哈希按原始 bytes 计算。初始数据库硬上限为 1 MiB，运行配置只能下调；这是工程保护值，不替代仍待确认的长期保留和容量政策。
+唯一约束：`source + request_fingerprint + content_hash`。请求指纹不包含凭据值；同一业务请求只更换 API key 时指纹不变，安全参数变化时仍能区分请求。内容哈希按原始 bytes 计算。初始数据库硬上限为 1 MiB，运行配置只能下调；这是工程保护值，不替代仍待确认的长期保留和容量政策。明显包含认证字段或 Authorization/Basic/Bearer 凭据的正文在写库前拒绝，错误只返回不含秘密的通用说明。
 
 ### 10.4 `RawDataObservation`
 
@@ -419,7 +419,7 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | `raw_data_record_id`, `sync_run_id` | 来源链；source 从 RawDataRecord 唯一追溯，不冗余存储 |
 | `target_type`, `target_id` | 受限枚举 + 稳定 UUID；不使用 GenericForeignKey |
 | `field_name` | 可空字符串；空代表整条记录 |
-| `raw_value`, `normalized_value` | JSON；service 拒绝凭据键和显式 Token/Authorization 文本 |
+| `raw_value`, `normalized_value` | JSON；共享安全模块递归检查 dict/list/tuple，service 拒绝凭据键及显式 Authorization/Basic/Bearer 文本 |
 | `is_official` | 创建时从 RawDataRecord.source 快照派生 |
 | `confidence` | Decimal，范围 `0.0000–1.0000` |
 | `observed_at` | 从对应 RawDataObservation 取得的时区感知 UTC 时刻 |
@@ -432,6 +432,8 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 数据库使用复合外键要求 `SourceEvidence(sync_run_id, raw_data_record_id)` 对应已存在的 `RawDataObservation(sync_run_id, raw_data_record_id)`；写入 service 还校验 SyncRun 与 RawDataRecord 的 DataSource 一致。幂等键输入为 `raw_data_record_id + target_type + target_id + field_name + canonical normalized_value + normalizer_version`，不包含 raw body、DataSource、SyncRun、confidence 或 observed_at。同一 RawDataRecord 对同一目标字段产生相同标准化值和规则版本时复用原证据；不同 RawDataRecord 即使来自同一 DataSource 且标准化值相同，也分别保存证据，以保持每份原始文档的独立追溯链。
 
 同一领域记录仍可因不同来源、字段、标准化值或规则版本拥有多条证据；领域表中的 `primary_source_evidence_id` 只是当前选中来源的快捷引用。
+
+`0004_rekey_source_evidence_by_raw_record` 只正向重算 evidence_key，不删除、合并或改写证据内容；其反向迁移为 noop。若需要回退代码，必须先评估旧版 key 语义与当前数据的兼容性，不能假定反向迁移会恢复旧 key。
 
 ## 11. 变更历史与审计记录
 
