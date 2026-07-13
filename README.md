@@ -1,6 +1,6 @@
 # Earnings Radar
 
-Earnings Radar 当前处于工程骨架阶段。仓库已经包含 Django、PostgreSQL、Docker Compose、基础认证用户、健康检查和质量工具配置；财报、SEC、指数、Provider、通知等核心业务尚未实现。
+Earnings Radar 当前处于数据基础阶段。仓库已经包含 Django、PostgreSQL、Docker Compose、基础认证用户、健康检查、DataSource/SyncRun 运行记录和质量工具配置；原始数据、财报、SEC、指数、Provider、通知等后续能力尚未实现。
 
 ## 本地启动
 

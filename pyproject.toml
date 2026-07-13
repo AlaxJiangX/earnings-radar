@@ -7,7 +7,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-extend-exclude = ["accounts/migrations"]
+extend-exclude = ["accounts/migrations", "audit/migrations"]
 
 [tool.ruff.lint]
 select = ["B", "DJ", "E", "F", "I", "UP"]
@@ -20,7 +20,7 @@ indent-style = "space"
 python_version = "3.13"
 plugins = ["mypy_django_plugin.main"]
 strict = true
-exclude = ["accounts/migrations/"]
+exclude = ["accounts/migrations/", "audit/migrations/"]
 
 [tool.django-stubs]
 django_settings_module = "config.settings"
