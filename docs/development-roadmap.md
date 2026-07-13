@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A 和 2.1B-1 至 2.1B-3 的来源、原始数据、证据、变更与操作审计基础已完成；核心领域模型和真实 Provider 仍未开始。
+> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A、2.1B-1 至 2.1B-3，以及阶段 2.2 Provider 契约和测试夹具已完成；核心领域模型、同步编排器和真实 Provider 仍未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -165,16 +165,21 @@
 - DataChange/AuditRecord 模型实例和 Admin 均不可改写或删除，Admin 不显示完整 JSON；
 - 测试覆盖正常、失败、数据库约束、来源、权限、幂等、UTC 与敏感信息路径，且不访问真实网络。
 
-#### 2.2 Provider 契约和测试夹具
+#### 2.2 Provider 契约和测试夹具（已完成）
 
-交付：Provider 接口、错误分类、HTTP 超时/重试基类和固定响应夹具；不接真实业务源。
+交付：ProviderRequest/ProviderResult 接口、受限 capability、七类错误、必须注入 transport 的 HTTP 超时/重试基础层，以及固定 FakeProvider/FakeTransport；没有真实 transport、真实业务源或数据库模型。
 
 验收标准：
 
 - View 不能调用 Provider；
-- Provider 不直接写领域表；
+- Provider 不直接写领域表、SyncRun、RawDataRecord 或 RawDataObservation；
 - 超时、限速、临时失败、永久失败均有测试；
-- 每次响应先形成可追溯 RawDataRecord。
+- ProviderResult 带齐未来 RawDataRecord 所需的安全 URL、请求身份/指纹、HTTP 元数据、原始 bytes 和时区感知时间；
+- 未来同步编排器负责创建 SyncRun，并通过 audit Service 保存 RawDataRecord/RawDataObservation；本阶段不实现编排；
+- 连接/读取超时、User-Agent、1 MiB 上限、有限重试和敏感信息防护有自动测试；
+- 普通测试只使用人工 fixture，并阻断真实 HTTP；
+- 四个 capability 只预留接口，不实现真实财报、IR、SEC 或指数 Provider；
+- Ruff、mypy 和无迁移检查通过。
 
 #### 2.3 公司、CIK 与股票代码
 
@@ -507,7 +512,7 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 决策 | 最晚确认阶段 |
 |---|---|
 | 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前 |
-| 财报/指数来源与许可 | 2.2 前，真实 Provider 开发前必须完成 |
+| 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture |
 | 邮件服务、摘要时间、重试规则 | 6.4 前 |
 | 候选财报事件跨 Provider 合并阈值与取消重排 | 4.1 前；FY/52-53 周规则已由 ADR-001 确定 |
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |

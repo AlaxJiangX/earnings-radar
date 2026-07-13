@@ -27,7 +27,7 @@
 - 若前置阶段未完成，只补齐本任务不可缺少的最小前置，并明确报告；不要扩大范围。
 - 市场热门、Reddit、Telegram、Web Push、PWA、自选股分组、Celery、Redis、微服务和 SPA 均不属于 MVP，除非用户明确进入相应第二阶段。
 
-当前仓库已完成阶段 1 工程骨架、阶段 2.1A 的 DataSource/SyncRun 基础、阶段 2.1B-1 的 RawDataRecord/RawDataObservation、阶段 2.1B-2 的 SourceEvidence，以及阶段 2.1B-3 的 DataChange/AuditRecord。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建财报、指数、SEC、Provider、自选股或通知业务实现。
+当前仓库已完成阶段 1 工程骨架、阶段 2.1A 的 DataSource/SyncRun 基础、阶段 2.1B-1 的 RawDataRecord/RawDataObservation、阶段 2.1B-2 的 SourceEvidence、阶段 2.1B-3 的 DataChange/AuditRecord，以及阶段 2.2 的 Provider 契约、HTTP 传输接口与纯测试 Fake。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建财报、指数、SEC、真实 Provider、自选股或通知业务实现。
 
 ## 3. 固定技术基线
 
@@ -51,7 +51,8 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 
 - View 只处理 HTTP、权限、输入和渲染；不写核心业务规则，不直接访问外部源。
 - 业务状态转换放在 service/use-case 层；复杂只读查询放 selector/query 层。
-- Provider 只负责外部协议、原始响应和标准化输入，不直接写领域业务表。
+- Provider 只负责外部协议和安全的原始响应结果，不直接写领域业务表，也不创建 `SyncRun`、`RawDataRecord`、`RawDataObservation` 或通知。
+- 未来同步编排 Service 负责创建 `SyncRun`、调用 Provider，并且只通过 `audit.services` 保存原始记录与观察关系；Provider 不得导入 audit 模型或写入 Service。
 - 模块间通过公开 service/selector 和稳定模型引用协作，禁止循环依赖和跨 app 调用私有实现。
 - Django Admin 是受权限控制的运维入口，不是绕过领域约束的后门。
 
@@ -63,7 +64,7 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 
 - 明确的连接/读取超时、限速、User-Agent 和有限重试；
 - 区分临时错误、永久错误和数据校验错误；
-- 原始响应先保存，再标准化和核对；
+- 未来同步编排器收到 ProviderResult 后，先通过 audit Service 保存原始响应，再标准化和核对；
 - 保存 DataSource、来源 URL、抓取时间、内容哈希、原始值、标准化值、Provider/解析器版本和 SyncRun；
 - 测试使用固定 fixture/fake，不在普通 CI 中访问真实网络；
 - 真实 smoke test 单独运行并尊重上游使用条款；

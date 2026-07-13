@@ -1,5 +1,4 @@
 import hashlib
-import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -12,8 +11,8 @@ from django.utils import timezone
 from audit.models import RawDataObservation, RawDataRecord, SyncRun
 from audit.security import (
     AuditSecurityError,
+    build_safe_request_descriptor,
     ensure_payload_has_no_credentials,
-    normalize_request_identity,
     sanitize_error_summary,
     sanitize_url,
 )
@@ -49,31 +48,15 @@ def build_request_fingerprint(
     source_url: str,
     request_identity: Mapping[str, object] | None = None,
 ) -> str:
-    normalized_method = method.strip().upper()
-    if not normalized_method:
-        raise InvalidRawDataRequest("Request method must not be empty.")
     try:
-        canonical_url = sanitize_url(source_url).canonical
-        normalized_identity = normalize_request_identity(dict(request_identity or {}))
+        descriptor = build_safe_request_descriptor(
+            method=method,
+            source_url=source_url,
+            request_identity=request_identity,
+        )
     except AuditSecurityError as error:
         raise InvalidRawDataRequest(str(error)) from None
-    descriptor = {
-        "identity": normalized_identity,
-        "method": normalized_method,
-        "url": canonical_url,
-    }
-    try:
-        serialized = json.dumps(
-            descriptor,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode()
-    except (TypeError, ValueError) as error:
-        raise InvalidRawDataRequest(
-            "request_identity must contain JSON-compatible data."
-        ) from error
-    return hashlib.sha256(serialized).hexdigest()
+    return descriptor.fingerprint
 
 
 def record_raw_data_observation(

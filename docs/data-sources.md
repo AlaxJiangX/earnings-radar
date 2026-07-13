@@ -63,20 +63,37 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 
 每个 Provider 必须声明：
 
-- `provider_key`、版本、DataSource 和支持的能力；
+- 稳定 `provider_key`、版本和支持的受限能力；DataSource 由未来同步编排配置映射，不把 ORM 对象传入 Provider；
 - 请求范围、分页/游标和稳定请求指纹；
 - 连接与读取超时；
 - 上游限速、并发限制、重试上限和退避策略；
 - 身份标识要求，例如 CIK、exchange+ticker、供应商事件 ID；
 - 原始响应类型及敏感字段过滤规则；
 - normalizer/parser 版本；
-- 临时错误、永久错误、限速错误和数据校验错误；
+- timeout、临时、限速、永久、认证、校验和响应超限错误；
 - 空响应、异常缩减和 schema 变化的保护策略；
 - 可用于 smoke test 的最小安全范围。
 
-Provider 只返回原始数据引用与标准化 DTO，不直接写 Company、SecurityListing、IndexMembership、EarningsEvent 或 Filing。领域服务负责核对、事务、变更历史和通知。
+Provider 只返回安全的结构化原始结果，不直接创建 SyncRun、RawDataRecord、RawDataObservation，也不写 Company、SecurityListing、IndexMembership、EarningsEvent、Filing 或通知。未来同步编排 Service 负责创建 SyncRun、调用 Provider、通过 `audit.services` 保存原始记录和观察关系；领域服务再负责核对、事务、变更历史和通知。
 
-### 3.1 原始响应保存基线
+### 3.1 阶段 2.2 已实现契约
+
+受限 capability 为：
+
+- `earnings_calendar`；
+- `investor_relations`；
+- `sec_edgar`；
+- `index_constituents`。
+
+ProviderResult 包含 provider key/version、capability、scope、请求开始时间、安全来源 URL、HTTP status、content type、原始 bytes、抓取时间、安全请求身份、稳定指纹和安全 metadata。ProviderRequest/Result 不含 DataSource、SyncRun 或任何领域模型。
+
+HTTP 基础层使用必须注入的 transport 协议，当前不提供真实网络实现，也没有新增 HTTP 依赖。连接和读取超时是两个显式值；User-Agent 必填；响应上限不超过 1 MiB；URL userinfo 被拒绝，fragment 被丢弃，敏感 query/header 值在持久结构和指纹中统一脱敏，安全分页条件继续参与指纹。
+
+错误映射为：timeout/408 → `ProviderTimeoutError`，429 → `ProviderRateLimitError`，5xx/临时传输失败 → `ProviderTemporaryError`，401/403 → `ProviderAuthenticationError`，其他非成功状态 → `ProviderPermanentError`，无效数据 → `ProviderValidationError`，超限 → `ProviderResponseTooLargeError`。只有 timeout、rate limit 和 temporary 可以有限重试；retry-after 只保留解析后的非负秒数。
+
+测试 Fake 覆盖成功、空响应、超时、429、500、404、认证失败、无效 JSON、超限、敏感 URL、敏感响应和含模拟 Token 的传输错误。全部公司和内容均为人工虚构；普通 CI 阻断真实 HTTP，不使用真实 Key、用户数据、SEC 大型全文或第三方数据集。
+
+### 3.2 原始响应保存基线
 
 - `content_hash` 使用原始 bytes 的 SHA-256；`request_fingerprint` 使用规范化方法、URL 和不含凭据值的请求身份生成；
 - `source + request_fingerprint + content_hash` 唯一，防止同一请求正文被重复保存；
@@ -154,7 +171,7 @@ SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 
 
 ## 8. 许可与上线门
 
-每个真实 Provider 上线前必须记录：
+每个真实 Provider 开发和上线前必须记录：
 
 - 服务条款和许可链接、审查日期、负责人；
 - 是否允许自动访问、缓存原始响应、长期保留和公开再展示；
