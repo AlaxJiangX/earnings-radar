@@ -1,0 +1,27 @@
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+addopts = "-q --strict-config --strict-markers"
+python_files = ["test_*.py", "*_test.py"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["accounts/migrations"]
+
+[tool.ruff.lint]
+select = ["B", "DJ", "E", "F", "I", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.13"
+plugins = ["mypy_django_plugin.main"]
+strict = true
+exclude = ["accounts/migrations/"]
+
+[tool.django-stubs]
+django_settings_module = "config.settings"
+strict_settings = true

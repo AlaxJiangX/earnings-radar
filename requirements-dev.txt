@@ -1,0 +1,7 @@
+-r requirements.txt
+
+django-stubs[compatible-mypy]==5.2.9
+mypy==1.19.1
+pytest==9.1.1
+pytest-django==4.12.0
+ruff==0.15.21

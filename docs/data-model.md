@@ -17,15 +17,13 @@
 ## 2. 关系总览
 
 ```text
-User 1---* WatchlistItem *---1 Company 1---* SecurityListing
+User 1---* WatchlistItem *---1 Company 1---* SecurityListing 1---* IndexMembership *---1 Index
   |              |                    |             |
-  |              *---* ReminderRule   |             +-- ticker history
+  |              *---* ReminderRule   |             +-- ticker / exchange / share class history
   |                                   |
   +---* ReminderRule                  +---* EarningsEvent 1---* EarningsDateChange
   +---* Notification                  |          |
                                       |          *---* Filing (via FilingEarningsLink)
-                                      |
-Index 1---* IndexMembership *---------+
   |
   +---* IndexChangeLeg *---1 IndexChangeEvent
 
@@ -97,12 +95,13 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | `ticker` | 规范化代码 |
 | `exchange` | 规范化交易所代码 |
 | `security_name`, `security_type` | 证券名称/类型 |
+| `share_class` | A/B/C 类或其他 share class nullable |
 | `is_primary` | 当前是否为主要展示代码 |
 | `effective_from`, `effective_to` | date；有效期半开区间 |
 | `source_evidence_id` | 当前关系的主要来源证据 |
 | `created_at`, `updated_at` | UTC |
 
-约束：同一交易所和 ticker 的有效期不能重叠；同一公司同一时点最多一个主代码（可用条件约束/服务校验）。搜索索引覆盖 ticker 和公司名称。URL 使用 ticker 时应处理历史代码与歧义；长期建议内部 canonical URL 使用稳定公司 ID，但是否改变 PRD 路由待确认。
+约束：同一交易所和 ticker 的有效期不能重叠；同一公司同一时点可以有多个 listing/share class，但最多一个默认展示代码（可用条件约束/服务校验）。搜索索引覆盖 ticker 和公司名称。URL 使用 ticker 时应处理历史代码与歧义；长期建议内部 canonical URL 使用稳定公司 ID，但是否改变 PRD 路由待确认。
 
 ## 5. 指数及成分关系
 
@@ -114,7 +113,7 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | `code` | unique，如 `SP500`, `NASDAQ100`, `DJIA`, `RUSSELL2000` |
 | `name` | 展示名称 |
 | `provider_symbol` | Provider 使用的代码 nullable |
-| `tier` | 排序层级；具体顺序待确认 |
+| `index_group` | LARGE（S&P 500/Nasdaq 100/Dow 30）或 SMALL（Russell 2000） |
 | `is_enabled` | 是否纳入监控池 |
 | `created_at`, `updated_at` | UTC |
 
@@ -125,7 +124,7 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | 字段 | 说明 |
 |---|---|
 | `id` | UUID PK |
-| `index_id`, `company_id` | FK |
+| `index_id`, `security_listing_id` | FK；成员身份落到具体证券 |
 | `effective_from` | date |
 | `effective_to` | date nullable；半开区间结束 |
 | `announcement_date` | date nullable |
@@ -134,7 +133,11 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | `source_evidence_id` | 当前关系的主要证据 |
 | `created_at`, `updated_at` | UTC |
 
-约束：同一公司与指数的生效区间不得重叠；不能只依赖冗余 `is_active`，当前有效性由状态与日期推导。若为查询性能保留 `is_active`，必须由服务统一维护并有一致性测试。
+约束：同一 SecurityListing 与指数的生效区间不得重叠，membership 的有效期必须与 listing 有效期相交且不能超出已知 listing 生命周期。不能只依赖冗余 `is_active`，当前有效性由状态与日期推导。若为查询性能保留 `is_active`，必须由服务统一维护并有一致性测试。
+
+Company 不直接拥有 IndexMembership。公司级指数归属由其全部有效 SecurityListing 的有效成员关系去重聚合：任一 listing 属于某启用指数，公司即显示属于该指数；多个 share class 同属一个指数时，底层保留多条 membership，Company 页面只聚合展示。历史 ticker 对应的旧 listing 和 membership 通过有效期保留，不改写为当前 ticker。
+
+公司监控池按公司聚合计算：`存在任一有效 listing 的启用指数 membership OR 存在任一有效 WatchlistItem`。因此某个 share class 被移除不等于公司退出监控池；必须检查公司其他 listing 和用户自选股。详见 ADR-002。
 
 ### 5.3 `IndexChangeEvent`
 
@@ -144,7 +147,8 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 |---|---|
 | `id` | UUID PK |
 | `company_id` | FK Company |
-| `change_type` | ADDED / REMOVED / TRANSFERRED / PARTIAL_EXIT / FULL_EXIT / MULTI_INDEX_ADDITION / REENTERED / UPDATED / CANCELLED |
+| `movement_direction` | UPGRADE / DOWNGRADE / CROSS_INDEX / NONE |
+| `monitoring_impact` | CONTINUES / ENTERS_BASE_POOL / EXITS_BASE_POOL / REENTERS_BASE_POOL |
 | `announcement_date`, `effective_date` | date nullable |
 | `status` | announced / upcoming / effective / cancelled / corrected |
 | `previous_state`, `new_state` | JSON 快照，仅作审计/展示，不替代关系表 |
@@ -155,18 +159,21 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 
 ### 5.4 `IndexChangeLeg`
 
-保存聚合事件下的原子变化，使“Russell 2000 移除 + S&P 500 加入”既能作为一条偏移展示，又不丢失事实。
+保存聚合事件下的原子变化，使“Russell 2000 移除 + S&P 500 加入”既能作为一条偏移展示，又不丢失证券级事实。
 
 | 字段 | 说明 |
 |---|---|
 | `event_id` | FK IndexChangeEvent |
 | `index_id` | FK MarketIndex |
+| `security_listing_id` | FK SecurityListing |
 | `membership_id` | FK IndexMembership nullable |
-| `action` | ADDED / REMOVED / UPDATED / CANCELLED |
+| `action` | ADDED / REMOVED；唯一的原子动作维度 |
 | `announcement_date`, `effective_date` | date nullable |
 | `source_evidence_id` | 来源证据 |
 
-唯一建议：`event + index + action + effective_date`。聚合窗口或规则变更时，不删除旧事件，而应标记 corrected 并重建新版本/审计关系。
+唯一建议：`event + index + security_listing + action + effective_date`。同一公司、同一 effective_date 的加入和移除自动聚合；日期相差 1–7 个自然日进入待复核候选，超过 7 日保持独立。
+
+`movement_direction` 与 `monitoring_impact` 彼此独立：Russell 2000 → LARGE 为 UPGRADE，LARGE → Russell 2000 为 DOWNGRADE，S&P 500/Nasdaq 100/Dow 30 内部变化为 CROSS_INDEX，其他为 NONE。`ENTERS_BASE_POOL` 仅用于历史上从未进入过基础池的首次进入；`REENTERS_BASE_POOL` 仅用于历史上退出后重新进入。修正/取消使用 IndexChangeEvent.status 和变更历史表达，不伪装成原子动作。详见 ADR-002。
 
 ## 6. 财报事件与日期变化
 
@@ -177,23 +184,29 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | `id` | UUID PK |
 | `company_id` | FK Company |
 | `fiscal_year` | integer |
-| `fiscal_period` | Q1 / Q2 / Q3 / Q4 / FY / H1 / H2 / OTHER |
+| `period_type` | Q1 / Q2 / Q3 / FY / H1 / H2 / OTHER；年度统一为 FY |
 | `period_end_date` | date nullable |
+| `includes_q4` | boolean；FY 固定为 true，其他期间默认 false |
+| `fiscal_calendar_type` | MONTH_BASED / WEEK_BASED_52_53 / OTHER |
+| `period_length_weeks` | integer nullable；周制年度通常为 52 或 53 |
+| `identity_key` | 正式事件稳定唯一键；候选事件为空 |
+| `identity_rule_version` | 生成 identity_key 的规则版本 |
+| `identity_status` | CANDIDATE / CANONICAL |
 | `estimated_release_at` | timestamptz nullable |
 | `confirmed_release_at` | timestamptz nullable |
 | `earnings_release_at` | timestamptz nullable |
 | `conference_call_at` | timestamptz nullable |
-| `filing_8k_at` | timestamptz nullable |
-| `filing_periodic_at` | timestamptz nullable |
 | `release_session` | pre_market / after_market / during_market / unknown |
-| `status` | ESTIMATED / CONFIRMED / RELEASED / FILED / CANCELLED |
+| `status` | SCHEDULED_ESTIMATED / SCHEDULED_CONFIRMED / RELEASED / CANCELLED |
 | `confidence` | 可解释等级或数值，算法待确认 |
 | `primary_source_evidence_id` | 当前主证据 |
 | `created_at`, `updated_at` | UTC |
 
-候选唯一键：`company_id + fiscal_year + fiscal_period + period_end_date`。由于 `period_end_date` 可空、外国发行人和 Q4/FY 语义复杂，正式约束前需确定规范化规则；可先使用独立 `identity_key`，由同一规则版本稳定生成并唯一。
+正式唯一身份已确定为 `company_id + period_end_date + period_type`，并由带版本的规范化函数生成 `identity_key`。年度财报统一为 `FY + includes_q4=true`，上游 Q4 年度标签不另建事件。52/53 周通过 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不作为 period_type。`fiscal_year` 是来源/展示属性，不参与唯一键。数据库对非空 `identity_key` 设置唯一约束，并要求 CANONICAL 事件必须有 `period_end_date`、`period_type`、`identity_key` 和 `identity_rule_version`。
 
-状态转换约束：FILED 不代表所有可能文件都齐全，而是满足产品定义的监管文件条件；具体条件待确认。取消后重新安排是恢复原事件还是新事件也待确认。
+当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider 的外部事件标识和来源证据去重，不能使用 `company + fiscal_year + period_type` 作为正式身份。日期确定后由核对服务匹配或提升为 CANONICAL；候选合并、拆分和提升必须保留旧标识、来源及 DataChange，不能静默覆盖。详细决策见 ADR-001。
+
+EarningsEvent.status 只回答“财报安排/发布到了哪一步”，不回答 SEC 文件是否提交。取消后重新安排是恢复原事件还是新候选事件仍待确认。
 
 ### 6.2 `EarningsDateChange`
 
@@ -240,13 +253,26 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | 字段 | 说明 |
 |---|---|
 | `filing_id`, `earnings_event_id` | FK |
-| `relation_type` | release_8k / periodic_report / foreign_report / other |
+| `relation_type` | RELEASE_FILING / PERIODIC_FILING / OTHER；具体表单类型来自 Filing |
+| `release_filing_classification` | YES / NO / REVIEW_REQUIRED nullable；只对 release 候选使用 |
+| `classification_reason` | 分类原因或命中证据摘要 |
+| `classification_rule_version` | 分类规则版本 |
 | `confidence` | 自动匹配置信度 |
 | `match_rule_version` | 规则版本 |
 | `review_status` | auto / confirmed / rejected |
 | `created_at`, `reviewed_at`, `reviewed_by` | 审核信息 |
 
 唯一约束：`filing + earnings_event + relation_type`。
+
+### 7.3 财报页面的 Filing 派生状态
+
+不在 EarningsEvent 上保存单一 `filing_status`，以免再次压缩两个独立维度。查询层从未被 rejected 的 FilingEarningsLink 推导：
+
+- `has_release_filing`：存在 `RELEASE_FILING` 关联且 `release_filing_classification=YES`；美国公司通常为含财报材料的 8-K，外国发行人可为 6-K；
+- `has_periodic_filing`：存在 `PERIODIC_FILING` 关联；通常为 10-Q、10-K、20-F 或 40-F；
+- 每一类同时返回关联 Filing 的 form type、accepted_at 和 URL，而不仅是布尔值。
+
+REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核”。8-K/6-K 表单类型本身不能直接得出 YES。两个派生值彼此独立、与 EarningsEvent.status 也独立。允许 `RELEASED + has_release_filing=true + has_periodic_filing=false`，页面显示“财报已发布、8-K 已提交、10-Q 待提交”。文件先后顺序不触发财报生命周期倒退或前进。若未来为性能缓存派生值，缓存不能成为事实来源，并必须有一致性重算测试。详见 ADR-003。
 
 ## 8. 自选股与提醒规则
 
@@ -431,9 +457,9 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | Company | 非空规范化 CIK unique |
 | SecurityListing | exchange + ticker + 不重叠有效期 |
 | MarketIndex | code unique |
-| IndexMembership | company + index + 不重叠有效期 |
+| IndexMembership | security_listing + index + 不重叠有效期 |
 | IndexChangeEvent | aggregation_key unique |
-| EarningsEvent | identity_key unique（规则待确认） |
+| EarningsEvent | 非空 identity_key unique；规则为 company + period_end_date + period_type，带版本 |
 | EarningsDateChange | change_key unique |
 | Filing | accession_number unique |
 | WatchlistItem | user + company unique |
@@ -455,15 +481,14 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 
 ## 14. 待确认的数据决策
 
-1. 财报事件的最终唯一规则，尤其 Q4/FY、外国发行人、财年变更和未知 period end。
+1. 候选财报事件跨多个 Provider 的自动合并阈值，以及取消后重新安排的身份处理。
 2. 只有“日期 + 盘前/盘后”时如何表达精度，以及从日期升级为具体时刻是否通知。
-3. FILED 状态由首个 8-K、定期报告，还是两者满足何种组合触发。
-4. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则。
-5. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。
-6. 指数成分是否按证券还是按公司计算；同公司多个 share class 如何处理。
-7. 指数偏移合并窗口、层级方向、多指数同时加入/退出的归类规则。
-8. 来源可信度的量表、冲突胜出矩阵及人工修正是否锁定字段。
-9. 用户级与公司级 ReminderRule 的覆盖/叠加规则。
-10. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
-11. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
-12. polymorphic 来源/审计引用采用 Django ContentType 还是显式引用表；实现前需以查询和完整性测试做 ADR。
+3. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则。
+4. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。
+5. 1–7 日指数偏移候选的人工复核负责人、处理时限与默认行为。
+6. release filing 首版 exhibit/文本证据清单、REVIEW_REQUIRED 展示范围和复核时限。
+7. 来源可信度的量表、冲突胜出矩阵及人工修正是否锁定字段。
+8. 用户级与公司级 ReminderRule 的覆盖/叠加规则。
+9. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
+10. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
+11. polymorphic 来源/审计引用采用 Django ContentType 还是显式引用表；实现前需以查询和完整性测试做 ADR。
