@@ -9,6 +9,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
+`.env.example` 中的 `DJANGO_SECRET_KEY` 和 `AUDIT_IP_HASH_KEY` 是两个不同用途的占位符。本地开发可替换为本地值；生产环境必须分别注入两个不同的强随机密钥，缺少独立审计哈希密钥时应用会拒绝启动。
+
 启动后：
 
 - 健康检查：<http://localhost:8000/health/>

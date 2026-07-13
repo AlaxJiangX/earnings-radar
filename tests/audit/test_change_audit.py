@@ -29,6 +29,7 @@ from audit.services import (
     record_system_action,
     record_user_action,
 )
+from audit.services.change_audit import AUDIT_IP_HASH_CONTEXT, AUDIT_IP_HASH_VERSION
 
 
 @pytest.fixture
@@ -63,6 +64,11 @@ def _source_evidence(
         confidence=1,
         normalizer_version="change-fixture-v1",
     ).evidence
+
+
+def test_audit_ip_hash_version_and_context_are_explicit() -> None:
+    assert AUDIT_IP_HASH_VERSION == "v1"
+    assert AUDIT_IP_HASH_CONTEXT == "earnings-radar.audit.ip-hash.v1"
 
 
 @pytest.mark.django_db
@@ -459,6 +465,7 @@ def test_data_change_foreign_keys_are_protected(sync_run: SyncRun) -> None:
 
 
 @pytest.mark.django_db
+@override_settings(AUDIT_IP_HASH_KEY="fixture-audit-ip-hash-key")
 def test_record_user_action_records_hashed_ip_and_traceable_actor(actor_user: User) -> None:
     raw_ip = "203.0.113.42"
     result = record_user_action(
@@ -483,11 +490,85 @@ def test_record_user_action_records_hashed_ip_and_traceable_actor(actor_user: Us
 
 
 @pytest.mark.django_db
+def test_same_ip_and_audit_key_produce_same_hash_independent_of_django_secret(
+    actor_user: User,
+) -> None:
+    raw_ip = "203.0.113.42"
+    with override_settings(
+        AUDIT_IP_HASH_KEY="fixture-stable-audit-ip-hash-key",
+        SECRET_KEY="first-fixture-django-secret",
+    ):
+        first = record_user_action(
+            actor_user=actor_user,
+            action=AuditRecord.Action.UPDATE,
+            target_type=AuditRecord.TargetType.COMPANY,
+            target_id=uuid.uuid4(),
+            before={"status": "old"},
+            after={"status": "new"},
+            reason="Verified update.",
+            request_id="request-same-ip-key-1",
+            ip_address=raw_ip,
+        )
+
+    with override_settings(
+        AUDIT_IP_HASH_KEY="fixture-stable-audit-ip-hash-key",
+        SECRET_KEY="second-fixture-django-secret",
+    ):
+        second = record_user_action(
+            actor_user=actor_user,
+            action=AuditRecord.Action.UPDATE,
+            target_type=AuditRecord.TargetType.COMPANY,
+            target_id=uuid.uuid4(),
+            before={"status": "old"},
+            after={"status": "new"},
+            reason="Verified update.",
+            request_id="request-same-ip-key-2",
+            ip_address=raw_ip,
+        )
+
+    assert first.record.ip_hash == second.record.ip_hash
+
+
+@pytest.mark.django_db
+def test_same_ip_and_different_audit_keys_produce_different_hashes(
+    actor_user: User,
+) -> None:
+    raw_ip = "203.0.113.42"
+    with override_settings(AUDIT_IP_HASH_KEY="fixture-first-audit-ip-hash-key"):
+        first = record_user_action(
+            actor_user=actor_user,
+            action=AuditRecord.Action.UPDATE,
+            target_type=AuditRecord.TargetType.COMPANY,
+            target_id=uuid.uuid4(),
+            before={"status": "old"},
+            after={"status": "new"},
+            reason="Verified update.",
+            request_id="request-different-ip-key-1",
+            ip_address=raw_ip,
+        )
+
+    with override_settings(AUDIT_IP_HASH_KEY="fixture-second-audit-ip-hash-key"):
+        second = record_user_action(
+            actor_user=actor_user,
+            action=AuditRecord.Action.UPDATE,
+            target_type=AuditRecord.TargetType.COMPANY,
+            target_id=uuid.uuid4(),
+            before={"status": "old"},
+            after={"status": "new"},
+            reason="Verified update.",
+            request_id="request-different-ip-key-2",
+            ip_address=raw_ip,
+        )
+
+    assert first.record.ip_hash != second.record.ip_hash
+
+
+@pytest.mark.django_db
 def test_audit_idempotency_does_not_depend_on_ip_hash_key_rotation(
     actor_user: User,
 ) -> None:
     target_id = uuid.uuid4()
-    with override_settings(SECRET_KEY="first-test-signing-key"):
+    with override_settings(AUDIT_IP_HASH_KEY="fixture-first-rotation-audit-key"):
         first = record_user_action(
             actor_user=actor_user,
             action=AuditRecord.Action.UPDATE,
@@ -499,8 +580,9 @@ def test_audit_idempotency_does_not_depend_on_ip_hash_key_rotation(
             request_id="request-key-rotation-1",
             ip_address="203.0.113.42",
         )
+        first_hash = first.record.ip_hash
 
-    with override_settings(SECRET_KEY="second-test-signing-key"):
+    with override_settings(AUDIT_IP_HASH_KEY="fixture-second-rotation-audit-key"):
         repeated = record_user_action(
             actor_user=actor_user,
             action=AuditRecord.Action.UPDATE,
@@ -516,6 +598,7 @@ def test_audit_idempotency_does_not_depend_on_ip_hash_key_rotation(
     assert first.created is True
     assert repeated.created is False
     assert repeated.record.pk == first.record.pk
+    assert repeated.record.ip_hash == first_hash
     assert AuditRecord.objects.count() == 1
 
 

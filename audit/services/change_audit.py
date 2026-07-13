@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
@@ -22,6 +23,10 @@ from audit.security import (
 
 if TYPE_CHECKING:
     from accounts.models import User
+
+
+AUDIT_IP_HASH_VERSION = "v1"
+AUDIT_IP_HASH_CONTEXT = f"earnings-radar.audit.ip-hash.{AUDIT_IP_HASH_VERSION}"
 
 
 class InvalidDataChange(ValueError):
@@ -584,11 +589,12 @@ def _hash_ip_address(ip_address: str | None) -> str:
     except ValueError:
         raise InvalidAuditRecord("ip_address must be a valid IPv4 or IPv6 address.") from None
     digest = salted_hmac(
-        "earnings-radar.audit.ip-hash.v1",
+        AUDIT_IP_HASH_CONTEXT,
         normalized,
+        secret=settings.AUDIT_IP_HASH_KEY,
         algorithm="sha256",
     ).hexdigest()
-    return f"v1:{digest}"
+    return f"{AUDIT_IP_HASH_VERSION}:{digest}"
 
 
 def _verify_existing_data_change(

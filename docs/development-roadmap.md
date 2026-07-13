@@ -160,7 +160,7 @@
 - target 和 action 使用受限枚举 + UUID，不依赖未来业务 app，不使用 GenericForeignKey；
 - DataChange 规范化值相同直接跳过；变化使用包含 old/new、稳定来源和规则版本的唯一 SHA-256 change_key；
 - 自动变化至少关联 SourceEvidence 或 SyncRun，人工修正关联 User、reason 和稳定 origin_key；可实现的不变量同时落到 PostgreSQL 检查/唯一约束；
-- AuditRecord 的人工与系统入口分开，至少有 User 或 SyncRun，request_id 非空，原始 IP 只转换为带版本的 keyed HMAC；
+- AuditRecord 的人工与系统入口分开，至少有 User 或 SyncRun，request_id 非空；原始 IP 只使用生产必填、与 Django SECRET_KEY 分离的 `AUDIT_IP_HASH_KEY` 转换为带版本的 keyed HMAC；
 - old/new/before/after 复用集中递归安全检查，拒绝密码、Token、Session、Cookie、认证头、API key 和 URL 凭据；
 - DataChange/AuditRecord 模型实例和 Admin 均不可改写或删除，Admin 不显示完整 JSON；
 - 测试覆盖正常、失败、数据库约束、来源、权限、幂等、UTC 与敏感信息路径，且不访问真实网络。

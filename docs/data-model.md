@@ -491,11 +491,13 @@ target_type
 | `before`, `after` | 受控 JSON；递归拒绝密码、Session、Cookie、认证头、Token、API key 和 URL 凭据 |
 | `reason` | 任何带 actor_user 的人工操作必填 |
 | `request_id` | 非空请求/任务操作 ID；不要求全表唯一 |
-| `ip_hash` | 可空；仅保存 `v1:` + keyed HMAC-SHA256，不保存原始 IP |
+| `ip_hash` | 可空；仅保存 `v1:` + 64 位小写十六进制 keyed HMAC-SHA256，不保存原始 IP |
 | `audit_key` | 64 位小写 SHA-256，unique，用于相同操作重试幂等复用 |
 | `created_at` | UTC |
 
 AuditRecord 的 target_type 首版允许 User、DataSource、SyncRun、RawDataRecord、RawDataObservation、SourceEvidence、DataChange 以及上述领域目标。人工操作必须有 actor_user 和 reason；系统操作必须有 SyncRun；两者可以同时存在，但至少要有一个明确来源。`audit_key` 由 actor/sync、action、target、canonical before/after、reason 和 request_id 生成。ip_hash 不参与幂等键，避免哈希密钥轮换改变同一操作的身份；重试复用首次记录的 ip_hash。相同输入连续执行两次复用原记录，不提供可更新审计内容的 Service。
+
+IP 哈希 v1 使用独立环境变量 `AUDIT_IP_HASH_KEY` 和公开 context `earnings-radar.audit.ip-hash.v1`；Django `SECRET_KEY` 不参与计算，也不能作为生产回退值。生产及其他非 development/test 环境缺少独立密钥、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时拒绝启动。`v1` 前缀标识算法/context 版本，旧记录保持原值；轮换当前密钥后只影响后续新操作，不批量重算历史。若未来需要明确区分轮换代次，则新增 v2 前缀/context 并保留 v1，而不是覆盖旧值。
 
 DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和删除，Admin 只提供受权限控制的查看、筛选和截断 JSON 预览。QuerySet update/delete 与直接 SQL 仍可绕过模型方法，因此长期规范禁止业务代码使用这些路径；只有经过评审的数据库迁移可处理历史数据。保留期限和具体查看角色仍待确认。
 
