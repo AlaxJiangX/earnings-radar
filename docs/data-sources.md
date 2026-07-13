@@ -76,6 +76,14 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 
 Provider 只返回原始数据引用与标准化 DTO，不直接写 Company、SecurityListing、IndexMembership、EarningsEvent 或 Filing。领域服务负责核对、事务、变更历史和通知。
 
+### 3.1 原始响应保存基线
+
+- `content_hash` 使用原始 bytes 的 SHA-256；`request_fingerprint` 使用规范化方法、URL 和不含凭据值的请求身份生成；
+- `source + request_fingerprint + content_hash` 唯一，防止同一请求正文被重复保存；
+- 每个看到该正文的 SyncRun 通过唯一的 RawDataObservation 留痕，幂等重跑不重复 observation；
+- 初始数据库硬限制单条 payload 不超过 1 MiB，环境配置只能设置更低上限，超限内容在写库前拒绝；
+- 1 MiB 只是 alpha 前的工程保护值。供应商许可、原始响应保留期限、超限响应处理和长期存储方案仍需产品与运维确认。
+
 ## 4. 身份映射
 
 ### 4.1 公司与证券
@@ -115,6 +123,8 @@ Provider 只返回原始数据引用与标准化 DTO，不直接写 Company、Se
 | ticker/CIK | SEC 与交易所/权威标识源 | 其他源只提供匹配线索 |
 
 发生冲突时应保存所有 SourceEvidence、当前选中证据、选择规则版本和冲突状态。管理员修正必须写原因；是否锁定字段、防止后续自动覆盖仍待确认。
+
+SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 UUID，目标是否存在由后续领域 service 校验。其 evidence_key 由 RawDataRecord、目标、字段、规范化 JSON 值和 normalizer version 生成；同一 RawDataRecord 的相同标准化事实重跑时复用现有证据，不同 RawDataRecord 则分别留证。SyncRun 不进入 evidence_key，但证据写入必须引用该 SyncRun 对 RawDataRecord 的 RawDataObservation，并拒绝包含 API key、Authorization、密码、session 或 Token 的 JSON。
 
 ## 6. 数据新鲜度目标
 
@@ -171,5 +181,5 @@ Provider 只返回原始数据引用与标准化 DTO，不直接写 Company、Se
 - 首批 IR 公司清单与允许的抓取方式；
 - 字段级来源优先级和管理员修正锁定机制；
 - Provider 限速、失败重试和成本阈值；
-- 原始响应保留期限、体积上限和删除政策；
+- 原始响应保留期限、长期容量/删除政策，以及 1 MiB 初始保护值是否需要按已许可数据源调整；
 - 生产平台是否能支持计划频率及最长运行时间。

@@ -1,3 +1,23 @@
+from audit.services.raw_data import (
+    InvalidRawDataRequest,
+    InvalidRawDataTimestamp,
+    PayloadTooLarge,
+    RawDataIngestResult,
+    RawDataIntegrityError,
+    build_request_fingerprint,
+    mark_raw_data_parse_failed,
+    mark_raw_data_parsed,
+    mark_raw_data_unsupported,
+    record_raw_data_observation,
+)
+from audit.services.source_evidence import (
+    InvalidEvidenceReference,
+    InvalidSourceEvidence,
+    SensitiveEvidenceValue,
+    SourceEvidenceIntegrityError,
+    SourceEvidenceWriteResult,
+    record_source_evidence,
+)
 from audit.services.sync_runs import (
     InvalidSyncRunCount,
     InvalidSyncRunTimestamp,
@@ -10,12 +30,28 @@ from audit.services.sync_runs import (
 )
 
 __all__ = [
+    "InvalidRawDataRequest",
+    "InvalidRawDataTimestamp",
+    "InvalidEvidenceReference",
+    "InvalidSourceEvidence",
     "InvalidSyncRunCount",
     "InvalidSyncRunTimestamp",
     "InvalidSyncRunTransition",
+    "PayloadTooLarge",
+    "RawDataIngestResult",
+    "RawDataIntegrityError",
+    "SensitiveEvidenceValue",
+    "SourceEvidenceIntegrityError",
+    "SourceEvidenceWriteResult",
+    "build_request_fingerprint",
+    "mark_raw_data_parse_failed",
+    "mark_raw_data_parsed",
+    "mark_raw_data_unsupported",
     "mark_sync_run_failed",
     "mark_sync_run_partial",
     "mark_sync_run_succeeded",
+    "record_raw_data_observation",
+    "record_source_evidence",
     "start_sync_run",
     "update_sync_run_counts",
 ]

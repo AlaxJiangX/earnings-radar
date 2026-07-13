@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 1 工程骨架和阶段 2.1A 数据来源/同步运行基础已完成；核心领域模型和真实 Provider 仍未开始。
+> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A、2.1B-1 和 2.1B-2 数据来源/原始数据/来源证据基础已完成；核心领域模型和真实 Provider 仍未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -114,17 +114,44 @@
 - SyncRun 不能通过 Admin 新增、修改状态或删除；
 - 不访问真实网络，不创建原始数据或核心领域模型。
 
-#### 2.1B 原始数据、来源证据、变更与审计
+#### 2.1B-1 原始数据正文与观察
 
-交付：RawDataRecord、SourceEvidence、DataChange、AuditRecord 的模型与 Admin 只读/受控界面。
+交付：RawDataRecord、RawDataObservation、受控写入/解析状态 service 和只读 Admin。
 
 验收标准：
 
-- 相同原始正文重复获取不会复制 payload；
-- 每次运行保留统计和状态；
-- 原始数据与标准化数据分离；
-- 管理修正要求原因并记录前后值；
-- 日志和审计不保存密钥。
+- 相同来源、请求指纹和正文重复获取不会复制 payload；
+- 同一运行幂等重跑不复制 observation，后续运行观察相同正文会追加自己的 observation；
+- 内容 SHA-256、脱敏请求指纹、payload 实际大小和解析状态受 service 与数据库约束保护；
+- 初始单条 payload 数据库硬上限为 1 MiB，运行配置只能下调；
+- RawDataRecord 和 RawDataObservation 在 Admin 中不可新增、修改或删除；
+- 测试不访问真实网络，不创建来源证据、变更审计或核心领域模型。
+
+#### 2.1B-2 SourceEvidence 来源证据
+
+交付：SourceEvidence 模型、受控幂等写入 service 和只读 Admin。
+
+验收标准：
+
+- 来源证据能追溯 RawDataRecord、RawDataObservation、SyncRun、DataSource、原始值、标准化值和规则版本；
+- target 使用受限枚举和 UUID，不依赖未来领域 app，也不使用 GenericForeignKey；
+- 数据库复合外键保证 sync_run/raw record 对应已存在 observation，service 额外校验来源一致；
+- confidence、normalizer version、evidence_key 和 target type 有数据库约束；
+- raw/normalized JSON 中的凭据键和显式认证文本被拒绝；
+- 同一 RawDataRecord、目标、字段、标准化值和规则版本连续写入两次只保留一条证据；不同 RawDataRecord 的相同标准化事实分别留证；
+- SourceEvidence Admin 可按权限查看，但不可新增、修改或删除；
+- 不访问真实网络，不创建 DataChange、AuditRecord 或核心领域模型。
+
+#### 2.1B-3 DataChange 与 AuditRecord
+
+交付：DataChange、AuditRecord 的模型、受控写入 service 和只读/严格受控 Admin。
+
+验收标准：
+
+- 关键变化保存旧值、新值、来源证据、任务/操作者和原因；
+- 管理修正要求原因，普通管理员不能编辑历史审计；
+- 日志和审计不保存密钥；
+- 同一未变化输入重跑不产生重复 DataChange 或 AuditRecord。
 
 #### 2.2 Provider 契约和测试夹具
 

@@ -27,8 +27,9 @@ User 1---* WatchlistItem *---1 Company 1---* SecurityListing 1---* IndexMembersh
   |
   +---* IndexChangeLeg *---1 IndexChangeEvent
 
-DataSource 1---* RawDataRecord *---1 SyncRun
+DataSource 1---* RawDataRecord *---1 SyncRun (first_sync_run)
                      |
+                     +---* RawDataObservation *---1 SyncRun
                      +---* SourceEvidence ---* domain records
 
 User / SyncRun 1---* AuditRecord
@@ -388,28 +389,49 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | `fetched_at` | UTC |
 | `http_status`, `content_type`, `encoding` | 响应元数据 |
 | `content_hash` | 原始字节哈希 |
-| `payload` | JSON/text/binary reference；MVP 受控存 DB |
+| `payload` | 原始 bytes；MVP 受控存 DB |
+| `payload_size_bytes` | 原始 bytes 长度；必须与 payload 实际长度一致 |
 | `parser_status`, `parser_version`, `parse_error` | 解析状态 |
 | `created_at` | UTC |
 
-唯一建议：`source + request_fingerprint + content_hash`。为证明后续运行看到了同一响应，可选 `RawDataObservation(sync_run_id, raw_data_record_id, observed_at)`，唯一为 `run + raw record`，不会复制正文。
+唯一约束：`source + request_fingerprint + content_hash`。请求指纹不包含凭据值，内容哈希按原始 bytes 计算。初始数据库硬上限为 1 MiB，运行配置只能下调；这是工程保护值，不替代仍待确认的长期保留和容量政策。
 
-### 10.4 `SourceEvidence`
+### 10.4 `RawDataObservation`
+
+用于证明一次同步运行观察到了已存在的原始正文，而不复制 payload。
+
+| 字段 | 说明 |
+|---|---|
+| `id` | UUID PK |
+| `sync_run_id` | 本次观察所属 SyncRun |
+| `raw_data_record_id` | 被观察的去重正文 |
+| `observed_at` | 时区感知 UTC 时刻 |
+
+唯一约束：`sync_run + raw_data_record`。同一次运行幂等重跑不新增观察；后续运行再次看到相同正文时复用 RawDataRecord，并追加自己的观察记录。
+
+### 10.5 `SourceEvidence`
 
 将标准化值和领域记录连到原始数据。
 
 | 字段 | 说明 |
 |---|---|
 | `id` | UUID PK |
-| `raw_data_record_id`, `sync_run_id`, `source_id` | 来源链 |
-| `entity_type`, `entity_id` | 受限领域对象引用 |
-| `field_name` | 可空；空代表整条记录 |
-| `raw_value`, `normalized_value` | JSON，敏感字段需过滤 |
-| `is_official`, `confidence` | 来源性质和可信度 |
-| `observed_at` | UTC |
-| `normalizer_version` | 规则版本 |
+| `raw_data_record_id`, `sync_run_id` | 来源链；source 从 RawDataRecord 唯一追溯，不冗余存储 |
+| `target_type`, `target_id` | 受限枚举 + 稳定 UUID；不使用 GenericForeignKey |
+| `field_name` | 可空字符串；空代表整条记录 |
+| `raw_value`, `normalized_value` | JSON；service 拒绝凭据键和显式 Token/Authorization 文本 |
+| `is_official` | 创建时从 RawDataRecord.source 快照派生 |
+| `confidence` | Decimal，范围 `0.0000–1.0000` |
+| `observed_at` | 从对应 RawDataObservation 取得的时区感知 UTC 时刻 |
+| `normalizer_version` | 非空规则版本 |
+| `evidence_key` | SHA-256 稳定唯一幂等键 |
+| `created_at` | UTC |
 
-同一领域记录可有多条证据；领域表中的 `primary_source_evidence_id` 只是当前选中来源的快捷引用。
+`target_type` 首版只允许 Company、SecurityListing、MarketIndex、IndexMembership、IndexChangeEvent、IndexChangeLeg、EarningsEvent、EarningsDateChange、Filing、FilingDocument 和 FilingEarningsLink。audit app 不导入这些未来业务 app；后续领域 service 负责确认 target UUID 对应对象存在。
+
+数据库使用复合外键要求 `SourceEvidence(sync_run_id, raw_data_record_id)` 对应已存在的 `RawDataObservation(sync_run_id, raw_data_record_id)`；写入 service 还校验 SyncRun 与 RawDataRecord 的 DataSource 一致。幂等键输入为 `raw_data_record_id + target_type + target_id + field_name + canonical normalized_value + normalizer_version`，不包含 raw body、DataSource、SyncRun、confidence 或 observed_at。同一 RawDataRecord 对同一目标字段产生相同标准化值和规则版本时复用原证据；不同 RawDataRecord 即使来自同一 DataSource 且标准化值相同，也分别保存证据，以保持每份原始文档的独立追溯链。
+
+同一领域记录仍可因不同来源、字段、标准化值或规则版本拥有多条证据；领域表中的 `primary_source_evidence_id` 只是当前选中来源的快捷引用。
 
 ## 11. 变更历史与审计记录
 
@@ -466,6 +488,7 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | ReminderRule | null-safe user/company/event/channel/lead unique |
 | Notification | idempotency_key unique |
 | RawDataRecord | source + request_fingerprint + content_hash unique |
+| SourceEvidence | evidence_key unique；raw data record + target + field + normalized value + normalizer version |
 | DataChange | change_key unique |
 
 并发写入必须捕获唯一冲突后读取已存在记录，不能依赖“先查后写”。
@@ -491,4 +514,4 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 8. 用户级与公司级 ReminderRule 的覆盖/叠加规则。
 9. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
 10. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
-11. polymorphic 来源/审计引用采用 Django ContentType 还是显式引用表；实现前需以查询和完整性测试做 ADR。
+11. AuditRecord 的 polymorphic 目标引用方式仍待实现阶段确认；SourceEvidence 已使用受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。

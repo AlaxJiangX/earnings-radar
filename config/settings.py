@@ -3,6 +3,8 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
+from audit.constants import RAW_DATA_PAYLOAD_DB_LIMIT_BYTES
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -11,6 +13,18 @@ def env_bool(name: str, *, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_positive_int(name: str, *, default: int, maximum: int | None = None) -> int:
+    raw_value = os.getenv(name, str(default))
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise ImproperlyConfigured(f"{name} must be an integer.") from error
+    if value <= 0 or (maximum is not None and value > maximum):
+        maximum_note = f" and at most {maximum}" if maximum is not None else ""
+        raise ImproperlyConfigured(f"{name} must be positive{maximum_note}.")
+    return value
 
 
 DJANGO_ENV = os.getenv("DJANGO_ENV", "development")
@@ -96,3 +110,9 @@ USE_TZ = True
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
+
+RAW_DATA_MAX_PAYLOAD_BYTES = env_positive_int(
+    "RAW_DATA_MAX_PAYLOAD_BYTES",
+    default=RAW_DATA_PAYLOAD_DB_LIMIT_BYTES,
+    maximum=RAW_DATA_PAYLOAD_DB_LIMIT_BYTES,
+)

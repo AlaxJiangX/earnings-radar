@@ -27,7 +27,7 @@
 - 若前置阶段未完成，只补齐本任务不可缺少的最小前置，并明确报告；不要扩大范围。
 - 市场热门、Reddit、Telegram、Web Push、PWA、自选股分组、Celery、Redis、微服务和 SPA 均不属于 MVP，除非用户明确进入相应第二阶段。
 
-当前仓库已完成阶段 1 工程骨架和阶段 2.1A 的 DataSource/SyncRun 基础。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建 RawDataRecord、SourceEvidence、DataChange、AuditRecord、财报、指数、SEC、Provider、自选股或通知业务实现。
+当前仓库已完成阶段 1 工程骨架、阶段 2.1A 的 DataSource/SyncRun 基础、阶段 2.1B-1 的 RawDataRecord/RawDataObservation 原始数据基础，以及阶段 2.1B-2 的 SourceEvidence 来源证据基础。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建 DataChange、AuditRecord、财报、指数、SEC、Provider、自选股或通知业务实现。
 
 ## 3. 固定技术基线
 

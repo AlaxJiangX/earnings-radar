@@ -1,6 +1,6 @@
 # Earnings Radar
 
-Earnings Radar 当前处于数据基础阶段。仓库已经包含 Django、PostgreSQL、Docker Compose、基础认证用户、健康检查、DataSource/SyncRun 运行记录和质量工具配置；原始数据、财报、SEC、指数、Provider、通知等后续能力尚未实现。
+Earnings Radar 当前处于数据基础阶段。仓库已经包含 Django、PostgreSQL、Docker Compose、基础认证用户、健康检查、DataSource/SyncRun 运行记录、RawDataRecord/RawDataObservation 原始响应去重与观察记录、SourceEvidence 来源证据，以及质量工具配置；DataChange/AuditRecord 变更审计、财报、SEC、指数、Provider、通知等后续能力尚未实现。
 
 ## 本地启动
 
