@@ -1,6 +1,6 @@
 # Earnings Radar
 
-Earnings Radar 当前处于数据基础阶段。仓库已经包含 Django、PostgreSQL、Docker Compose、基础认证用户、健康检查、DataSource/SyncRun 运行记录、RawDataRecord/RawDataObservation 原始响应去重与观察记录、SourceEvidence 来源证据，以及统一的凭据拦截、URL 清理和安全请求指纹；DataChange/AuditRecord 变更审计、财报、SEC、指数、Provider、通知等后续能力尚未实现。
+Earnings Radar 当前处于数据基础阶段。仓库已经包含 Django、PostgreSQL、Docker Compose、基础认证用户、健康检查、DataSource/SyncRun 运行记录、RawDataRecord/RawDataObservation 原始响应去重与观察记录、SourceEvidence 来源证据、DataChange 字段变更历史、AuditRecord 操作审计，以及统一的凭据拦截、URL 清理和安全请求指纹；财报、SEC、指数、Provider、通知等后续能力尚未实现。
 
 ## 本地启动
 
@@ -8,6 +8,8 @@ Earnings Radar 当前处于数据基础阶段。仓库已经包含 Django、Post
 cp .env.example .env
 docker compose up --build
 ```
+
+`.env.example` 中的 `DJANGO_SECRET_KEY` 和 `AUDIT_IP_HASH_KEY` 是两个不同用途的占位符。本地开发可替换为本地值；生产环境必须分别注入两个不同的强随机密钥，缺少独立审计哈希密钥时应用会拒绝启动。
 
 启动后：
 
@@ -37,4 +39,4 @@ docker compose run --rm web mypy .
 
 开始任何任务前，完整阅读 `AGENTS.md`、PRD、架构、数据模型、数据源、全部 ADR 和开发路线图。一次只完成路线图中的一个明确任务，不得提前实现第二阶段能力或未授权的核心业务模型。
 
-审计数据的 URL userinfo 会被拒绝，敏感查询值会被稳定脱敏，URL fragment 不参与保存或请求指纹；明显认证凭据不得写入同步 scope、原始正文或 SourceEvidence。安全查询条件仍会参与指纹，因此不同分页或业务筛选不会被错误合并。
+审计数据的 URL userinfo 会被拒绝，敏感查询值会被稳定脱敏，URL fragment 不参与保存或请求指纹；明显认证凭据不得写入同步 scope、原始正文、SourceEvidence、DataChange 或 AuditRecord。安全查询条件仍会参与指纹，因此不同分页或业务筛选不会被错误合并。字段变化和操作审计只能通过受控 Service 追加，Admin 只显示截断预览且不允许增删改。

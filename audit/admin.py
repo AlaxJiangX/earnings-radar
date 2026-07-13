@@ -1,7 +1,24 @@
+import json
+
 from django.contrib import admin
 from django.http import HttpRequest
 
-from audit.models import DataSource, RawDataObservation, RawDataRecord, SourceEvidence, SyncRun
+from audit.models import (
+    AuditRecord,
+    DataChange,
+    DataSource,
+    RawDataObservation,
+    RawDataRecord,
+    SourceEvidence,
+    SyncRun,
+)
+
+
+def _json_preview(value: object, *, maximum_length: int = 240) -> str:
+    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if len(rendered) <= maximum_length:
+        return rendered
+    return f"{rendered[: maximum_length - 3]}..."
 
 
 @admin.register(DataSource)
@@ -148,5 +165,100 @@ class SourceEvidenceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
         self,
         request: HttpRequest,
         obj: SourceEvidence | None = None,
+    ) -> bool:
+        return False
+
+
+@admin.register(DataChange)
+class DataChangeAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    list_display = (
+        "target_type",
+        "target_id",
+        "field_name",
+        "actor_user",
+        "sync_run",
+        "changed_at",
+    )
+    list_filter = ("target_type", "changed_at", "actor_user", "sync_run")
+    search_fields = ("=change_key", "=target_id", "field_name", "origin_key", "reason")
+    ordering = ("-changed_at",)
+    date_hierarchy = "changed_at"
+    list_select_related = ("actor_user", "sync_run", "source_evidence")
+    exclude = ("old_value", "new_value")
+    readonly_fields = tuple(
+        field.name
+        for field in DataChange._meta.fields
+        if field.name not in {"old_value", "new_value"}
+    ) + ("old_value_preview", "new_value_preview")
+
+    @admin.display(description="Old value preview")
+    def old_value_preview(self, obj: DataChange) -> str:
+        return _json_preview(obj.old_value)
+
+    @admin.display(description="New value preview")
+    def new_value_preview(self, obj: DataChange) -> str:
+        return _json_preview(obj.new_value)
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(
+        self,
+        request: HttpRequest,
+        obj: DataChange | None = None,
+    ) -> bool:
+        return False
+
+    def has_delete_permission(
+        self,
+        request: HttpRequest,
+        obj: DataChange | None = None,
+    ) -> bool:
+        return False
+
+
+@admin.register(AuditRecord)
+class AuditRecordAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    list_display = (
+        "action",
+        "target_type",
+        "target_id",
+        "actor_user",
+        "sync_run",
+        "request_id",
+        "created_at",
+    )
+    list_filter = ("action", "target_type", "created_at", "actor_user", "sync_run")
+    search_fields = ("=audit_key", "=target_id", "request_id", "reason")
+    ordering = ("-created_at",)
+    date_hierarchy = "created_at"
+    list_select_related = ("actor_user", "sync_run")
+    exclude = ("before", "after")
+    readonly_fields = tuple(
+        field.name for field in AuditRecord._meta.fields if field.name not in {"before", "after"}
+    ) + ("before_preview", "after_preview")
+
+    @admin.display(description="Before preview")
+    def before_preview(self, obj: AuditRecord) -> str:
+        return _json_preview(obj.before)
+
+    @admin.display(description="After preview")
+    def after_preview(self, obj: AuditRecord) -> str:
+        return _json_preview(obj.after)
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(
+        self,
+        request: HttpRequest,
+        obj: AuditRecord | None = None,
+    ) -> bool:
+        return False
+
+    def has_delete_permission(
+        self,
+        request: HttpRequest,
+        obj: AuditRecord | None = None,
     ) -> bool:
         return False

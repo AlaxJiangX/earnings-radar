@@ -5,7 +5,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from urllib.parse import SplitResult, parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
@@ -133,6 +133,8 @@ def sanitize_error_summary(summary: str, *, maximum_length: int = 2000) -> str:
 
 def sanitize_url(value: str) -> SanitizedUrl:
     parts, query_pairs = _parse_url(value)
+    if contains_authentication_credential(unquote(parts.path)):
+        raise SensitiveAuditData("URL path must not contain credentials.")
     sanitized_pairs = [
         (
             key,
@@ -152,24 +154,25 @@ def validate_safe_base_url(value: str) -> None:
     if not value:
         return
     try:
-        parts, query_pairs = _parse_url(value)
+        ensure_url_has_no_credentials(value)
     except AuditSecurityError as error:
         raise ValidationError(str(error), code="unsafe_base_url") from None
 
+
+def ensure_url_has_no_credentials(value: str) -> None:
+    if _URL_USERINFO_RE.search(value):
+        raise SensitiveAuditData("URL must not contain user credentials.")
+    parts, query_pairs = _parse_url(value)
     if any(
         (is_sensitive_field_name(key) and item not in {"", REDACTED_VALUE})
         or contains_authentication_credential(item)
         for key, item in query_pairs
     ):
-        raise ValidationError(
-            "Base URL must not contain credential query values.",
-            code="unsafe_base_url_query",
-        )
-    if parts.fragment and contains_authentication_credential(parts.fragment):
-        raise ValidationError(
-            "Base URL fragment must not contain credentials.",
-            code="unsafe_base_url_fragment",
-        )
+        raise SensitiveAuditData("URL must not contain credential query values.")
+    if contains_authentication_credential(unquote(parts.path)):
+        raise SensitiveAuditData("URL path must not contain credentials.")
+    if parts.fragment and contains_authentication_credential(unquote(parts.fragment)):
+        raise SensitiveAuditData("URL fragment must not contain credentials.")
 
 
 def normalize_request_identity(value: object) -> object:
@@ -219,6 +222,8 @@ def normalize_json_without_credentials(value: object, *, value_name: str) -> obj
             raise InvalidAuditValue(f"{value_name} must not contain NaN or infinity.")
         return value
     if isinstance(value, str):
+        if value.lower().startswith(("http://", "https://")):
+            ensure_url_has_no_credentials(value)
         if contains_authentication_credential(value):
             raise SensitiveAuditData(f"{value_name} contains credential-like data.")
         return value

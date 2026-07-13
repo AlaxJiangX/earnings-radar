@@ -26,6 +26,7 @@ jobs:
     env:
       DJANGO_ENV: test
       DJANGO_SECRET_KEY: ci-only-secret-key
+      AUDIT_IP_HASH_KEY: ci-only-audit-ip-hash-key
       DJANGO_DEBUG: "false"
       DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,testserver
       POSTGRES_DB: earnings_radar
