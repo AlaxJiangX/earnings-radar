@@ -7,6 +7,7 @@ from audit.services.change_audit import (
     InvalidDataChange,
     SensitiveAuditRecordValue,
     SensitiveDataChangeValue,
+    build_data_change_key,
     record_data_change,
     record_system_action,
     record_user_action,
@@ -47,6 +48,7 @@ from audit.services.sync_runs import (
 __all__ = [
     "AuditRecordIntegrityError",
     "AuditRecordWriteResult",
+    "build_data_change_key",
     "DataChangeIntegrityError",
     "DataChangeWriteResult",
     "InvalidAuditRecord",

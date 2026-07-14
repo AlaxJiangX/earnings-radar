@@ -160,12 +160,12 @@ def record_data_change(
             except InvalidEvidenceReference as error:
                 raise InvalidDataChange(str(error)) from None
             current_evidence = evidence_reference.evidence
-        change_key = _build_change_key(
+        change_key = build_data_change_key(
             target_type=normalized_target_type,
             target_id=normalized_target_id,
             field_name=normalized_field_name,
-            canonical_old_value=canonical_old,
-            canonical_new_value=canonical_new,
+            old_value=normalized_old,
+            new_value=normalized_new,
             rule_version=normalized_rule,
             source_evidence=current_evidence,
             sync_run=current_sync_run,
@@ -488,7 +488,48 @@ def _load_source_evidence(source_evidence: SourceEvidence | None) -> SourceEvide
     )
 
 
-def _build_change_key(
+def build_data_change_key(
+    *,
+    target_type: str,
+    target_id: uuid.UUID,
+    field_name: str,
+    old_value: object,
+    new_value: object,
+    rule_version: str,
+    source_evidence: SourceEvidence | None,
+    sync_run: SyncRun | None,
+    actor_user: User | None,
+    origin_key: str,
+) -> str:
+    """Build a stable DataChange key with the canonical JSON rules used by writes.
+
+    This function is pure; callers remain responsible for validating domain and
+    persistence invariants before they use its result.
+    """
+
+    _, canonical_old_value = _canonicalize_secure_json(
+        old_value,
+        value_name="DataChange old_value",
+    )
+    _, canonical_new_value = _canonicalize_secure_json(
+        new_value,
+        value_name="DataChange new_value",
+    )
+    return _build_data_change_key_from_canonical_values(
+        target_type=target_type,
+        target_id=target_id,
+        field_name=field_name,
+        canonical_old_value=canonical_old_value,
+        canonical_new_value=canonical_new_value,
+        rule_version=rule_version,
+        source_evidence=source_evidence,
+        sync_run=sync_run,
+        actor_user=actor_user,
+        origin_key=origin_key,
+    )
+
+
+def _build_data_change_key_from_canonical_values(
     *,
     target_type: str,
     target_id: uuid.UUID,

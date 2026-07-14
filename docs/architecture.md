@@ -77,7 +77,7 @@ tests/                   单元、服务、集成和页面测试
 
 Provider 适配器不得写入业务表或 audit 表；它返回结构化原始结果，未来同步编排 Service 再通过 `audit.services` 统一落库。View 和模板不得调用 Provider，也不得包含状态转换、优先级计算或外部请求。
 
-`companies.services` 是当前 Company 与 SecurityListing 的唯一写入入口。它在 PostgreSQL 事务内规范化 CIK、ticker 与交易所代码，使用数据库唯一/排他约束处理重跑与并发冲突，并在创建时追加 `AuditRecord`、在字段实际变化时通过 `audit.services.record_data_change` 追加 `DataChange`。SecurityListing 的 company、ticker、exchange 与有效期是历史身份，不能原地更新；专用切换用例在同一事务关闭旧 `[start, end)` 区间并创建新的后继 listing。已关闭旧 listing 的重放不能只凭后继存在返回成功：Service 必须只读核对关闭的 DataChange、旧 listing AuditRecord 和后继创建 AuditRecord 的完整身份；任一缺失或不一致均停止并交由人工核查，不伪造审计历史。领域 Service 对 SourceEvidence 只按主键重新加载持久化来源链，并校验证据目标、SyncRun、DataSource 和 RawDataObservation 后才写领域记录或审计。`companies` 不调用 Provider、不创建 SyncRun，也不反向修改 audit 历史；未来同步编排器在原始数据与来源证据已经落库后才调用该领域 Service。
+`companies.services` 是当前 Company 与 SecurityListing 的唯一写入入口。它在 PostgreSQL 事务内规范化 CIK、ticker 与交易所代码，使用数据库唯一/排他约束处理重跑与并发冲突，并在创建时追加 `AuditRecord`、在字段实际变化时通过 `audit.services.record_data_change` 追加 `DataChange`。SecurityListing 的 company、ticker、exchange 与有效期是历史身份，不能原地更新；专用切换用例在同一事务关闭旧 `[start, end)` 区间并创建新的后继 listing。已关闭旧 listing 的重放不能只凭后继存在返回成功：Service 必须只读核对关闭的 DataChange（包括由 audit 公共计算函数重算的 `change_key`）、旧 listing AuditRecord 和后继创建 AuditRecord 的完整身份；任一缺失或不一致均停止并交由人工核查，不伪造或改写审计历史。领域 Service 对 SourceEvidence 只按主键重新加载持久化来源链，并校验证据目标、SyncRun、DataSource 和 RawDataObservation 后才写领域记录或审计。`companies` 不调用 Provider、不创建 SyncRun，也不反向修改 audit 历史；未来同步编排器在原始数据与来源证据已经落库后才调用该领域 Service。
 
 ## 4. Provider 适配器
 

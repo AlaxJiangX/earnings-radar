@@ -16,6 +16,7 @@ from audit.services import (
     DataChangeWriteResult,
     InvalidEvidenceReference,
     SourceEvidenceReference,
+    build_data_change_key,
     record_data_change,
     record_system_action,
     record_user_action,
@@ -883,6 +884,18 @@ def _assert_transition_audit_complete(
     expected_transition_value = transition_date.isoformat()
     if prior_after["effective_to"] != expected_transition_value:
         _raise_incomplete_transition_audit()
+    expected_data_change_key = build_data_change_key(
+        target_type=DataChange.TargetType.SECURITY_LISTING,
+        target_id=prior_listing.pk,
+        field_name="effective_to",
+        old_value=prior_before["effective_to"],
+        new_value=expected_transition_value,
+        rule_version=IDENTITY_RULE_VERSION,
+        source_evidence=closing_context.source_evidence,
+        sync_run=closing_context.sync_run,
+        actor_user=closing_context.actor_user,
+        origin_key=expected_data_change_origin,
+    )
 
     data_change_candidates = DataChange.objects.filter(
         target_type=DataChange.TargetType.SECURITY_LISTING,
@@ -898,6 +911,7 @@ def _assert_transition_audit_complete(
     data_change_exists = any(
         change.old_value == prior_before["effective_to"]
         and change.new_value == expected_transition_value
+        and change.change_key == expected_data_change_key
         for change in data_change_candidates
     )
     if not data_change_exists:

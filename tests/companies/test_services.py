@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import date
 
@@ -11,12 +12,14 @@ from audit.models import AuditRecord, DataChange, DataSource, SourceEvidence, Sy
 from audit.services import (
     DataChangeWriteResult,
     SensitiveDataChangeValue,
+    build_data_change_key,
     record_raw_data_observation,
     record_source_evidence,
     start_sync_run,
 )
 from companies.models import Company, SecurityListing
 from companies.services import (
+    IDENTITY_RULE_VERSION,
     CompanyIdentityConflict,
     CompanyServiceError,
     ListingIdentityConflict,
@@ -723,6 +726,28 @@ def test_transition_listing_is_idempotent_only_for_same_closed_successor(
 
 
 @pytest.mark.django_db
+def test_transition_change_key_matches_the_public_audit_calculation(
+    company_sync_run: SyncRun,
+) -> None:
+    prior, transition = _completed_listing_transition(company_sync_run)
+    data_change = transition.data_changes[0].change
+    assert data_change is not None
+
+    assert data_change.change_key == build_data_change_key(
+        target_type=DataChange.TargetType.SECURITY_LISTING,
+        target_id=prior.pk,
+        field_name="effective_to",
+        old_value=None,
+        new_value="2026-03-01",
+        rule_version=IDENTITY_RULE_VERSION,
+        source_evidence=None,
+        sync_run=company_sync_run,
+        actor_user=None,
+        origin_key=f"sync_run:{company_sync_run.pk}",
+    )
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize("missing_record", ("data_change", "prior_audit", "successor_audit"))
 def test_transition_replay_rejects_missing_audit_history(
     company_sync_run: SyncRun,
@@ -765,9 +790,13 @@ def test_transition_replay_rejects_missing_audit_history(
         "data_change_new_value",
         "data_change_field_name",
         "data_change_origin_key",
+        "data_change_change_key",
         "prior_audit_action",
+        "prior_audit_after",
         "successor_audit_target",
         "prior_audit_request_id",
+        "successor_audit_request_id",
+        "data_change_sync_run",
     ),
 )
 def test_transition_replay_rejects_inconsistent_audit_history(
@@ -788,18 +817,38 @@ def test_transition_replay_rejects_inconsistent_audit_history(
         DataChange.objects.filter(pk=data_change.pk).update(field_name="security_name")
     elif corruption == "data_change_origin_key":
         DataChange.objects.filter(pk=data_change.pk).update(origin_key="other-operation")
+    elif corruption == "data_change_change_key":
+        DataChange.objects.filter(pk=data_change.pk).update(
+            change_key=hashlib.sha256(b"wrong-but-valid-transition-key").hexdigest()
+        )
     elif corruption == "prior_audit_action":
         AuditRecord.objects.filter(pk=transition.prior_audit_record.pk).update(
             action=AuditRecord.Action.DEACTIVATE
+        )
+    elif corruption == "prior_audit_after":
+        AuditRecord.objects.filter(pk=transition.prior_audit_record.pk).update(
+            after={"effective_to": "2026-03-02"}
         )
     elif corruption == "successor_audit_target":
         AuditRecord.objects.filter(pk=transition.successor_audit_record.pk).update(
             target_id=uuid.uuid4()
         )
-    else:
+    elif corruption == "prior_audit_request_id":
         AuditRecord.objects.filter(pk=transition.prior_audit_record.pk).update(
             request_id="other-request"
         )
+    elif corruption == "successor_audit_request_id":
+        AuditRecord.objects.filter(pk=transition.successor_audit_record.pk).update(
+            request_id="other-successor-request"
+        )
+    else:
+        other_run = start_sync_run(
+            job_type="fixture.company-transition-other",
+            source=company_sync_run.source,
+            scope={"fixture": "transition-other"},
+            idempotency_key="fixture.company-transition-other:initial",
+        )
+        DataChange.objects.filter(pk=data_change.pk).update(sync_run=other_run)
 
     audit_count = AuditRecord.objects.count()
     change_count = DataChange.objects.count()

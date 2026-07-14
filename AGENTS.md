@@ -84,7 +84,7 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 - 值没有变化时不创建 DataChange、日期变化或通知；
 - 当前值变化时，在可靠事务中保存旧值、新值、来源、任务 ID、操作者/系统身份和原因；
 - DataChange 和 AuditRecord 只能通过 `audit.services` 的公开写入函数追加；不得用 Admin、模型实例更新、QuerySet update/delete 或通用写库接口改写/删除历史；
-- Company 和 SecurityListing 只能通过 `companies.services` 的公开写入函数创建或更新；创建必须追加 AuditRecord，字段变化必须追加 DataChange，Admin 不得成为写入后门。SecurityListing 的 company、ticker、exchange 和有效期不得原地改写，必须通过原子后继切换关闭旧区间并创建新记录；幂等重放除领域记录外还必须精确验证该切换的 DataChange、旧 listing AuditRecord 和后继创建 AuditRecord，异常历史必须拒绝并人工核查，绝不自动补写；
+- Company 和 SecurityListing 只能通过 `companies.services` 的公开写入函数创建或更新；创建必须追加 AuditRecord，字段变化必须追加 DataChange，Admin 不得成为写入后门。SecurityListing 的 company、ticker、exchange 和有效期不得原地改写，必须通过原子后继切换关闭旧区间并创建新记录；幂等重放除领域记录外还必须精确验证该切换的 DataChange（包括用 audit 公共计算函数重算并核对 `change_key`）、旧 listing AuditRecord 和后继创建 AuditRecord，字段正确但 key 不一致同样属于异常历史，必须拒绝并人工核查，绝不自动补写或改写；
 - 关键历史记录使用结束有效期、停用、取消或修正，不物理删除；
 - 指数偏移保留底层加入/移除原子事实，再创建聚合事件；
 - 通知使用稳定 `idempotency_key`，发送尝试单独追加记录。
