@@ -243,60 +243,76 @@ class TestSetIndexEnabled:
             "must go through select_for_update inside the atomic block"
         )
 
-    def test_concurrent_toggle_reads_correct_value(self, db: object, user: User) -> None:
-        """Regression: raw-SQL concurrent update must not cause
-        set_index_enabled to no-op.
+    def test_toggle_uses_current_database_value_for_audit(self, db: object, user: User) -> None:
+        """Verify that set_index_enabled reads the current committed value
+        from the database, even after an external modification.
 
-        We simulate a concurrent modification by updating is_enabled
-        via raw SQL in a separate connection, proving that
-        select_for_update reads the correct committed value.
+        A raw SQL update simulates a prior modification (for example from
+        another process or an admin operation).  The Service must see the
+        modified value via its select_for_update read, record old_value as
+        that modified value, and express the correct transition in its
+        DataChange and AuditRecord.
         """
         del db
-        from django.db import connections
 
         sp500 = MarketIndex.objects.get(code="SP500")
         assert sp500.is_enabled is True
 
-        # Step 1: Use a separate connection to toggle is_enabled to False
-        # This simulates a concurrent transaction that already committed
-        test_alias = connection.alias
-        with connections[test_alias].cursor() as cursor:
+        # Modify is_enabled externally (simulating a prior change).
+        with connection.cursor() as cursor:
             cursor.execute(
                 "UPDATE indexes_marketindex SET is_enabled = %s, "
                 "updated_at = NOW() WHERE code = %s",
                 [False, "SP500"],
             )
 
-        # Step 2: Verify the raw update took effect
         sp500.refresh_from_db()
         assert sp500.is_enabled is False
 
-        # Step 3: Now call set_index_enabled(enabled=True)
-        # This must see is_enabled=False via select_for_update
-        # and perform the False→True transition
         result = set_index_enabled(
             code="SP500",
             enabled=True,
             actor_user=user,
-            reason="concurrent toggle regression",
+            reason="external modification regression",
             request_id=str(uuid.uuid4()),
         )
 
         assert result.changed is True, (
-            "Must detect change even after concurrent raw update; "
-            "select_for_update must read the actual committed value."
+            "Must detect change after external modification; "
+            "select_for_update must read the committed value."
         )
         assert result.enabled is True
 
         sp500.refresh_from_db()
         assert sp500.is_enabled is True
 
-        # Verify DataChange records the correct transition: False → True
         assert len(result.data_changes) == 1
         dc = result.data_changes[0].change
         assert dc is not None
-        assert dc.old_value is False, "old_value must reflect the concurrently modified state"
+        assert dc.old_value is False, "old_value must reflect the externally modified state"
         assert dc.new_value is True
+
+    def test_none_actor_user_rolls_back(self, db: object, user: User) -> None:
+        del db
+        sp500 = MarketIndex.objects.get(code="SP500")
+        original_enabled = sp500.is_enabled
+        dc_before = self._current_dc_count(sp500.pk)
+        ar_before = self._current_ar_count(sp500.pk)
+
+        target_enabled = not original_enabled
+        with pytest.raises(InvalidDataChange):
+            set_index_enabled(
+                code="SP500",
+                enabled=target_enabled,
+                actor_user=None,  # type: ignore[arg-type]
+                reason="valid reason",
+                request_id=str(uuid.uuid4()),
+            )
+
+        sp500.refresh_from_db()
+        assert sp500.is_enabled == original_enabled, "is_enabled must not change"
+        assert self._current_dc_count(sp500.pk) == dc_before, "no new DataChange"
+        assert self._current_ar_count(sp500.pk) == ar_before, "no new AuditRecord"
 
     # --- invalid input and rollback tests ---
 
