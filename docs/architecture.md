@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；尚无真实 Provider、真实网络传输或同步编排器。
+当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin。尚无真实 Provider、真实网络传输、同步编排器、指数、财报、SEC Filing 或通知领域模型。
 
 ## 1. 架构目标与边界
 
@@ -76,6 +76,8 @@ tests/                   单元、服务、集成和页面测试
 ```
 
 Provider 适配器不得写入业务表或 audit 表；它返回结构化原始结果，未来同步编排 Service 再通过 `audit.services` 统一落库。View 和模板不得调用 Provider，也不得包含状态转换、优先级计算或外部请求。
+
+`companies.services` 是当前 Company 与 SecurityListing 的唯一写入入口。它在 PostgreSQL 事务内规范化 CIK、ticker 与交易所代码，使用数据库唯一/排他约束处理重跑与并发冲突，并在创建时追加 `AuditRecord`、在字段实际变化时通过 `audit.services.record_data_change` 追加 `DataChange`。`companies` 不调用 Provider、不创建 SyncRun，也不反向修改 audit 历史；未来同步编排器在原始数据与来源证据已经落库后才调用该领域 Service。
 
 ## 4. Provider 适配器
 

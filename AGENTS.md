@@ -27,7 +27,7 @@
 - 若前置阶段未完成，只补齐本任务不可缺少的最小前置，并明确报告；不要扩大范围。
 - 市场热门、Reddit、Telegram、Web Push、PWA、自选股分组、Celery、Redis、微服务和 SPA 均不属于 MVP，除非用户明确进入相应第二阶段。
 
-当前仓库已完成阶段 1 工程骨架、阶段 2.1A 的 DataSource/SyncRun 基础、阶段 2.1B-1 的 RawDataRecord/RawDataObservation、阶段 2.1B-2 的 SourceEvidence、阶段 2.1B-3 的 DataChange/AuditRecord，以及阶段 2.2 的 Provider 契约、HTTP 传输接口与纯测试 Fake。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建财报、指数、SEC、真实 Provider、自选股或通知业务实现。
+当前仓库已完成阶段 1 工程骨架、阶段 2.1A 的 DataSource/SyncRun 基础、阶段 2.1B-1 的 RawDataRecord/RawDataObservation、阶段 2.1B-2 的 SourceEvidence、阶段 2.1B-3 的 DataChange/AuditRecord、阶段 2.2 的 Provider 契约、HTTP 传输接口与纯测试 Fake，以及阶段 2.3 的 Company/SecurityListing 身份基础。除非用户在后续任务中明确指定对应路线图小阶段，否则不要创建财报、指数、SEC、真实 Provider、自选股或通知业务实现。
 
 ## 3. 固定技术基线
 
@@ -84,6 +84,7 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 - 值没有变化时不创建 DataChange、日期变化或通知；
 - 当前值变化时，在可靠事务中保存旧值、新值、来源、任务 ID、操作者/系统身份和原因；
 - DataChange 和 AuditRecord 只能通过 `audit.services` 的公开写入函数追加；不得用 Admin、模型实例更新、QuerySet update/delete 或通用写库接口改写/删除历史；
+- Company 和 SecurityListing 只能通过 `companies.services` 的公开写入函数创建或更新；创建必须追加 AuditRecord，字段变化必须追加 DataChange，Admin 不得成为写入后门；
 - 关键历史记录使用结束有效期、停用、取消或修正，不物理删除；
 - 指数偏移保留底层加入/移除原子事实，再创建聚合事件；
 - 通知使用稳定 `idempotency_key`，发送尝试单独追加记录。

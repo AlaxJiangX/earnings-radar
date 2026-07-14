@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A、2.1B-1 至 2.1B-3，以及阶段 2.2 Provider 契约和测试夹具已完成；核心领域模型、同步编排器和真实 Provider 仍未开始。
+> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A、2.1B-1 至 2.1B-3、阶段 2.2 Provider 契约和测试夹具，以及阶段 2.3 Company/SecurityListing 身份基础已完成；指数、财报、SEC Filing、同步编排器和真实 Provider 仍未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -181,9 +181,9 @@
 - 四个 capability 只预留接口，不实现真实财报、IR、SEC 或指数 Provider；
 - Ruff、mypy 和无迁移检查通过。
 
-#### 2.3 公司、CIK 与股票代码
+#### 2.3 公司、CIK 与股票代码（已完成）
 
-交付：Company、SecurityListing、搜索 selector 和 Admin。
+交付：Company、SecurityListing、受控写入 Service、只读 Admin、PostgreSQL 有效期约束与自动测试。当前仅提供 Admin 搜索/筛选；面向页面的 selector 随后续公司页面任务单独实现，避免在身份基础阶段提前加入查询或 UI 功能。
 
 验收标准：
 
@@ -192,6 +192,8 @@
 - 重复导入不产生重复公司或代码；
 - 无 CIK 记录不能被错误确定性关联 SEC；
 - NVDA 可由 ticker 和英文名称搜索（使用测试数据）。
+- 同一交易所/ticker 和同一公司主要展示 listing 的重叠有效期由 PostgreSQL 排他约束拒绝；历史区间关闭后可复用 ticker。
+- 创建追加 AuditRecord，实际字段变化追加可追溯 DataChange；Admin 不能新增、编辑或删除。
 
 ### 阶段 3：指数能力
 
@@ -517,7 +519,7 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 候选财报事件跨 Provider 合并阈值与取消重排 | 4.1 前；FY/52-53 周规则已由 ADR-001 确定 |
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
 | release filing 证据清单、复核展示和时限 | 4.5 前；三态分类已由 ADR-003 确定 |
-| 来源冲突与人工锁定策略 | 2.3 前 |
+| 来源冲突与人工锁定策略 | 首个真实来源合并前；2.3 当前仅拒绝同一 CIK 的静默冲突并要求带审计更新 |
 | 提前一天的时区/DST 语义 | 6.1 前 |
 | 原始/通知/审计数据保留 | 8.1 前 |
 | 新鲜度与 alpha/beta 门槛的后续调整 | 仅在 alpha 实测支持时修订 ADR-004 |
