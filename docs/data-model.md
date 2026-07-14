@@ -157,7 +157,7 @@ Provenance：自动来源需 SyncRun + SourceEvidence（通过 `resolve_source_e
 关闭规则：`close_memberships_for_listing` 缩短 listing 有效期时：
 - `effective_from >= new_effective_to` 的未来 announced 成员关系取消；
 - `effective_from < new_effective_to` 的 ended 成员关系（`old.effective_to > new_effective_to`）不直接修改，而是将旧记录标记为 corrected 并创建具有缩短后 `effective_to` 的后继记录（同上 AuditRecord 快照规则）；
-- `effective_from < new_effective_to` 且 `old.effective_to <= new_effective_to` 的 ended 成员关系直接更新（ended 保持 ended）；
+- `effective_from < new_effective_to` 且 `old.effective_to <= new_effective_to` 的 ended 成员关系跳过不处理（listing 延长关闭不能延长已退出的指数成员关系）；
 - announced/active 成员关系直接缩短。action 标签反映最终实际状态：cancelled、corrected、skipped、announced、active 或 ended。
 
 Company 不直接拥有 IndexMembership。公司级指数归属由其全部有效 SecurityListing 的有效成员关系去重聚合：任一 listing 属于某启用指数，公司即显示属于该指数；多个 share class 同属一个指数时，底层保留多条 membership，Company 页面只聚合展示。历史 ticker 对应的旧 listing 和 membership 通过有效期保留，不改写为当前 ticker。

@@ -434,3 +434,160 @@ class TestListingIndexesAsOf:
             security_listing_id=listing.pk, as_of_date=date(2024, 6, 1), is_enabled=False
         )
         assert qs.filter(pk=sp500.pk).exists()
+
+
+class TestCompanyIndexesDedup:
+    """company_indexes_as_of deduplication across share classes."""
+
+    def test_two_listings_same_index_returns_one(
+        self, db: object, sp500: MarketIndex, company: Company
+    ) -> None:
+        del db
+        listing_a = SecurityListing.objects.create(
+            company=company,
+            ticker="AAA",
+            exchange="NYSE",
+            effective_from=date(2020, 1, 1),
+        )
+        listing_b = SecurityListing.objects.create(
+            company=company,
+            ticker="BBB",
+            exchange="NASDAQ",
+            effective_from=date(2020, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing_a,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing_b,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = company_indexes_as_of(
+            company_id=company.pk,
+            as_of_date=date(2024, 6, 1),
+            is_enabled=True,
+        )
+        assert qs.filter(pk=sp500.pk).count() == 1
+
+    def test_two_indexes_returns_both(
+        self, db: object, sp500: MarketIndex, nasdaq100: MarketIndex, company: Company
+    ) -> None:
+        del db
+        listing = SecurityListing.objects.create(
+            company=company,
+            ticker="TEST",
+            exchange="NYSE",
+            effective_from=date(2020, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=nasdaq100,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = company_indexes_as_of(
+            company_id=company.pk,
+            as_of_date=date(2024, 6, 1),
+            is_enabled=True,
+        )
+        assert qs.count() == 2
+
+    def test_disabled_excluded(
+        self, db: object, sp500: MarketIndex, nasdaq100: MarketIndex, company: Company
+    ) -> None:
+        del db
+        nasdaq100.is_enabled = False
+        nasdaq100.save(update_fields=["is_enabled"])
+        listing = SecurityListing.objects.create(
+            company=company,
+            ticker="TEST",
+            exchange="NYSE",
+            effective_from=date(2020, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=nasdaq100,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = company_indexes_as_of(
+            company_id=company.pk,
+            as_of_date=date(2024, 6, 1),
+            is_enabled=True,
+        )
+        assert qs.count() == 1
+        assert qs.filter(pk=sp500.pk).exists()
+
+    def test_disabled_only(
+        self, db: object, sp500: MarketIndex, nasdaq100: MarketIndex, company: Company
+    ) -> None:
+        del db
+        sp500.is_enabled = False
+        sp500.save(update_fields=["is_enabled"])
+        listing = SecurityListing.objects.create(
+            company=company,
+            ticker="TEST",
+            exchange="NYSE",
+            effective_from=date(2020, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = company_indexes_as_of(
+            company_id=company.pk,
+            as_of_date=date(2024, 6, 1),
+            is_enabled=False,
+        )
+        assert qs.count() == 1
+        assert qs.filter(pk=sp500.pk).exists()
+
+    def test_all_mode(
+        self, db: object, sp500: MarketIndex, nasdaq100: MarketIndex, company: Company
+    ) -> None:
+        del db
+        nasdaq100.is_enabled = False
+        nasdaq100.save(update_fields=["is_enabled"])
+        listing = SecurityListing.objects.create(
+            company=company,
+            ticker="TEST",
+            exchange="NYSE",
+            effective_from=date(2020, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=nasdaq100,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = company_indexes_as_of(
+            company_id=company.pk,
+            as_of_date=date(2024, 6, 1),
+            is_enabled=None,
+        )
+        assert qs.count() == 2

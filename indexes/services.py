@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, cast
 from uuid import UUID as uuid_UUID
 from uuid import uuid4
@@ -488,14 +488,20 @@ def end_membership(
         audit = _write_membership_audit(
             membership=obj,
             action=AuditRecord.Action.UPDATE,
-            before={
-                "effective_to": old_effective_to.isoformat() if old_effective_to else None,
-                "status": old_status,
-            },
-            after={
-                "effective_to": effective_to.isoformat(),
-                "status": IndexMembership.Status.ENDED,
-            },
+            before=_serialize_membership_from_fields(
+                index_id=str(obj.index_id),
+                security_listing_id=str(obj.security_listing_id),
+                status=old_status,
+                effective_from=obj.effective_from.isoformat(),
+                effective_to=old_effective_to.isoformat() if old_effective_to else None,
+                announcement_date=obj.announcement_date.isoformat()
+                if obj.announcement_date
+                else None,
+                last_verified_at=obj.last_verified_at.isoformat() if obj.last_verified_at else None,
+                source_evidence_id=str(obj.source_evidence_id) if obj.source_evidence_id else None,
+                supersedes_id=str(obj.supersedes_id) if obj.supersedes_id else None,
+            ),
+            after=_serialize_membership(obj),
             context=context,
         )
 
@@ -553,8 +559,20 @@ def cancel_membership(
             action=AuditRecord.Action.DEACTIVATE,
             target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
             target_id=obj.pk,
-            before={"status": old_status},
-            after={"status": IndexMembership.Status.CANCELLED},
+            before=_serialize_membership_from_fields(
+                index_id=str(obj.index_id),
+                security_listing_id=str(obj.security_listing_id),
+                status=old_status,
+                effective_from=obj.effective_from.isoformat(),
+                effective_to=obj.effective_to.isoformat() if obj.effective_to else None,
+                announcement_date=obj.announcement_date.isoformat()
+                if obj.announcement_date
+                else None,
+                last_verified_at=obj.last_verified_at.isoformat() if obj.last_verified_at else None,
+                source_evidence_id=str(obj.source_evidence_id) if obj.source_evidence_id else None,
+                supersedes_id=str(obj.supersedes_id) if obj.supersedes_id else None,
+            ),
+            after=_serialize_membership(obj),
             reason=reason,
             request_id=request_id,
             ip_address=ip_address,
@@ -582,6 +600,7 @@ def correct_membership(
     reason: str,
     request_id: str,
     ip_address: str | None = None,
+    replacement_id: uuid_UUID | None = None,
 ) -> MembershipCorrectionResult:
     """Atomically correct a membership.
 
@@ -593,7 +612,8 @@ def correct_membership(
     # Validate replacement field whitelist *before* any mutation
     _validate_replacement_fields(replacement_values)
 
-    replacement_id = uuid4()
+    if replacement_id is None:
+        replacement_id = uuid4()
 
     # Resolve write context (manual correction)
     _validate_membership_source(
@@ -646,7 +666,12 @@ def correct_membership(
 
         # last_verified_at: distinguish "not provided" from "explicitly None"
         if "last_verified_at" in replacement_values:
-            new_last_verified = replacement_values["last_verified_at"]
+            raw_lv = replacement_values["last_verified_at"]
+            if raw_lv is not None and not isinstance(raw_lv, datetime):
+                raise MembershipServiceError(
+                    f"last_verified_at must be datetime or None, got {type(raw_lv).__name__!r}."
+                )
+            new_last_verified = raw_lv
         else:
             # Preserve exact old value, including None
             new_last_verified = old.last_verified_at
@@ -710,8 +735,11 @@ def correct_membership(
                 f"exceeds listing {listing.pk} effective_to={listing.effective_to}."
             )
 
-        # --- Mutate: set old to corrected, create replacement ---
+        # --- Take full snapshot BEFORE mutation ---
+        old_before = _serialize_membership(old)
         old_status_before = old.status
+
+        # --- Mutate: set old to corrected ---
         old.status = IndexMembership.Status.CORRECTED
         old.save(update_fields=["status", "updated_at"])
 
@@ -732,11 +760,8 @@ def correct_membership(
             action=AuditRecord.Action.MANUAL_CORRECTION,
             target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
             target_id=old.pk,
-            before=_serialize_membership(old),
-            after={
-                "status": IndexMembership.Status.CORRECTED,
-                "effective_to": old.effective_to.isoformat() if old.effective_to else None,
-            },
+            before=old_before,
+            after=_serialize_membership(old),
             reason=reason,
             request_id=request_id,
             ip_address=ip_address,
@@ -792,12 +817,16 @@ def close_memberships_for_listing(
 ) -> list[MembershipCloseResult]:
     """Close (end/cancel) all normative memberships for a listing.
 
-    - Memberships whose ``effective_from < new_effective_to`` are ended at
-      *new_effective_to* (status derived via ``derive_status``).
     - Memberships whose ``effective_from >= new_effective_to`` are cancelled
       **only** if they are ``announced`` AND ``effective_from > as_of_date``.
-      All other states (future active, future ended, past effective, etc.)
-      raise ``MembershipListingHistoryConflict``.
+      All other states raise ``MembershipListingHistoryConflict``.
+    - Ended memberships whose ``old.effective_to <= new_effective_to`` are
+      **skipped** — a later listing close must not extend a membership that
+      already exited the index.
+    - Ended memberships whose ``old.effective_to > new_effective_to`` go
+      through corrected+replacement (shortened effective_to, old preserved).
+    - Announced/active memberships whose ``effective_from < new_effective_to``
+      are directly ended with status derived via ``derive_status``.
     - *new_effective_to* must be strictly greater than the listing's current
       ``effective_from``.
     - The entire batch is atomic: a conflict rolls back all prior mutations,
@@ -839,7 +868,10 @@ def close_memberships_for_listing(
                     obj.status == IndexMembership.Status.ANNOUNCED
                     and obj.effective_from > as_of_date
                 ):
+                    # --- Take snapshot BEFORE mutation ---
+                    before_snapshot = _serialize_membership(obj)
                     old_status = obj.status
+
                     obj.status = IndexMembership.Status.CANCELLED
                     obj.save(update_fields=["status", "updated_at"])
 
@@ -859,13 +891,8 @@ def close_memberships_for_listing(
                         action=AuditRecord.Action.DEACTIVATE,
                         target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
                         target_id=obj.pk,
-                        before=_serialize_membership(obj),
-                        after={
-                            "status": IndexMembership.Status.CANCELLED,
-                            "effective_to": (
-                                obj.effective_to.isoformat() if obj.effective_to else None
-                            ),
-                        },
+                        before=before_snapshot,
+                        after=_serialize_membership(obj),
                         reason=reason,
                         request_id=request_id,
                         ip_address=ip_address,
@@ -888,93 +915,54 @@ def close_memberships_for_listing(
                         f"Manual review required."
                     )
             else:
-                # effective_from < new_effective_to → close the membership
+                # effective_from < new_effective_to
                 old_effective_to = obj.effective_to
                 old_status = obj.status
                 new_status = derive_status(obj.effective_from, new_effective_to, as_of_date)
 
-                # Ended memberships with old.effective_to > new_effective_to
-                # must go through corrected+replacement, not direct modification.
-                if (
-                    old_status == IndexMembership.Status.ENDED
-                    and old_effective_to is not None
-                    and old_effective_to > new_effective_to
-                ):
-                    # --- ended → corrected + replacement ---
-                    replacement_id = uuid4()
-
-                    old_status_before = old_status
-                    old_effective_to_before = old_effective_to
-
-                    # Mark old as corrected
-                    obj.status = IndexMembership.Status.CORRECTED
-                    obj.save(update_fields=["status", "updated_at"])
-
-                    status_dc = record_data_change(
-                        target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
-                        target_id=obj.pk,
-                        field_name="status",
-                        old_value=old_status_before,
-                        new_value=IndexMembership.Status.CORRECTED,
-                        rule_version=MEMBERSHIP_RULE_VERSION,
-                        actor_user=actor_user,
-                        reason=reason,
-                        origin_key=request_id,
-                    )
-
-                    old_audit = record_user_action(
-                        actor_user=actor_user,
-                        action=AuditRecord.Action.MANUAL_CORRECTION,
-                        target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
-                        target_id=obj.pk,
-                        before=_serialize_membership(obj),
-                        after={
-                            "status": IndexMembership.Status.CORRECTED,
-                            "effective_to": old_effective_to_before.isoformat(),
-                        },
-                        reason=reason,
-                        request_id=request_id,
-                        ip_address=ip_address,
-                    )
-
-                    # Create replacement with shortened effective_to
-                    replacement = IndexMembership.objects.create(
-                        id=replacement_id,
-                        supersedes=obj,
-                        index_id=obj.index_id,
-                        security_listing_id=obj.security_listing_id,
-                        status=new_status,
-                        effective_from=obj.effective_from,
-                        effective_to=new_effective_to,
-                        announcement_date=obj.announcement_date,
-                        last_verified_at=obj.last_verified_at,
-                        source_evidence=obj.source_evidence,
-                    )
-
-                    replacement_audit = record_user_action(
-                        actor_user=actor_user,
-                        action=AuditRecord.Action.CREATE,
-                        target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
-                        target_id=replacement.pk,
-                        before=None,
-                        after=_serialize_membership(replacement),
-                        reason=reason,
-                        request_id=request_id,
-                        ip_address=ip_address,
-                    )
-
-                    results.append(
-                        MembershipCloseResult(
-                            membership=replacement,
-                            action="corrected",
-                            replacement=replacement,
-                            data_changes=(status_dc,),
-                            audit_records=(old_audit.record, replacement_audit.record),
+                # --- Ended: already exited the index ---
+                if old_status == IndexMembership.Status.ENDED:
+                    if old_effective_to is not None and old_effective_to > new_effective_to:
+                        # Ended beyond new boundary → corrected + replacement
+                        # Delegate to correct_membership for consistent audit snapshots
+                        corr_result = correct_membership(
+                            membership=obj,
+                            replacement_values={
+                                "effective_to": new_effective_to,
+                                "status": new_status,
+                            },
+                            source_evidence=None,
+                            actor_user=actor_user,
+                            reason=reason,
+                            request_id=request_id,
+                            ip_address=ip_address,
                         )
-                    )
-                    continue
+                        results.append(
+                            MembershipCloseResult(
+                                membership=corr_result.replacement,
+                                action="corrected",
+                                replacement=corr_result.replacement,
+                                data_changes=corr_result.data_changes,
+                                audit_records=corr_result.audit_records,
+                            )
+                        )
+                        continue
+                    else:
+                        # Ended within new boundary → skipped
+                        # A later listing close must not extend a membership
+                        # that already exited the index.
+                        results.append(
+                            MembershipCloseResult(
+                                membership=obj,
+                                action="skipped",
+                                replacement=None,
+                                data_changes=(),
+                                audit_records=(),
+                            )
+                        )
+                        continue
 
-                # Not ended, or ended but old.effective_to <= new_effective_to
+                # --- Announced / Active: directly end ---
                 if old_effective_to == new_effective_to and old_status == new_status:
                     results.append(
                         MembershipCloseResult(
@@ -986,6 +974,9 @@ def close_memberships_for_listing(
                         )
                     )
                     continue
+
+                # Take snapshot BEFORE mutation
+                before_snapshot = _serialize_membership(obj)
 
                 obj.effective_to = new_effective_to
                 obj.status = new_status
@@ -1021,7 +1012,6 @@ def close_memberships_for_listing(
                         )
                     )
 
-                # Fix 2: action label reflects final status
                 action_label = _close_action_label(
                     old_status, new_status, as_of_date, obj.effective_from
                 )
@@ -1031,23 +1021,7 @@ def close_memberships_for_listing(
                     action=AuditRecord.Action.UPDATE,
                     target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
                     target_id=obj.pk,
-                    before=_serialize_membership_from_fields(
-                        index_id=str(obj.index_id),
-                        security_listing_id=str(obj.security_listing_id),
-                        status=old_status,
-                        effective_from=obj.effective_from.isoformat(),
-                        effective_to=old_effective_to.isoformat() if old_effective_to else None,
-                        announcement_date=(
-                            obj.announcement_date.isoformat() if obj.announcement_date else None
-                        ),
-                        last_verified_at=(
-                            obj.last_verified_at.isoformat() if obj.last_verified_at else None
-                        ),
-                        source_evidence_id=(
-                            str(obj.source_evidence_id) if obj.source_evidence_id else None
-                        ),
-                        supersedes_id=str(obj.supersedes_id) if obj.supersedes_id else None,
-                    ),
+                    before=before_snapshot,
                     after=_serialize_membership(obj),
                     reason=reason,
                     request_id=request_id,

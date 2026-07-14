@@ -6,7 +6,7 @@ import pytest
 from django.db import IntegrityError, connection, transaction
 
 from companies.models import Company, SecurityListing
-from indexes.models import IndexMembership, MarketIndex
+from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership, MarketIndex
 
 
 @pytest.fixture
@@ -264,3 +264,90 @@ class TestMigrationTriggers:
                 "SELECT count(*) FROM pg_proc WHERE proname = 'check_membership_within_listing'"
             )
             assert c.fetchone()[0] >= 1, "Membership function should be re-created"
+
+
+@pytest.mark.django_db(transaction=True)
+class TestCrossTableConcurrency:
+    """Membership vs Listing concurrent writes – trigger rejects violation."""
+
+    def test_listing_truncation_rejects_stale_membership(
+        self,
+        sp500: MarketIndex,
+        company: Company,
+    ) -> None:
+        """B shortens listing; A inserts membership spanning old boundary → rejected."""
+        import threading
+
+        from django.db import close_old_connections, connections
+
+        listing = SecurityListing.objects.create(
+            company=company,
+            ticker="CTEST",
+            exchange="NYSE",
+            effective_from=date(2020, 1, 1),
+        )
+
+        errors: list[Exception] = []
+        results: list[bool] = []
+
+        def insert_membership() -> None:
+            close_old_connections()
+            try:
+                IndexMembership.objects.create(
+                    index=sp500,
+                    security_listing=listing,
+                    status=IndexMembership.Status.ACTIVE,
+                    effective_from=date(2022, 1, 1),
+                    effective_to=date(2027, 12, 31),
+                )
+                results.append(True)
+            except Exception as e:
+                errors.append(e)
+            finally:
+                for conn in connections.all():
+                    conn.close()
+
+        def shorten_listing() -> None:
+            close_old_connections()
+            try:
+                obj = SecurityListing.objects.get(pk=listing.pk)
+                obj.effective_to = date(2024, 12, 31)
+                obj.save(update_fields=["effective_to"])
+                results.append(True)
+            except Exception as e:
+                errors.append(e)
+            finally:
+                for conn in connections.all():
+                    conn.close()
+
+        # B shortens listing first
+        t_b = threading.Thread(target=shorten_listing)
+        t_b.start()
+        t_b.join(timeout=10)
+
+        # Then A tries to insert membership that would span beyond
+        t_a = threading.Thread(target=insert_membership)
+        t_a.start()
+        t_a.join(timeout=10)
+
+        for conn in connections.all():
+            conn.close()
+        close_old_connections()
+
+        # B must succeed
+        listing.refresh_from_db()
+        assert listing.effective_to == date(2024, 12, 31), "Listing shortening should succeed"
+
+        # A must fail because membership would exceed listing boundary
+        assert len(errors) >= 1, "Membership insert should be rejected"
+        assert any(isinstance(e, IntegrityError) for e in errors), (
+            f"Expected IntegrityError, got {errors}"
+        )
+
+        # No normative membership violates boundaries
+        bad = IndexMembership.objects.filter(
+            security_listing=listing,
+            status__in=NORMATIVE_MEMBERSHIP_STATUSES,
+            effective_to__gt=date(2024, 12, 31),
+        )
+        assert not bad.exists(), "No normative membership should exceed listing boundary"
