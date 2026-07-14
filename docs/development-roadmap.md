@@ -199,7 +199,7 @@
 
 ### 阶段 3：指数能力
 
-#### 3.1 指数与成分历史
+#### 3.1 指数与成分历史（进行中：3.1A MarketIndex 已完成）
 
 交付：四个 MarketIndex、绑定 SecurityListing 的 IndexMembership 及有效期逻辑。
 
