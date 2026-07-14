@@ -199,19 +199,31 @@
 
 ### 阶段 3：指数能力
 
-#### 3.1 指数与成分历史（进行中：3.1A MarketIndex 已完成）
+#### 3.1 指数与成分历史（3.1A ✅ | 3.1B ✅）
 
-交付：四个 MarketIndex、绑定 SecurityListing 的 IndexMembership 及有效期逻辑。
+##### 3.1A MarketIndex — 已完成 ✅
+交付：四个内置 MarketIndex（SP500 / NASDAQ100 / DJIA / RUSSELL2000）。
 
-验收标准：
+##### 3.1B IndexMembership — 已实现
+交付：IndexMembership 模型、五状态生命周期、两侧 deferred constraint trigger、Service、Selector、只读 Admin。
 
-- 四指数可启用/停用；
-- 同公司可通过不同 listing/share class 同时属于多个指数；
-- 同一 SecurityListing 与指数的成分区间不重叠，历史结束不删除；
-- Company 指数归属通过 listing 聚合，多个 share class 的底层事实不丢失；
-- 单个 share class 移除后，监控池计算会检查其他 listing 和自选股；
-- 给定日期可重建指数成分；
-- 重复快照不产生重复关系。
+已实现：
+- 五状态：announced / active / ended / cancelled / corrected
+- supersedes OneToOneField（PROTECT）修订链表
+- 条件 UniqueConstraint + ExclusionConstraint（仅规范状态）
+- membership 侧 + SecurityListing 侧 DEFERRABLE INITIALLY DEFERRED constraint trigger
+- 自动 provenance（SyncRun + SourceEvidence，通过 resolve_source_evidence_reference）
+- 人工 provenance（actor_user + reason + request_id）
+- create / end / cancel / correct / close_memberships_for_listing services
+- derive_status() 日期推导函数
+- normative selector（as-of 日期、listing、period、company 聚合、is_enabled 过滤）
+- 并发幂等（savepoint + IntegrityError 恢复）
+- 只读 Admin
+
+未实现（延后至 3.2）：
+- activate_due_memberships
+- 真实指数 Provider / 同步命令
+- IndexChangeEvent / IndexChangeLeg
 
 #### 3.2 首个指数 Provider 与同步命令
 
