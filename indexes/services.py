@@ -50,26 +50,15 @@ def set_index_enabled(
     ip_address: str | None = None,
 ) -> IndexToggleResult:
     normalized_code = _normalize_code(code)
-    try:
-        market_index = MarketIndex.objects.get(code=normalized_code)
-    except MarketIndex.DoesNotExist as exc:
-        raise MarketIndexNotFound(
-            f"MarketIndex with code {normalized_code!r} does not exist."
-        ) from exc
-
-    if market_index.is_enabled == enabled:
-        return IndexToggleResult(
-            index=market_index,
-            enabled=enabled,
-            changed=False,
-            data_changes=(),
-            audit_record=None,
-        )
-
-    old_value = market_index.is_enabled
 
     with transaction.atomic():
-        market_index = MarketIndex.objects.select_for_update().get(pk=market_index.pk)
+        try:
+            market_index = MarketIndex.objects.select_for_update().get(code=normalized_code)
+        except MarketIndex.DoesNotExist as exc:
+            raise MarketIndexNotFound(
+                f"MarketIndex with code {normalized_code!r} does not exist."
+            ) from exc
+
         if market_index.is_enabled == enabled:
             return IndexToggleResult(
                 index=market_index,
@@ -78,6 +67,8 @@ def set_index_enabled(
                 data_changes=(),
                 audit_record=None,
             )
+
+        old_value = market_index.is_enabled
 
         market_index.is_enabled = enabled
         market_index.save(update_fields={"is_enabled", "updated_at"})

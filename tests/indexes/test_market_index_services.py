@@ -4,9 +4,16 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
+from django.db import connection
 
 from audit.models import AuditRecord, DataChange
-from indexes.services import InvalidMarketIndexCode, set_index_enabled
+from audit.services import InvalidDataChange
+from indexes.models import MarketIndex
+from indexes.services import (
+    InvalidMarketIndexCode,
+    MarketIndexNotFound,
+    set_index_enabled,
+)
 
 if TYPE_CHECKING:
     from accounts.models import User
@@ -169,6 +176,226 @@ class TestSetIndexEnabled:
                 request_id=str(uuid.uuid4()),
             )
 
+    # --- concurrency regression ---
+
+    def test_all_reads_inside_single_atomic_block(self) -> None:
+        """Structural test: the source code of set_index_enabled must contain
+        exactly one `with transaction.atomic():` block, and the
+        `select_for_update().get()` call must be inside it. No bare
+        `MarketIndex.objects.get()` may appear before the atomic block.
+        """
+        import ast
+        import inspect
+
+        source = inspect.getsource(set_index_enabled)
+        tree = ast.parse(source)
+
+        # Count with-statements targeting transaction.atomic
+        atomic_count = 0
+        select_for_update_inside_atomic = False
+        bare_get_outside_atomic = False
+
+        class AtomicVisitor(ast.NodeVisitor):
+            def visit_With(self, node: ast.With) -> None:
+                nonlocal atomic_count, select_for_update_inside_atomic
+                for item in node.items:
+                    if (
+                        isinstance(item.context_expr, ast.Call)
+                        and isinstance(item.context_expr.func, ast.Attribute)
+                        and isinstance(item.context_expr.func.value, ast.Name)
+                        and item.context_expr.func.value.id == "transaction"
+                        and item.context_expr.func.attr == "atomic"
+                    ):
+                        atomic_count += 1
+                        # Check if select_for_update is in this block
+                        for child in ast.walk(node):
+                            if (
+                                isinstance(child, ast.Call)
+                                and isinstance(child.func, ast.Attribute)
+                                and child.func.attr == "select_for_update"
+                            ):
+                                select_for_update_inside_atomic = True
+                self.generic_visit(node)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                nonlocal bare_get_outside_atomic
+                # Check for MarketIndex.objects.get(...) calls
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get"
+                    and isinstance(node.func.value, ast.Attribute)
+                    and node.func.value.attr == "objects"
+                    and isinstance(node.func.value.value, ast.Name)
+                    and node.func.value.value.id == "MarketIndex"
+                ):
+                    # Check if this call is inside an atomic block
+                    bare_get_outside_atomic = True
+                self.generic_visit(node)
+
+        AtomicVisitor().visit(tree)
+
+        assert atomic_count >= 1, "set_index_enabled must use transaction.atomic()"
+        assert select_for_update_inside_atomic, (
+            "select_for_update() must be called inside transaction.atomic()"
+        )
+        assert not bare_get_outside_atomic, (
+            "No bare MarketIndex.objects.get() may appear — all reads "
+            "must go through select_for_update inside the atomic block"
+        )
+
+    def test_concurrent_toggle_reads_correct_value(self, db: object, user: User) -> None:
+        """Regression: raw-SQL concurrent update must not cause
+        set_index_enabled to no-op.
+
+        We simulate a concurrent modification by updating is_enabled
+        via raw SQL in a separate connection, proving that
+        select_for_update reads the correct committed value.
+        """
+        del db
+        from django.db import connections
+
+        sp500 = MarketIndex.objects.get(code="SP500")
+        assert sp500.is_enabled is True
+
+        # Step 1: Use a separate connection to toggle is_enabled to False
+        # This simulates a concurrent transaction that already committed
+        test_alias = connection.alias
+        with connections[test_alias].cursor() as cursor:
+            cursor.execute(
+                "UPDATE indexes_marketindex SET is_enabled = %s, "
+                "updated_at = NOW() WHERE code = %s",
+                [False, "SP500"],
+            )
+
+        # Step 2: Verify the raw update took effect
+        sp500.refresh_from_db()
+        assert sp500.is_enabled is False
+
+        # Step 3: Now call set_index_enabled(enabled=True)
+        # This must see is_enabled=False via select_for_update
+        # and perform the False→True transition
+        result = set_index_enabled(
+            code="SP500",
+            enabled=True,
+            actor_user=user,
+            reason="concurrent toggle regression",
+            request_id=str(uuid.uuid4()),
+        )
+
+        assert result.changed is True, (
+            "Must detect change even after concurrent raw update; "
+            "select_for_update must read the actual committed value."
+        )
+        assert result.enabled is True
+
+        sp500.refresh_from_db()
+        assert sp500.is_enabled is True
+
+        # Verify DataChange records the correct transition: False → True
+        assert len(result.data_changes) == 1
+        dc = result.data_changes[0].change
+        assert dc is not None
+        assert dc.old_value is False, "old_value must reflect the concurrently modified state"
+        assert dc.new_value is True
+
+    # --- invalid input and rollback tests ---
+
+    def _current_dc_count(self, index_id: uuid.UUID) -> int:
+        return DataChange.objects.filter(
+            target_type=DataChange.TargetType.MARKET_INDEX,
+            target_id=index_id,
+        ).count()
+
+    def _current_ar_count(self, index_id: uuid.UUID) -> int:
+        return AuditRecord.objects.filter(
+            target_type=AuditRecord.TargetType.MARKET_INDEX,
+            target_id=index_id,
+        ).count()
+
+    def test_empty_reason_rolls_back(self, db: object, user: User) -> None:
+        del db
+        sp500 = MarketIndex.objects.get(code="SP500")
+        original_enabled = sp500.is_enabled
+        dc_before = self._current_dc_count(sp500.pk)
+        ar_before = self._current_ar_count(sp500.pk)
+
+        with pytest.raises(InvalidDataChange):
+            set_index_enabled(
+                code="SP500",
+                enabled=not original_enabled,
+                actor_user=user,
+                reason="",
+                request_id=str(uuid.uuid4()),
+            )
+
+        sp500.refresh_from_db()
+        assert sp500.is_enabled == original_enabled, "is_enabled must not change"
+        assert self._current_dc_count(sp500.pk) == dc_before, "no new DataChange"
+        assert self._current_ar_count(sp500.pk) == ar_before, "no new AuditRecord"
+
+    def test_whitespace_reason_rolls_back(self, db: object, user: User) -> None:
+        del db
+        sp500 = MarketIndex.objects.get(code="SP500")
+        original_enabled = sp500.is_enabled
+        dc_before = self._current_dc_count(sp500.pk)
+        ar_before = self._current_ar_count(sp500.pk)
+
+        with pytest.raises(InvalidDataChange):
+            set_index_enabled(
+                code="SP500",
+                enabled=not original_enabled,
+                actor_user=user,
+                reason="   ",
+                request_id=str(uuid.uuid4()),
+            )
+
+        sp500.refresh_from_db()
+        assert sp500.is_enabled == original_enabled
+        assert self._current_dc_count(sp500.pk) == dc_before
+        assert self._current_ar_count(sp500.pk) == ar_before
+
+    def test_empty_request_id_rolls_back(self, db: object, user: User) -> None:
+        del db
+        sp500 = MarketIndex.objects.get(code="SP500")
+        original_enabled = sp500.is_enabled
+        dc_before = self._current_dc_count(sp500.pk)
+        ar_before = self._current_ar_count(sp500.pk)
+
+        with pytest.raises(InvalidDataChange):
+            set_index_enabled(
+                code="SP500",
+                enabled=not original_enabled,
+                actor_user=user,
+                reason="valid reason",
+                request_id="",
+            )
+
+        sp500.refresh_from_db()
+        assert sp500.is_enabled == original_enabled
+        assert self._current_dc_count(sp500.pk) == dc_before
+        assert self._current_ar_count(sp500.pk) == ar_before
+
+    def test_whitespace_request_id_rolls_back(self, db: object, user: User) -> None:
+        del db
+        sp500 = MarketIndex.objects.get(code="SP500")
+        original_enabled = sp500.is_enabled
+        dc_before = self._current_dc_count(sp500.pk)
+        ar_before = self._current_ar_count(sp500.pk)
+
+        with pytest.raises(InvalidDataChange):
+            set_index_enabled(
+                code="SP500",
+                enabled=not original_enabled,
+                actor_user=user,
+                reason="valid reason",
+                request_id="   ",
+            )
+
+        sp500.refresh_from_db()
+        assert sp500.is_enabled == original_enabled
+        assert self._current_dc_count(sp500.pk) == dc_before
+        assert self._current_ar_count(sp500.pk) == ar_before
+
 
 class TestGetIndexByCode:
     def test_get_existing(self, db: object) -> None:
@@ -184,3 +411,12 @@ class TestGetIndexByCode:
 
         with pytest.raises(InvalidMarketIndexCode):
             get_index_by_code(code="NONEXISTENT")
+
+    def test_get_nonexistent_valid_code(self, db: object) -> None:
+        """A valid code that doesn't exist in the database raises MarketIndexNotFound."""
+        del db
+        from indexes.services import get_index_by_code
+
+        MarketIndex.objects.filter(code="NASDAQ100").delete()
+        with pytest.raises(MarketIndexNotFound):
+            get_index_by_code(code="NASDAQ100")
