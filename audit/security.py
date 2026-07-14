@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hashlib
 import json
 import math
 import re
@@ -92,6 +93,14 @@ class SensitiveAuditData(AuditSecurityError):
 class SanitizedUrl:
     stored: str
     canonical: str
+
+
+@dataclass(frozen=True, slots=True)
+class SafeRequestDescriptor:
+    method: str
+    source_url: SanitizedUrl
+    identity: object
+    fingerprint: str
 
 
 def is_sensitive_field_name(name: str) -> bool:
@@ -201,6 +210,40 @@ def normalize_request_identity(value: object) -> object:
                 return REDACTED_VALUE
         return REDACTED_VALUE if contains_authentication_credential(value) else value
     raise InvalidAuditValue("Request identity must contain JSON-compatible data.")
+
+
+def build_safe_request_descriptor(
+    *,
+    method: str,
+    source_url: str,
+    request_identity: Mapping[str, object] | None = None,
+) -> SafeRequestDescriptor:
+    normalized_method = method.strip().upper()
+    if not normalized_method:
+        raise InvalidAuditValue("Request method must not be empty.")
+    sanitized_url = sanitize_url(source_url)
+    normalized_identity = normalize_request_identity(dict(request_identity or {}))
+    descriptor = {
+        "identity": normalized_identity,
+        "method": normalized_method,
+        "url": sanitized_url.canonical,
+    }
+    try:
+        serialized = json.dumps(
+            descriptor,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    except (TypeError, ValueError, OverflowError) as error:
+        raise InvalidAuditValue("Request identity must contain JSON-compatible data.") from error
+    return SafeRequestDescriptor(
+        method=normalized_method,
+        source_url=sanitized_url,
+        identity=normalized_identity,
+        fingerprint=hashlib.sha256(serialized).hexdigest(),
+    )
 
 
 def normalize_json_without_credentials(value: object, *, value_name: str) -> object:

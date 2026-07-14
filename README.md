@@ -1,6 +1,6 @@
 # Earnings Radar
 
-Earnings Radar 当前处于数据基础阶段。仓库已经包含 Django、PostgreSQL、Docker Compose、基础认证用户、健康检查、DataSource/SyncRun 运行记录、RawDataRecord/RawDataObservation 原始响应去重与观察记录、SourceEvidence 来源证据、DataChange 字段变更历史、AuditRecord 操作审计，以及统一的凭据拦截、URL 清理和安全请求指纹；财报、SEC、指数、Provider、通知等后续能力尚未实现。
+Earnings Radar 当前处于数据基础阶段。仓库已经包含 Django、PostgreSQL、Docker Compose、基础认证用户、健康检查、DataSource/SyncRun 运行记录、RawDataRecord/RawDataObservation 原始响应去重与观察记录、SourceEvidence 来源证据、DataChange 字段变更历史、AuditRecord 操作审计，以及 Provider 契约、安全 HTTP 传输接口和完全离线的 Fake/fixture。财报、SEC、指数、真实 Provider、同步编排和通知等后续能力尚未实现。
 
 ## 本地启动
 
@@ -40,3 +40,5 @@ docker compose run --rm web mypy .
 开始任何任务前，完整阅读 `AGENTS.md`、PRD、架构、数据模型、数据源、全部 ADR 和开发路线图。一次只完成路线图中的一个明确任务，不得提前实现第二阶段能力或未授权的核心业务模型。
 
 审计数据的 URL userinfo 会被拒绝，敏感查询值会被稳定脱敏，URL fragment 不参与保存或请求指纹；明显认证凭据不得写入同步 scope、原始正文、SourceEvidence、DataChange 或 AuditRecord。安全查询条件仍会参与指纹，因此不同分页或业务筛选不会被错误合并。字段变化和操作审计只能通过受控 Service 追加，Admin 只显示截断预览且不允许增删改。
+
+Provider 只返回带安全 URL、请求身份/指纹、HTTP 元数据、原始 bytes 和时区感知时间的结构化结果，不写数据库。当前 HTTP client 必须显式注入 transport，仓库只提供 FakeTransport，不存在默认真实网络实现，也没有新增 HTTP 依赖。普通测试会阻断真实 HTTP；任何真实 Provider 都必须等待来源和许可确认，并由未来同步编排 Service 通过 `audit.services` 落库。

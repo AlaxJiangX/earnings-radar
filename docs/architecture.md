@@ -5,6 +5,8 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
+当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；尚无真实 Provider、真实网络传输或同步编排器。
+
 ## 1. 架构目标与边界
 
 Earnings Radar 采用 Django 模块化单体。一个代码仓库、一个 Django 部署单元和一个 PostgreSQL 数据库承载 Web 页面、管理后台、数据同步和通知发送；不同业务能力通过 Django app、服务层和数据库约束隔离，而不是拆成微服务。
@@ -41,7 +43,7 @@ MVP 明确不引入 Celery、Redis、微服务、SPA 前端、实时行情、AI 
                     - 指数来源
 ```
 
-Web 请求不直接访问外部数据源。Cron Job 调用 Django management command，Provider 先保存原始数据，再由领域服务完成标准化、核对、变更检测和通知入队。
+Web 请求不直接访问外部数据源。未来 Cron Job 调用 Django management command，由同步编排 Service 创建 SyncRun、调用 Provider、通过 `audit.services` 保存 RawDataRecord/RawDataObservation，再由领域服务完成标准化、核对、变更检测和通知入队。Provider 自身只返回安全的结构化结果，不写数据库。
 
 ## 3. 模块划分
 
@@ -54,7 +56,7 @@ Web 请求不直接访问外部数据源。Cron Job 调用 Django management com
 | `filings` | SEC 文件、财报关联、公开列表 | `companies`, `providers`, `audit` | 复制 SEC 全文 |
 | `watchlists` | 自选股、普通/重点关注、公司级提醒开关 | `accounts`, `companies` | 全局通知策略 |
 | `notifications` | 提醒规则、通知生成、站内通知、邮件投递和重试 | 各领域的稳定公开接口 | 判断外部数据真实性 |
-| `providers` | Provider 协议、HTTP 客户端、标准化 DTO、同步编排入口 | `audit` | 页面渲染和用户权限 |
+| `providers` | Provider 协议、安全 HTTP 传输接口、结构化原始结果和测试 Fake/fixture | `audit.security` 的纯安全函数、`audit.constants` 的原始正文硬上限 | 数据库写入、同步编排、页面渲染和用户权限 |
 | `audit` | 数据来源、同步运行、原始数据、字段来源、变更及操作审计 | 尽量不反向依赖业务 app | 修改领域状态 |
 
 第二阶段再启用 `market_trends` 和 `social_signals`。它们只能读取当前监控池和公司主数据，不应侵入 MVP 的财报、SEC 或通知模型。
@@ -73,7 +75,7 @@ admin.py                 受权限控制的运维入口
 tests/                   单元、服务、集成和页面测试
 ```
 
-Provider 适配器不得写入业务表；它返回标准化结果，并通过同步服务统一落库。View 和模板不得包含状态转换、优先级计算或外部请求。
+Provider 适配器不得写入业务表或 audit 表；它返回结构化原始结果，未来同步编排 Service 再通过 `audit.services` 统一落库。View 和模板不得调用 Provider，也不得包含状态转换、优先级计算或外部请求。
 
 ## 4. Provider 适配器
 
@@ -91,6 +93,24 @@ Provider 适配器不得写入业务表；它返回标准化结果，并通过�
 - 标准化结果及逐字段来源；
 - 可区分的临时错误、永久错误和数据校验错误。
 
+阶段 2.2 的受限 capability 只预留 `earnings_calendar`、`investor_relations`、`sec_edgar` 和 `index_constituents`，不代表任何真实来源已经接入。ProviderRequest 表达 capability、scope、请求开始时间、请求方法、瞬时来源 URL 和安全请求身份；ProviderResult 至少包含稳定 provider key/version、capability、scope、请求开始时间、安全来源 URL、HTTP status、content type、原始 bytes、抓取时间、安全请求身份、请求指纹和受控 metadata。所有时间必须为时区感知值。
+
+阶段 2.2 不提供默认 live transport。`ProviderHttpClient` 必须注入 `HttpTransport`，并把连接超时、读取超时、明确 User-Agent 和最大响应大小传给 transport；当前唯一实现是完全人工的 FakeTransport。最大响应默认和上限均为 1 MiB，以兼容 RawDataRecord 数据库硬限制。未来 live transport 必须流式执行 limit + 1 检查，不能先无界读取再判断大小。
+
+错误与重试分类如下：
+
+| 错误 | HTTP/触发条件 | 可重试 |
+|---|---|---|
+| `ProviderTimeoutError` | transport timeout 或 HTTP 408 | 是，有限次数 |
+| `ProviderRateLimitError` | HTTP 429 | 是；只保留解析后的非负 retry-after 秒数 |
+| `ProviderTemporaryError` | HTTP 5xx 或临时传输失败 | 是，有限次数 |
+| `ProviderAuthenticationError` | HTTP 401/403 | 否 |
+| `ProviderPermanentError` | 其他非成功 HTTP 状态 | 否 |
+| `ProviderValidationError` | 无效结构、JSON、时间或安全字段 | 否 |
+| `ProviderResponseTooLargeError` | 响应超过配置上限 | 否 |
+
+异常只保存固定安全信息或经过集中脱敏的摘要，不附带原始 header、body 或完整敏感 URL。重试只由异常的 retryable 分类触发；永久、认证、校验和超限错误不会因统一重试循环而反复请求。
+
 MVP Provider 类型：
 
 1. `EarningsCalendarProvider`：未来预计财报和初步发布时间段；
@@ -101,8 +121,9 @@ MVP Provider 类型：
 ### 4.2 数据进入流水线
 
 ```text
-抓取
-  -> 保存 RawDataRecord（先保存、不可原地覆盖）
+同步编排 Service 创建 SyncRun
+  -> 调用 Provider，得到不含持久化副作用的 ProviderResult
+  -> 通过 audit Service 保存 RawDataRecord/RawDataObservation（先保存、不可原地覆盖）
   -> 校验与标准化
   -> 生成字段观察值 / 来源证据
   -> 领域核对服务选择当前值
@@ -277,6 +298,8 @@ MVP 不添加 Redis 或 Celery 容器。密钥从未提交的 `.env` 注入，�
 - 指数偏移、财报日期变化和通知去重的服务层测试。
 
 真实 Provider 的小规模 smoke test 应与普通 PR CI 分离，避免速率限制和上游不稳定破坏常规测试。
+
+阶段 2.2 的测试只使用 FakeProvider/FakeTransport，并在 Provider 测试范围内阻断标准库 HTTP 连接。普通 CI 没有默认 live transport，也不需要 API key；真实 transport 和 smoke test 只能在来源及许可确认后的独立阶段增加。
 
 ## 11. 可观测性与运维
 
