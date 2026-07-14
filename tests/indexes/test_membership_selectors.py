@@ -7,6 +7,8 @@ import pytest
 from companies.models import Company, SecurityListing
 from indexes.models import IndexMembership, MarketIndex
 from indexes.selectors import (
+    company_indexes_as_of,
+    current_listing_indexes_as_of,
     get_normative_memberships_for_index,
     get_normative_memberships_for_listing,
     get_normative_memberships_in_period,
@@ -17,6 +19,12 @@ from indexes.selectors import (
 def sp500(db: object) -> MarketIndex:
     del db
     return MarketIndex.objects.get(code="SP500")
+
+
+@pytest.fixture
+def nasdaq100(db: object) -> MarketIndex:
+    del db
+    return MarketIndex.objects.get(code="NASDAQ100")
 
 
 @pytest.fixture
@@ -51,10 +59,7 @@ class TestNormativeSelectors:
             status=IndexMembership.Status.ACTIVE,
             effective_from=date(2024, 1, 1),
         )
-        qs = get_normative_memberships_for_index(
-            index=sp500,
-            as_of_date=date(2024, 6, 1),
-        )
+        qs = get_normative_memberships_for_index(index=sp500, as_of_date=date(2024, 6, 1))
         assert qs.filter(pk=m.pk).exists()
 
     def test_as_of_includes_ended_in_period(
@@ -68,10 +73,7 @@ class TestNormativeSelectors:
             effective_from=date(2024, 1, 1),
             effective_to=date(2024, 6, 15),
         )
-        qs = get_normative_memberships_for_index(
-            index=sp500,
-            as_of_date=date(2024, 6, 1),
-        )
+        qs = get_normative_memberships_for_index(index=sp500, as_of_date=date(2024, 6, 1))
         assert qs.filter(pk=m.pk).exists()
 
     def test_as_of_excludes_ended_after_period(
@@ -85,10 +87,7 @@ class TestNormativeSelectors:
             effective_from=date(2024, 1, 1),
             effective_to=date(2024, 6, 15),
         )
-        qs = get_normative_memberships_for_index(
-            index=sp500,
-            as_of_date=date(2024, 6, 15),
-        )
+        qs = get_normative_memberships_for_index(index=sp500, as_of_date=date(2024, 6, 15))
         assert not qs.filter(pk=m.pk).exists()
 
     def test_as_of_includes_announced_reached_effective(
@@ -101,10 +100,7 @@ class TestNormativeSelectors:
             status=IndexMembership.Status.ANNOUNCED,
             effective_from=date(2024, 6, 1),
         )
-        qs = get_normative_memberships_for_index(
-            index=sp500,
-            as_of_date=date(2024, 6, 15),
-        )
+        qs = get_normative_memberships_for_index(index=sp500, as_of_date=date(2024, 6, 15))
         assert qs.filter(pk=m.pk).exists()
 
     def test_as_of_excludes_cancelled(
@@ -117,10 +113,7 @@ class TestNormativeSelectors:
             status=IndexMembership.Status.CANCELLED,
             effective_from=date(2024, 1, 1),
         )
-        qs = get_normative_memberships_for_index(
-            index=sp500,
-            as_of_date=date(2024, 6, 1),
-        )
+        qs = get_normative_memberships_for_index(index=sp500, as_of_date=date(2024, 6, 1))
         assert not qs.filter(pk=m.pk).exists()
 
     def test_as_of_excludes_corrected(
@@ -133,10 +126,7 @@ class TestNormativeSelectors:
             status=IndexMembership.Status.CORRECTED,
             effective_from=date(2024, 1, 1),
         )
-        qs = get_normative_memberships_for_index(
-            index=sp500,
-            as_of_date=date(2024, 6, 1),
-        )
+        qs = get_normative_memberships_for_index(index=sp500, as_of_date=date(2024, 6, 1))
         assert not qs.filter(pk=m.pk).exists()
 
     def test_listing_selector(
@@ -150,8 +140,7 @@ class TestNormativeSelectors:
             effective_from=date(2024, 1, 1),
         )
         qs = get_normative_memberships_for_listing(
-            security_listing_id=listing.pk,
-            as_of_date=date(2024, 6, 1),
+            security_listing_id=listing.pk, as_of_date=date(2024, 6, 1)
         )
         assert qs.filter(pk=m.pk).exists()
 
@@ -167,8 +156,84 @@ class TestNormativeSelectors:
             effective_to=date(2024, 6, 30),
         )
         qs = get_normative_memberships_in_period(
+            index=sp500, from_date=date(2024, 3, 1), to_date=date(2024, 9, 1)
+        )
+        assert qs.filter(pk=m.pk).exists()
+
+
+class TestCurrentSelectors:
+    def test_current_listing_with_enabled_only(
+        self,
+        db: object,
+        sp500: MarketIndex,
+        nasdaq100: MarketIndex,
+        listing: SecurityListing,
+    ) -> None:
+        del db
+        m1 = IndexMembership.objects.create(
             index=sp500,
-            from_date=date(2024, 3, 1),
-            to_date=date(2024, 9, 1),
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=nasdaq100,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = current_listing_indexes_as_of(
+            security_listing_id=listing.pk, as_of_date=date(2024, 6, 1), is_enabled=True
+        )
+        assert qs.filter(pk=m1.pk).exists()
+        # Both indexes are enabled by default
+        assert qs.count() == 2
+
+    def test_current_listing_disabled_excluded(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        sp500.is_enabled = False
+        sp500.save(update_fields=["is_enabled"])
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = current_listing_indexes_as_of(
+            security_listing_id=listing.pk, as_of_date=date(2024, 6, 1), is_enabled=True
+        )
+        assert not qs.exists()
+
+    def test_current_listing_disabled_only(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        sp500.is_enabled = False
+        sp500.save(update_fields=["is_enabled"])
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = current_listing_indexes_as_of(
+            security_listing_id=listing.pk, as_of_date=date(2024, 6, 1), is_enabled=False
+        )
+        assert qs.filter(pk=m.pk).exists()
+
+    def test_company_indexes_as_of_includes_listing(
+        self, db: object, sp500: MarketIndex, company: Company, listing: SecurityListing
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = company_indexes_as_of(
+            company_id=company.pk, as_of_date=date(2024, 6, 1), is_enabled=True
         )
         assert qs.filter(pk=m.pk).exists()

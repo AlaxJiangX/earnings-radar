@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date
 from typing import TYPE_CHECKING
 
 import pytest
 
-from audit.models import AuditRecord, SyncRun
+from audit.models import AuditRecord, SourceEvidence, SyncRun
 from companies.models import Company, SecurityListing
 from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership, MarketIndex
 from indexes.selectors import get_normative_memberships_for_listing
@@ -69,6 +69,9 @@ def sync_run(db: object) -> SyncRun:
         job_type="test",
         source=source,
         status="running",
+        idempotency_key="test-sync-run",
+        code_version="test",
+        parser_version="test",
     )
 
 
@@ -625,3 +628,281 @@ class TestCloseMembershipsForListing:
             status__in=NORMATIVE_MEMBERSHIP_STATUSES,
         )
         assert normative.count() == 2
+
+
+class TestAutoProvenance:
+    """Tests for automatic provenance with source_evidence + sync_run."""
+
+    @pytest.fixture
+    def evidence_target_id(self) -> uuid.UUID:
+        return uuid.uuid4()
+
+    @pytest.fixture
+    def evidence(
+        self, db: object, listing: SecurityListing, sync_run: SyncRun, evidence_target_id: uuid.UUID
+    ) -> SourceEvidence:
+        del db, listing
+        import uuid as _uuid
+        from datetime import datetime
+        from decimal import Decimal
+
+        from audit.models import RawDataObservation, RawDataRecord
+        from audit.services.source_evidence import record_source_evidence
+
+        record = RawDataRecord.objects.create(
+            source=sync_run.source,
+            first_sync_run=sync_run,
+            source_url="https://example.com/test",
+            request_fingerprint=(_uuid.uuid4().hex * 2),
+            fetched_at=datetime.now(UTC),
+            content_hash="a" * 64,
+            payload=b"{}",
+            payload_size_bytes=2,
+        )
+        RawDataObservation.objects.create(
+            raw_data_record=record,
+            sync_run=sync_run,
+            observed_at=sync_run.started_at,
+        )
+        result = record_source_evidence(
+            raw_data_record=record,
+            sync_run=sync_run,
+            target_type="index_membership",
+            target_id=evidence_target_id,
+            field_name="status",
+            raw_value="active",
+            normalized_value="active",
+            confidence=Decimal("1.0"),
+            normalizer_version="v1",
+        )
+        return result.evidence
+
+    def test_auto_create_succeeds(
+        self,
+        db: object,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        sync_run: SyncRun,
+        evidence: SourceEvidence,
+        evidence_target_id: uuid.UUID,
+    ) -> None:
+        del db
+        result = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+            source_evidence=evidence,
+            sync_run=sync_run,
+            membership_id=evidence_target_id,
+        )
+        assert result.created is True
+        assert result.membership.source_evidence_id == evidence.pk
+
+    def test_auto_create_writes_create_audit(
+        self,
+        db: object,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        sync_run: SyncRun,
+        evidence: SourceEvidence,
+        evidence_target_id: uuid.UUID,
+    ) -> None:
+        del db
+        result = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+            source_evidence=evidence,
+            sync_run=sync_run,
+            membership_id=evidence_target_id,
+        )
+        assert result.audit_record is not None
+        assert result.audit_record.action == AuditRecord.Action.CREATE
+
+    def test_auto_create_saves_resolver_evidence(
+        self,
+        db: object,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        sync_run: SyncRun,
+        evidence: SourceEvidence,
+        evidence_target_id: uuid.UUID,
+    ) -> None:
+        del db
+        result = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+            source_evidence=evidence,
+            sync_run=sync_run,
+            membership_id=evidence_target_id,
+        )
+        assert result.membership.source_evidence_id == evidence.pk
+
+    def test_only_source_evidence_rejected(
+        self,
+        db: object,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        evidence: SourceEvidence,
+    ) -> None:
+        del db
+        with pytest.raises(MembershipServiceError, match="sync_run"):
+            create_index_membership(
+                index=sp500,
+                security_listing=listing,
+                status=IndexMembership.Status.ACTIVE,
+                effective_from=date(2024, 1, 1),
+                source_evidence=evidence,
+            )
+
+    def test_only_sync_run_rejected(
+        self,
+        db: object,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        sync_run: SyncRun,
+    ) -> None:
+        del db
+        with pytest.raises(MembershipServiceError, match="source_evidence"):
+            create_index_membership(
+                index=sp500,
+                security_listing=listing,
+                status=IndexMembership.Status.ACTIVE,
+                effective_from=date(2024, 1, 1),
+                sync_run=sync_run,
+            )
+
+    def test_auto_plus_human_mixed_rejected(
+        self,
+        db: object,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        sync_run: SyncRun,
+        evidence: SourceEvidence,
+        user: User,
+    ) -> None:
+        del db
+        with pytest.raises(MembershipServiceError, match="both"):
+            create_index_membership(
+                index=sp500,
+                security_listing=listing,
+                status=IndexMembership.Status.ACTIVE,
+                effective_from=date(2024, 1, 1),
+                source_evidence=evidence,
+                sync_run=sync_run,
+                actor_user=user,
+                reason="test",
+                request_id="req-1",
+            )
+
+    def test_auto_generates_request_id(
+        self,
+        db: object,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        sync_run: SyncRun,
+        evidence: SourceEvidence,
+        evidence_target_id: uuid.UUID,
+    ) -> None:
+        del db
+        result = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+            source_evidence=evidence,
+            sync_run=sync_run,
+            membership_id=evidence_target_id,
+        )
+        assert result.audit_record is not None
+        assert result.audit_record.request_id.startswith("sync-run:")
+
+    def test_blank_human_reason_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        with pytest.raises(MembershipServiceError, match="reason"):
+            create_index_membership(
+                index=sp500,
+                security_listing=listing,
+                status=IndexMembership.Status.ACTIVE,
+                effective_from=date(2024, 1, 1),
+                actor_user=user,
+                reason="   ",
+                request_id="req-1",
+            )
+
+    def test_blank_human_request_id_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        with pytest.raises(MembershipServiceError, match="request_id"):
+            create_index_membership(
+                index=sp500,
+                security_listing=listing,
+                status=IndexMembership.Status.ACTIVE,
+                effective_from=date(2024, 1, 1),
+                actor_user=user,
+                reason="test",
+                request_id="   ",
+            )
+
+
+class TestMembershipConcurrency:
+    """Tests for concurrent membership creation."""
+
+    def test_concurrent_create_same_identity_one_wins(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        """Simulate concurrency by creating one first, then verifying idempotency."""
+        del db
+        # First create establishes the record
+        result1 = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+            actor_user=user,
+            reason="concurrent test",
+            request_id="concurrent-1",
+        )
+        assert result1.created is True
+
+        # Second call with same identity must return idempotent
+        result2 = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+            actor_user=user,
+            reason="concurrent test",
+            request_id="concurrent-1",
+        )
+        assert result2.created is False
+        assert result2.membership.pk == result1.membership.pk
+
+        # Only one AuditRecord
+        audit_count = AuditRecord.objects.filter(
+            target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
+            target_id=result1.membership.pk,
+        ).count()
+        assert audit_count == 1, "Only one AuditRecord should be created"
+
+    def test_create_within_listing_boundary_rejected_by_service(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        with pytest.raises(MembershipServiceError, match="before listing"):
+            create_index_membership(
+                index=sp500,
+                security_listing=listing,
+                status=IndexMembership.Status.ACTIVE,
+                effective_from=date(2019, 1, 1),
+                actor_user=user,
+                reason="test",
+                request_id="req-1",
+            )

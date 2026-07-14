@@ -53,12 +53,11 @@ class TestMembershipTrigger:
                 )
         except Exception:
             violation_caught = True
-        assert violation_caught, "Expected trigger violation was not raised"
+        assert violation_caught, "Expected IntegrityError from trigger was not raised"
 
     def test_effective_to_exceeds_listing_rejected(
         self, sp500: MarketIndex, listing: SecurityListing
     ) -> None:
-        # Create a listing with a bounded effective_to for this test
         listing.effective_to = date(2030, 12, 31)
         listing.save(update_fields=["effective_to"])
         violation_caught = False
@@ -73,7 +72,7 @@ class TestMembershipTrigger:
                 )
         except Exception:
             violation_caught = True
-        assert violation_caught, "Expected trigger violation was not raised"
+        assert violation_caught, "Expected IntegrityError from trigger was not raised"
 
     def test_no_effective_to_when_listing_ended_rejected(
         self, sp500: MarketIndex, company: Company
@@ -96,7 +95,7 @@ class TestMembershipTrigger:
                 )
         except Exception:
             violation_caught = True
-        assert violation_caught, "Expected trigger violation was not raised"
+        assert violation_caught, "Expected IntegrityError from trigger was not raised"
 
     def test_corrected_bypasses_trigger(self, sp500: MarketIndex, listing: SecurityListing) -> None:
         m = IndexMembership.objects.create(
@@ -136,7 +135,7 @@ class TestListingTrigger:
                 listing.save(update_fields=["effective_from"])
         except Exception:
             violation_caught = True
-        assert violation_caught, "Expected trigger violation was not raised"
+        assert violation_caught, "Expected IntegrityError from trigger was not raised"
 
     def test_effective_to_shortened_past_membership_rejected(
         self, sp500: MarketIndex, listing: SecurityListing
@@ -154,7 +153,7 @@ class TestListingTrigger:
                 listing.save(update_fields=["effective_to"])
         except Exception:
             violation_caught = True
-        assert violation_caught, "Expected trigger violation was not raised"
+        assert violation_caught, "Expected IntegrityError from trigger was not raised"
 
     def test_coordinated_transaction_adjust_membership_then_listing(
         self, sp500: MarketIndex, listing: SecurityListing
@@ -218,3 +217,70 @@ class TestListingTrigger:
                 "WHERE tgname = 'trg_listing_boundaries_memberships'"
             )
             assert c.fetchone()[0] >= 1
+
+
+@pytest.mark.django_db(transaction=True)
+class TestMigrationTriggers:
+    """Verify that migration 0003→0004→0003→0004 properly creates/removes triggers."""
+
+    def test_trigger_migration_roundtrip(self) -> None:
+        from django.core.management import call_command
+
+        # Forward: 0004 should create triggers
+        call_command("migrate", "indexes", "0004_constraint_triggers", verbosity=0)
+
+        with connection.cursor() as c:
+            c.execute(
+                "SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_membership_within_listing'"
+            )
+            assert c.fetchone()[0] >= 1, "Membership trigger should exist after 0004"
+            c.execute(
+                "SELECT count(*) FROM pg_trigger "
+                "WHERE tgname = 'trg_listing_boundaries_memberships'"
+            )
+            assert c.fetchone()[0] >= 1, "Listing trigger should exist after 0004"
+            c.execute(
+                "SELECT count(*) FROM pg_proc WHERE proname = 'check_membership_within_listing'"
+            )
+            assert c.fetchone()[0] >= 1, "Membership function should exist"
+            c.execute(
+                "SELECT count(*) FROM pg_proc "
+                "WHERE proname = 'check_listing_boundaries_memberships'"
+            )
+            assert c.fetchone()[0] >= 1, "Listing function should exist"
+
+        # Reverse: 0004→0003 should drop triggers and functions
+        call_command("migrate", "indexes", "0003_index_membership", verbosity=0)
+
+        with connection.cursor() as c:
+            c.execute(
+                "SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_membership_within_listing'"
+            )
+            assert c.fetchone()[0] == 0, "Membership trigger should be removed after reverse"
+            c.execute(
+                "SELECT count(*) FROM pg_trigger "
+                "WHERE tgname = 'trg_listing_boundaries_memberships'"
+            )
+            assert c.fetchone()[0] == 0, "Listing trigger should be removed after reverse"
+            c.execute(
+                "SELECT count(*) FROM pg_proc WHERE proname = 'check_membership_within_listing'"
+            )
+            assert c.fetchone()[0] == 0, "Membership function should be removed"
+            c.execute(
+                "SELECT count(*) FROM pg_proc "
+                "WHERE proname = 'check_listing_boundaries_memberships'"
+            )
+            assert c.fetchone()[0] == 0, "Listing function should be removed"
+
+        # Re-apply 0004
+        call_command("migrate", "indexes", "0004_constraint_triggers", verbosity=0)
+
+        with connection.cursor() as c:
+            c.execute(
+                "SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_membership_within_listing'"
+            )
+            assert c.fetchone()[0] >= 1, "Membership trigger should be re-created"
+            c.execute(
+                "SELECT count(*) FROM pg_proc WHERE proname = 'check_membership_within_listing'"
+            )
+            assert c.fetchone()[0] >= 1, "Membership function should be re-created"

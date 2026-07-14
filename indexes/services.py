@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+from uuid import UUID as uuid_UUID
+from uuid import uuid4
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
@@ -14,6 +16,9 @@ from audit.services import (
     record_data_change,
     record_system_action,
     record_user_action,
+)
+from audit.services.source_evidence import (
+    resolve_source_evidence_reference,
 )
 from companies.models import SecurityListing
 from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership, MarketIndex
@@ -163,6 +168,10 @@ class CannotCancelPastEffective(MembershipServiceError):
     pass
 
 
+class MembershipListingHistoryConflict(MembershipServiceError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class MembershipWriteResult:
     membership: IndexMembership
@@ -174,7 +183,7 @@ class MembershipWriteResult:
 @dataclass(frozen=True, slots=True)
 class MembershipCloseResult:
     membership: IndexMembership
-    action: str  # "cancelled", "ended", "corrected", "skipped"
+    action: str
     replacement: IndexMembership | None
     data_changes: tuple[DataChangeWriteResult, ...]
     audit_records: tuple[AuditRecord | None, ...]
@@ -195,6 +204,39 @@ class MembershipEndResult:
     audit_record: AuditRecord | None
 
 
+class _MembershipWriteContext:
+    """Resolved provenance context for membership write operations."""
+
+    __slots__ = (
+        "is_auto",
+        "actor_user",
+        "reason",
+        "request_id",
+        "ip_address",
+        "source_evidence",
+        "sync_run",
+    )
+
+    def __init__(
+        self,
+        *,
+        is_auto: bool,
+        actor_user: User | None,
+        reason: str,
+        request_id: str,
+        ip_address: str | None,
+        source_evidence: SourceEvidence | None,
+        sync_run: SyncRun | None,
+    ):
+        self.is_auto = is_auto
+        self.actor_user = actor_user
+        self.reason = reason
+        self.request_id = request_id
+        self.ip_address = ip_address
+        self.source_evidence = source_evidence
+        self.sync_run = sync_run
+
+
 def derive_status(
     effective_from: date,
     effective_to: date | None,
@@ -205,6 +247,11 @@ def derive_status(
     if effective_to is not None and effective_to <= as_of_date:
         return IndexMembership.Status.ENDED
     return IndexMembership.Status.ACTIVE
+
+
+# ---------------------------------------------------------------------------
+# create_index_membership
+# ---------------------------------------------------------------------------
 
 
 def create_index_membership(
@@ -221,28 +268,57 @@ def create_index_membership(
     reason: str = "",
     request_id: str = "",
     ip_address: str | None = None,
+    membership_id: uuid_UUID | None = None,
 ) -> MembershipWriteResult:
     _validate_membership_status(status)
     _validate_membership_dates(effective_from, effective_to)
     _validate_membership_source(source_evidence, sync_run, actor_user, reason, request_id)
 
+    target_id = membership_id if membership_id is not None else uuid4()
+
+    # Resolve provenance *before* entering the main transaction so that
+    # resolve_source_evidence_reference validates evidence/sync_run linkage
+    # using persisted stable identifiers.
+    context = _resolve_membership_write_context(
+        source_evidence=source_evidence,
+        sync_run=sync_run,
+        actor_user=actor_user,
+        reason=reason,
+        request_id=request_id,
+        ip_address=ip_address,
+        target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
+        target_id=target_id,
+    )
+    evidence = context.source_evidence
+
     with transaction.atomic():
+        # Re-read + lock domain parents
+        index_obj = _locked_market_index(index)
+        listing_obj = _locked_security_listing(security_listing)
+        _validate_membership_within_listing(
+            effective_from=effective_from,
+            effective_to=effective_to,
+            listing_effective_from=listing_obj.effective_from,
+            listing_effective_to=listing_obj.effective_to,
+        )
+
         try:
             with transaction.atomic():
                 membership = IndexMembership.objects.create(
-                    index=index,
-                    security_listing=security_listing,
+                    id=target_id,
+                    index=index_obj,
+                    security_listing=listing_obj,
                     status=status,
                     effective_from=effective_from,
                     effective_to=effective_to,
                     announcement_date=announcement_date,
-                    source_evidence=source_evidence,
+                    source_evidence=evidence,
                 )
-        except IntegrityError:
-            # Savepoint rolled back; try to find existing
+        except IntegrityError as error:
+            # Savepoint rolled back; classify the conflict
             existing = IndexMembership.objects.filter(
-                index=index,
-                security_listing=security_listing,
+                index=index_obj,
+                security_listing=listing_obj,
                 effective_from=effective_from,
                 status__in=NORMATIVE_MEMBERSHIP_STATUSES,
             ).first()
@@ -253,7 +329,7 @@ def create_index_membership(
                     status,
                     effective_to,
                     announcement_date,
-                    source_evidence,
+                    evidence,
                 )
                 return MembershipWriteResult(
                     membership=existing,
@@ -262,19 +338,22 @@ def create_index_membership(
                     audit_record=None,
                 )
 
-            # Check for overlap conflict
-            overlapping = (
-                IndexMembership.objects.filter(
-                    security_listing=security_listing,
-                    index=index,
-                    status__in=NORMATIVE_MEMBERSHIP_STATUSES,
-                    effective_from__lt=(effective_to or date(9999, 12, 31)),
-                )
-                .filter(
+            # Check for date-range overlap
+            overlap_q = IndexMembership.objects.filter(
+                security_listing=listing_obj,
+                index=index_obj,
+                status__in=NORMATIVE_MEMBERSHIP_STATUSES,
+                effective_from__lt=effective_to if effective_to is not None else date(9999, 12, 31),
+            )
+            if effective_to is None:
+                overlap_q = overlap_q.filter(
                     Q(effective_to__isnull=True) | Q(effective_to__gt=effective_from),
                 )
-                .first()
-            )
+            else:
+                overlap_q = overlap_q.filter(
+                    Q(effective_to__isnull=True) | Q(effective_to__gt=effective_from),
+                )
+            overlapping = overlap_q.first()
 
             if overlapping is not None:
                 raise MembershipOverlapConflict(
@@ -285,20 +364,10 @@ def create_index_membership(
 
             raise MembershipIntegrityConflict(
                 "Membership creation failed with an unexpected IntegrityError."
-            ) from None
+            ) from error
 
-        # Created successfully
-        context = _resolve_membership_write_context(
-            target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
-            target_id=membership.pk,
-            source_evidence=source_evidence,
-            sync_run=sync_run,
-            actor_user=actor_user,
-            reason=reason,
-            request_id=request_id,
-            ip_address=ip_address,
-        )
-        audit_result = _write_membership_audit(
+        # Created successfully – record only CREATE AuditRecord, no initial DataChange
+        audit = _write_membership_audit(
             membership=membership,
             action=AuditRecord.Action.CREATE,
             before=None,
@@ -310,8 +379,13 @@ def create_index_membership(
             membership=membership,
             created=True,
             data_changes=(),
-            audit_record=audit_result,
+            audit_record=audit,
         )
+
+
+# ---------------------------------------------------------------------------
+# end_membership
+# ---------------------------------------------------------------------------
 
 
 def end_membership(
@@ -325,16 +399,33 @@ def end_membership(
     request_id: str = "",
     ip_address: str | None = None,
 ) -> MembershipEndResult:
-    if effective_to <= membership.effective_from:
-        raise MembershipServiceError("effective_to must be later than effective_from.")
+    _validate_membership_source(source_evidence, sync_run, actor_user, reason, request_id)
+
+    context = _resolve_membership_write_context(
+        source_evidence=source_evidence,
+        sync_run=sync_run,
+        actor_user=actor_user,
+        reason=reason,
+        request_id=request_id,
+        ip_address=ip_address,
+        target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
+        target_id=membership.pk,
+    )
 
     with transaction.atomic():
         obj = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
+        if effective_to <= obj.effective_from:
+            raise MembershipServiceError(
+                f"effective_to {effective_to} must be later than "
+                f"effective_from {obj.effective_from}."
+            )
+
         if obj.status not in ("announced", "active"):
             raise InvalidMembershipState(f"Membership {obj.pk} is {obj.status}, cannot be ended.")
 
-        if obj.effective_to == effective_to:
+        # True no-op: effective_to already matches AND status is already ended
+        if obj.effective_to == effective_to and obj.status == IndexMembership.Status.ENDED:
             return MembershipEndResult(
                 membership=obj,
                 data_changes=(),
@@ -343,10 +434,9 @@ def end_membership(
 
         old_effective_to = obj.effective_to
         old_status = obj.status
-        new_status = derive_status(obj.effective_from, effective_to, effective_to)
 
         obj.effective_to = effective_to
-        obj.status = new_status
+        obj.status = IndexMembership.Status.ENDED
         obj.save(update_fields=["effective_to", "status", "updated_at"])
 
         data_changes: list[DataChangeWriteResult] = []
@@ -359,40 +449,30 @@ def end_membership(
                 old_value=old_effective_to.isoformat() if old_effective_to else None,
                 new_value=effective_to.isoformat(),
                 rule_version=MEMBERSHIP_RULE_VERSION,
-                source_evidence=source_evidence,
-                sync_run=sync_run,
-                actor_user=actor_user,
-                reason=reason,
-                origin_key=request_id,
+                source_evidence=context.source_evidence,
+                sync_run=context.sync_run,
+                actor_user=context.actor_user,
+                reason=context.reason,
+                origin_key=context.request_id,
             )
             data_changes.append(dc)
 
-        if old_status != new_status:
+        if old_status != IndexMembership.Status.ENDED:
             dc = record_data_change(
                 target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
                 target_id=obj.pk,
                 field_name="status",
                 old_value=old_status,
-                new_value=new_status,
+                new_value=IndexMembership.Status.ENDED,
                 rule_version=MEMBERSHIP_RULE_VERSION,
-                source_evidence=source_evidence,
-                sync_run=sync_run,
-                actor_user=actor_user,
-                reason=reason,
-                origin_key=request_id,
+                source_evidence=context.source_evidence,
+                sync_run=context.sync_run,
+                actor_user=context.actor_user,
+                reason=context.reason,
+                origin_key=context.request_id,
             )
             data_changes.append(dc)
 
-        context = _resolve_membership_write_context(
-            target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
-            target_id=obj.pk,
-            source_evidence=source_evidence,
-            sync_run=sync_run,
-            actor_user=actor_user,
-            reason=reason,
-            request_id=request_id,
-            ip_address=ip_address,
-        )
         audit = _write_membership_audit(
             membership=obj,
             action=AuditRecord.Action.UPDATE,
@@ -400,7 +480,10 @@ def end_membership(
                 "effective_to": old_effective_to.isoformat() if old_effective_to else None,
                 "status": old_status,
             },
-            after={"effective_to": effective_to.isoformat(), "status": new_status},
+            after={
+                "effective_to": effective_to.isoformat(),
+                "status": IndexMembership.Status.ENDED,
+            },
             context=context,
         )
 
@@ -409,6 +492,11 @@ def end_membership(
             data_changes=tuple(data_changes),
             audit_record=audit,
         )
+
+
+# ---------------------------------------------------------------------------
+# cancel_membership
+# ---------------------------------------------------------------------------
 
 
 def cancel_membership(
@@ -468,8 +556,9 @@ def cancel_membership(
         )
 
 
-def _cast_mapping_value(mapping: Mapping[str, object], key: str, default: object) -> object:
-    return mapping.get(key, default)
+# ---------------------------------------------------------------------------
+# correct_membership
+# ---------------------------------------------------------------------------
 
 
 def correct_membership(
@@ -481,6 +570,18 @@ def correct_membership(
     request_id: str,
     ip_address: str | None = None,
 ) -> MembershipCorrectionResult:
+    # actor_user context is always manual for corrections (no automatic self-correction)
+    _resolve_membership_write_context(
+        source_evidence=None,
+        sync_run=None,
+        actor_user=actor_user,
+        reason=reason,
+        request_id=request_id,
+        ip_address=ip_address,
+        target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
+        target_id=membership.pk,
+    )
+
     with transaction.atomic():
         old = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
@@ -490,6 +591,28 @@ def correct_membership(
         if old.status not in NORMATIVE_MEMBERSHIP_STATUSES:
             raise InvalidMembershipState(
                 f"Membership {old.pk} is {old.status}, cannot be corrected."
+            )
+
+        # Verify listing still exists and is consistent with historical membership
+        try:
+            listing = SecurityListing.objects.select_for_update().get(pk=old.security_listing_id)
+        except SecurityListing.DoesNotExist as exc:
+            raise MembershipListingHistoryConflict(
+                f"SecurityListing {old.security_listing_id} no longer exists – "
+                f"cannot correct membership {old.pk}."
+            ) from exc
+
+        if old.effective_from < listing.effective_from:
+            raise MembershipListingHistoryConflict(
+                f"Membership {old.pk} effective_from={old.effective_from} "
+                f"is before listing {listing.pk} effective_from={listing.effective_from}."
+            )
+        if listing.effective_to is not None and (
+            old.effective_to is None or old.effective_to > listing.effective_to
+        ):
+            raise MembershipListingHistoryConflict(
+                f"Membership {old.pk} effective_to={old.effective_to} "
+                f"exceeds listing {listing.pk} effective_to={listing.effective_to}."
             )
 
         old_status_before = old.status
@@ -561,6 +684,11 @@ def correct_membership(
         )
 
 
+# ---------------------------------------------------------------------------
+# close_memberships_for_listing
+# ---------------------------------------------------------------------------
+
+
 def close_memberships_for_listing(
     *,
     listing: SecurityListing,
@@ -574,16 +702,20 @@ def close_memberships_for_listing(
     results: list[MembershipCloseResult] = []
 
     with transaction.atomic():
+        locked_listing = SecurityListing.objects.select_for_update().get(pk=listing.pk)
+
         memberships = list(
             IndexMembership.objects.select_for_update()
-            .filter(security_listing=listing, status__in=NORMATIVE_MEMBERSHIP_STATUSES)
+            .filter(
+                security_listing=locked_listing,
+                status__in=NORMATIVE_MEMBERSHIP_STATUSES,
+            )
             .order_by("effective_from")
         )
 
         for obj in memberships:
             if obj.effective_from >= new_effective_to:
                 if obj.effective_from > as_of_date:
-                    # Future announced, never took effect
                     old_status = obj.status
                     obj.status = IndexMembership.Status.CANCELLED
                     obj.save(update_fields=["status", "updated_at"])
@@ -620,15 +752,15 @@ def close_memberships_for_listing(
                         )
                     )
                 else:
-                    raise MembershipServiceError(
+                    raise MembershipListingHistoryConflict(
                         f"Membership {obj.pk} effective_from={obj.effective_from} "
-                        f">= new_effective_to={new_effective_to} but is not in the future "
-                        f"(as_of_date={as_of_date}). Manual review required."
+                        f">= new_effective_to={new_effective_to} but "
+                        f"as_of_date={as_of_date} is not in the future. "
+                        f"Manual review required."
                     )
 
             elif obj.status == "ended":
                 if obj.effective_to is None or obj.effective_to > new_effective_to:
-                    # Old effective_to exceeds new boundary → correct
                     corr_result = correct_membership(
                         membership=obj,
                         replacement_values={
@@ -690,7 +822,7 @@ def close_memberships_for_listing(
                             target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
                             target_id=obj.pk,
                             field_name="effective_to",
-                            old_value=old_effective_to.isoformat() if old_effective_to else None,
+                            old_value=(old_effective_to.isoformat() if old_effective_to else None),
                             new_value=new_effective_to.isoformat(),
                             rule_version=MEMBERSHIP_RULE_VERSION,
                             actor_user=actor_user,
@@ -719,10 +851,15 @@ def close_memberships_for_listing(
                     target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
                     target_id=obj.pk,
                     before={
-                        "effective_to": old_effective_to.isoformat() if old_effective_to else None,
+                        "effective_to": (
+                            old_effective_to.isoformat() if old_effective_to else None
+                        ),
                         "status": old_status,
                     },
-                    after={"effective_to": new_effective_to.isoformat(), "status": new_status},
+                    after={
+                        "effective_to": new_effective_to.isoformat(),
+                        "status": new_status,
+                    },
                     reason=reason,
                     request_id=request_id,
                     ip_address=ip_address,
@@ -741,7 +878,13 @@ def close_memberships_for_listing(
     return results
 
 
-# --- Internal helpers ---
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _cast_mapping_value(mapping: Mapping[str, object], key: str, default: object) -> object:
+    return mapping.get(key, default)
 
 
 def _validate_membership_status(status: str) -> None:
@@ -763,19 +906,49 @@ def _validate_membership_source(
 ) -> None:
     has_auto = source_evidence is not None or sync_run is not None
     has_human = actor_user is not None
+
     if has_auto and has_human:
         raise MembershipServiceError(
             "Cannot provide both automatic (source_evidence/sync_run) "
             "and manual (actor_user) provenance."
         )
-    if not has_auto and not has_human:
-        raise MembershipServiceError("Must provide either source_evidence/sync_run or actor_user.")
-    if has_human and (not reason or not request_id):
-        raise MembershipServiceError("Manual operations require non-empty reason and request_id.")
-    if has_auto and source_evidence is None and sync_run is None:
+    if has_auto:
+        if source_evidence is None:
+            raise MembershipServiceError("Automatic provenance requires source_evidence.")
+        if sync_run is None:
+            raise MembershipServiceError("Automatic provenance requires sync_run.")
+    elif has_human:
+        if not reason or not reason.strip():
+            raise MembershipServiceError("Manual operations require non-empty reason.")
+        if not request_id or not request_id.strip():
+            raise MembershipServiceError("Manual operations require non-empty request_id.")
+    else:
+        raise MembershipServiceError("Must provide either source_evidence+sync_run or actor_user.")
+
+
+def _validate_membership_within_listing(
+    *,
+    effective_from: date,
+    effective_to: date | None,
+    listing_effective_from: date,
+    listing_effective_to: date | None,
+) -> None:
+    if effective_from < listing_effective_from:
         raise MembershipServiceError(
-            "Automatic operations require at least one of source_evidence or sync_run."
+            f"Membership effective_from {effective_from} is before "
+            f"listing effective_from {listing_effective_from}."
         )
+    if listing_effective_to is not None:
+        if effective_to is None:
+            raise MembershipServiceError(
+                f"Membership with no effective_to cannot be created under "
+                f"a listing that ends at {listing_effective_to}."
+            )
+        if effective_to > listing_effective_to:
+            raise MembershipServiceError(
+                f"Membership effective_to {effective_to} exceeds "
+                f"listing effective_to {listing_effective_to}."
+            )
 
 
 def _verify_membership_equivalent(
@@ -798,48 +971,86 @@ def _verify_membership_equivalent(
         )
 
 
-class _MembershipWriteContext:
-    def __init__(
-        self,
-        is_auto: bool,
-        actor_user: User | None,
-        reason: str,
-        request_id: str,
-        ip_address: str | None,
-        source_evidence: SourceEvidence | None,
-        sync_run: SyncRun | None,
-    ):
-        self.is_auto = is_auto
-        self.actor_user = actor_user
-        self.reason = reason
-        self.request_id = request_id
-        self.ip_address = ip_address
-        self.source_evidence = source_evidence
-        self.sync_run = sync_run
-
-
 def _resolve_membership_write_context(
     *,
-    target_type: str,
-    target_id: object,
     source_evidence: SourceEvidence | None,
     sync_run: SyncRun | None,
     actor_user: User | None,
     reason: str,
     request_id: str,
     ip_address: str | None,
+    target_type: str,
+    target_id: uuid_UUID,
 ) -> _MembershipWriteContext:
-    del target_type, target_id
     is_auto = actor_user is None
+
+    if is_auto:
+        if source_evidence is None or sync_run is None:
+            raise MembershipServiceError(
+                "Automatic write context requires both source_evidence and sync_run."
+            )
+        evidence_ref = resolve_source_evidence_reference(
+            source_evidence=source_evidence,
+            sync_run=sync_run,
+            target_type=target_type,
+            target_id=target_id,
+            field_names=(),
+        )
+        resolved_evidence = evidence_ref.evidence
+        resolved_sync_run = evidence_ref.sync_run
+        resolved_request_id = (
+            request_id.strip() if request_id.strip() else f"sync-run:{resolved_sync_run.pk}"
+        )
+        return _MembershipWriteContext(
+            is_auto=True,
+            actor_user=None,
+            reason=reason,
+            request_id=resolved_request_id,
+            ip_address=None,
+            source_evidence=resolved_evidence,
+            sync_run=resolved_sync_run,
+        )
+
+    # Manual
+    if not reason.strip():
+        raise MembershipServiceError("Manual operations require non-empty reason.")
+    if not request_id.strip():
+        raise MembershipServiceError("Manual operations require non-empty request_id.")
+
+    resolved_evidence_manual: SourceEvidence | None = None
+    if source_evidence is not None:
+        evidence_ref = resolve_source_evidence_reference(
+            source_evidence=source_evidence,
+            sync_run=None,
+            target_type=target_type,
+            target_id=target_id,
+            field_names=(),
+        )
+        resolved_evidence_manual = evidence_ref.evidence
+
     return _MembershipWriteContext(
-        is_auto=is_auto,
+        is_auto=False,
         actor_user=actor_user,
-        reason=reason,
-        request_id=request_id,
+        reason=reason.strip(),
+        request_id=request_id.strip(),
         ip_address=ip_address,
-        source_evidence=source_evidence,
-        sync_run=sync_run,
+        source_evidence=resolved_evidence_manual,
+        sync_run=None,
     )
+
+
+def _locked_market_index(index: MarketIndex) -> MarketIndex:
+    try:
+        return MarketIndex.objects.select_for_update().get(pk=index.pk)
+    except MarketIndex.DoesNotExist as exc:
+        raise MembershipServiceError(f"MarketIndex {index.pk} does not exist.") from exc
+
+
+def _locked_security_listing(listing: SecurityListing) -> SecurityListing:
+    try:
+        return SecurityListing.objects.select_for_update().get(pk=listing.pk)
+    except SecurityListing.DoesNotExist as exc:
+        raise MembershipServiceError(f"SecurityListing {listing.pk} does not exist.") from exc
 
 
 def _write_membership_audit(
@@ -851,7 +1062,7 @@ def _write_membership_audit(
     context: _MembershipWriteContext,
 ) -> AuditRecord:
     if context.is_auto:
-        assert context.sync_run is not None, "Automatic audit requires a SyncRun."
+        assert context.sync_run is not None
         result = record_system_action(
             sync_run=context.sync_run,
             action=action,
@@ -864,7 +1075,7 @@ def _write_membership_audit(
         )
     else:
         result = record_user_action(
-            actor_user=context.actor_user,  # type: ignore[arg-type]
+            actor_user=cast("User", context.actor_user),
             action=action,
             target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
             target_id=membership.pk,
@@ -883,8 +1094,8 @@ def _serialize_membership(membership: IndexMembership) -> dict[str, object]:
         "security_listing_id": str(membership.security_listing_id),
         "status": membership.status,
         "effective_from": membership.effective_from.isoformat(),
-        "effective_to": membership.effective_to.isoformat() if membership.effective_to else None,
-        "announcement_date": membership.announcement_date.isoformat()
-        if membership.announcement_date
-        else None,
+        "effective_to": (membership.effective_to.isoformat() if membership.effective_to else None),
+        "announcement_date": (
+            membership.announcement_date.isoformat() if membership.announcement_date else None
+        ),
     }

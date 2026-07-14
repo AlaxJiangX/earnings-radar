@@ -123,7 +123,7 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 
 ### 5.2 `IndexMembership`
 
-保存当前和历史指数成分关系。
+保存当前和历史指数成分关系。阶段 3.1B 已实现（Draft PR #6）。
 
 | 字段 | 说明 |
 |---|---|
@@ -133,11 +133,24 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | `effective_to` | date nullable；半开区间结束 |
 | `announcement_date` | date nullable |
 | `status` | announced / active / ended / cancelled / corrected |
-| `last_verified_at` | timestamptz |
+| `supersedes` | OneToOneField self (PROTECT)；替代记录指向旧记录，形成修订链表 |
+| `last_verified_at` | timestamptz nullable |
 | `source_evidence_id` | 当前关系的主要证据 |
 | `created_at`, `updated_at` | UTC |
 
-约束：同一 SecurityListing 与指数的生效区间不得重叠，membership 的有效期必须与 listing 有效期相交且不能超出已知 listing 生命周期。不能只依赖冗余 `is_active`，当前有效性由状态与日期推导。若为查询性能保留 `is_active`，必须由服务统一维护并有一致性测试。
+约束：
+- 同一 SecurityListing + Index 的规范生效区间不得重叠（ExclusionConstraint，仅规范状态）
+- 同一 index + security_listing + effective_from 最多一条规范记录（UniqueConstraint，仅规范状态）
+- effective_to > effective_from（ended 必须有 effective_to）
+- announcement_date ≤ effective_from
+- membership 有效期必须包含在 listing 有效期内（membership 侧 + listing 侧 deferred constraint trigger）
+- corrected/cancelled 不参与任何规范约束
+
+修订关系：`replacement.supersedes → old`，`old.superseded_by → replacement`。Correction chain 为链表 M1←M2←M3。
+
+Selector：`NORMATIVE_STATUSES = (announced, active, ended)`。as-of 查询包含 `effective_from ≤ date < effective_to`。`current_listing_indexes_as_of()` 和 `company_indexes_as_of()` 支持 `is_enabled` 过滤（默认仅启用指数）。
+
+Provenance：自动来源需 SyncRun + SourceEvidence（通过 `resolve_source_evidence_reference`）；人工来源需 actor_user + reason + request_id。新建只写 CREATE AuditRecord，不写初始 DataChange。
 
 Company 不直接拥有 IndexMembership。公司级指数归属由其全部有效 SecurityListing 的有效成员关系去重聚合：任一 listing 属于某启用指数，公司即显示属于该指数；多个 share class 同属一个指数时，底层保留多条 membership，Company 页面只聚合展示。历史 ticker 对应的旧 listing 和 membership 通过有效期保留，不改写为当前 ticker。
 

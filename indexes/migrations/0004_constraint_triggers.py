@@ -25,7 +25,8 @@ BEGIN
     SELECT effective_from, effective_to
       INTO listing
       FROM companies_securitylisting
-     WHERE id = current_row.security_listing_id;
+     WHERE id = current_row.security_listing_id
+       FOR UPDATE;
 
     IF NOT FOUND THEN
         RAISE EXCEPTION 'SecurityListing not found for membership %', NEW.id;
@@ -77,7 +78,8 @@ BEGIN
     SELECT effective_from, effective_to
       INTO current_listing
       FROM companies_securitylisting
-     WHERE id = NEW.id;
+     WHERE id = NEW.id
+       FOR UPDATE;
 
     IF NOT FOUND THEN
         RETURN NEW;
