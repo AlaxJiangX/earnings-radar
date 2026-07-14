@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
-from django.utils import timezone
 
 from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
 from audit.services import (
@@ -629,7 +628,6 @@ def correct_membership(
             )
 
         # --- Extract and validate replacement values ---
-        from datetime import datetime as dt
 
         new_index = _extract_replacement(replacement_values, "index", old.index, MarketIndex)
         new_listing = _extract_replacement(
@@ -645,18 +643,16 @@ def correct_membership(
         new_ann_date = _extract_replacement(
             replacement_values, "announcement_date", old.announcement_date, (date, type(None))
         )
-        new_last_verified = _extract_replacement(
-            replacement_values,
-            "last_verified_at",
-            old.last_verified_at,
-            (dt, type(None)),
-        )
-        raw_new_evidence = _extract_replacement(
-            replacement_values,
-            "source_evidence",
-            resolved_evidence,
-            (SourceEvidence, type(None)),
-        )
+
+        # last_verified_at: distinguish "not provided" from "explicitly None"
+        if "last_verified_at" in replacement_values:
+            new_last_verified = replacement_values["last_verified_at"]
+        else:
+            # Preserve exact old value, including None
+            new_last_verified = old.last_verified_at
+
+        # source_evidence: ONLY accepted via the top-level parameter, NOT replacement_values.
+        # _validate_replacement_fields already rejects it in replacement_values.
 
         # Validate replacement invariants
         _validate_replacement_membership(
@@ -664,7 +660,7 @@ def correct_membership(
             effective_from=new_eff_from,  # type: ignore[arg-type]
             effective_to=new_eff_to,  # type: ignore[arg-type]
             announcement_date=new_ann_date,  # type: ignore[arg-type]
-            source_evidence=raw_new_evidence if raw_new_evidence is not None else None,  # type: ignore[arg-type]
+            source_evidence=resolved_evidence,
         )
 
         # Re-read + lock replacement index and listing
@@ -687,6 +683,8 @@ def correct_membership(
             new_eff_from,  # type: ignore[arg-type]
             new_eff_to,  # type: ignore[arg-type]
             new_status,  # type: ignore[arg-type]
+            new_ann_date,  # type: ignore[arg-type]
+            new_last_verified,
         )
 
         # --- Verify old listing still exists and is consistent ---
@@ -749,8 +747,8 @@ def correct_membership(
             effective_from=new_eff_from,
             effective_to=new_eff_to,
             announcement_date=new_ann_date,
-            last_verified_at=new_last_verified if new_last_verified is not None else timezone.now(),
-            source_evidence=raw_new_evidence if raw_new_evidence is not None else None,
+            last_verified_at=new_last_verified,
+            source_evidence=resolved_evidence,
         )
 
         replacement_audit = record_user_action(
@@ -788,10 +786,37 @@ def close_memberships_for_listing(
     request_id: str,
     ip_address: str | None = None,
 ) -> list[MembershipCloseResult]:
+    """Close (end/cancel) all normative memberships for a listing.
+
+    - Memberships whose ``effective_from < new_effective_to`` are ended at
+      *new_effective_to* (status derived via ``derive_status``).
+    - Memberships whose ``effective_from >= new_effective_to`` are cancelled
+      **only** if they are ``announced`` AND ``effective_from > as_of_date``.
+      All other states (future active, future ended, past effective, etc.)
+      raise ``MembershipListingHistoryConflict``.
+    - *new_effective_to* must be strictly greater than the listing's current
+      ``effective_from``.
+    - The entire batch is atomic: a conflict rolls back all prior mutations,
+      DataChanges and AuditRecords.
+    """
     results: list[MembershipCloseResult] = []
+
+    _validate_membership_source(
+        source_evidence=None,
+        sync_run=None,
+        actor_user=actor_user,
+        reason=reason,
+        request_id=request_id,
+    )
 
     with transaction.atomic():
         locked_listing = SecurityListing.objects.select_for_update().get(pk=listing.pk)
+
+        if new_effective_to <= locked_listing.effective_from:
+            raise MembershipServiceError(
+                f"new_effective_to {new_effective_to} must be later than "
+                f"listing effective_from {locked_listing.effective_from}."
+            )
 
         memberships = list(
             IndexMembership.objects.select_for_update()
@@ -804,7 +829,12 @@ def close_memberships_for_listing(
 
         for obj in memberships:
             if obj.effective_from >= new_effective_to:
-                if obj.effective_from > as_of_date:
+                # Membership starts on or after listing ends.
+                # Only future announced memberships can be cancelled.
+                if (
+                    obj.status == IndexMembership.Status.ANNOUNCED
+                    and obj.effective_from > as_of_date
+                ):
                     old_status = obj.status
                     obj.status = IndexMembership.Status.CANCELLED
                     obj.save(update_fields=["status", "updated_at"])
@@ -843,47 +873,13 @@ def close_memberships_for_listing(
                 else:
                     raise MembershipListingHistoryConflict(
                         f"Membership {obj.pk} effective_from={obj.effective_from} "
-                        f">= new_effective_to={new_effective_to} but "
-                        f"as_of_date={as_of_date} is not in the future. "
+                        f">= new_effective_to={new_effective_to}, "
+                        f"status={obj.status}, as_of_date={as_of_date}. "
+                        f"Only future announced memberships can be cancelled. "
                         f"Manual review required."
                     )
-
-            elif obj.status == "ended":
-                if obj.effective_to is None or obj.effective_to > new_effective_to:
-                    corr_result = correct_membership(
-                        membership=obj,
-                        replacement_values={
-                            "effective_to": new_effective_to,
-                            "status": derive_status(
-                                obj.effective_from, new_effective_to, as_of_date
-                            ),
-                        },
-                        actor_user=actor_user,
-                        reason=reason,
-                        request_id=request_id,
-                        ip_address=ip_address,
-                    )
-                    results.append(
-                        MembershipCloseResult(
-                            membership=obj,
-                            action="corrected",
-                            replacement=corr_result.replacement,
-                            data_changes=corr_result.data_changes,
-                            audit_records=corr_result.audit_records,
-                        )
-                    )
-                else:
-                    results.append(
-                        MembershipCloseResult(
-                            membership=obj,
-                            action="skipped",
-                            replacement=None,
-                            data_changes=(),
-                            audit_records=(),
-                        )
-                    )
             else:
-                # announced or active, effective_from < new_effective_to
+                # effective_from < new_effective_to → end the membership
                 old_effective_to = obj.effective_to
                 old_status = obj.status
                 new_status = derive_status(obj.effective_from, new_effective_to, as_of_date)
@@ -904,14 +900,14 @@ def close_memberships_for_listing(
                 obj.status = new_status
                 obj.save(update_fields=["effective_to", "status", "updated_at"])
 
-                dcs: list[DataChangeWriteResult] = []
+                dc_list: list[DataChangeWriteResult] = []
                 if old_effective_to != new_effective_to:
-                    dcs.append(
+                    dc_list.append(
                         record_data_change(
                             target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
                             target_id=obj.pk,
                             field_name="effective_to",
-                            old_value=(old_effective_to.isoformat() if old_effective_to else None),
+                            old_value=old_effective_to.isoformat() if old_effective_to else None,
                             new_value=new_effective_to.isoformat(),
                             rule_version=MEMBERSHIP_RULE_VERSION,
                             actor_user=actor_user,
@@ -920,7 +916,7 @@ def close_memberships_for_listing(
                         )
                     )
                 if old_status != new_status:
-                    dcs.append(
+                    dc_list.append(
                         record_data_change(
                             target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
                             target_id=obj.pk,
@@ -940,9 +936,7 @@ def close_memberships_for_listing(
                     target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
                     target_id=obj.pk,
                     before={
-                        "effective_to": (
-                            old_effective_to.isoformat() if old_effective_to else None
-                        ),
+                        "effective_to": old_effective_to.isoformat() if old_effective_to else None,
                         "status": old_status,
                     },
                     after={
@@ -959,7 +953,7 @@ def close_memberships_for_listing(
                         membership=obj,
                         action="ended",
                         replacement=None,
-                        data_changes=tuple(dcs),
+                        data_changes=tuple(dc_list),
                         audit_records=(audit.record,),
                     )
                 )
@@ -979,14 +973,18 @@ def _prevent_self_supersede(
     new_eff_from: date,
     new_eff_to: date | None,
     new_status: str,
+    new_ann_date: date | None,
+    new_last_verified: object,
 ) -> None:
-    """Reject replacement that is identical to the original."""
+    """Reject replacement that is identical to the original on all fields."""
     if (
         new_index.pk == old.index_id
         and new_listing.pk == old.security_listing_id
         and new_eff_from == old.effective_from
         and new_eff_to == old.effective_to
         and new_status == old.status
+        and new_ann_date == old.announcement_date
+        and new_last_verified == old.last_verified_at
     ):
         raise MembershipServiceError(
             "Replacement is identical to the original membership. At least one field must differ."
@@ -1004,7 +1002,6 @@ _ALLOWED_REPLACEMENT_FIELDS = frozenset(
         "effective_to",
         "announcement_date",
         "last_verified_at",
-        "source_evidence",
     }
 )
 

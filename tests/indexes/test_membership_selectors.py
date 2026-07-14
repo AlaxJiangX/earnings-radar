@@ -237,3 +237,199 @@ class TestCurrentSelectors:
             company_id=company.pk, as_of_date=date(2024, 6, 1), is_enabled=True
         )
         assert qs.filter(pk=m.pk).exists()
+
+
+class TestMembershipsAsOf:
+    def test_all_memberships_as_of(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import memberships_as_of
+
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = memberships_as_of(as_of_date=date(2024, 6, 1))
+        assert qs.filter(pk=m.pk).exists()
+
+    def test_filter_by_index_code(
+        self, db: object, sp500: MarketIndex, nasdaq100: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import memberships_as_of
+
+        m1 = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        IndexMembership.objects.create(
+            index=nasdaq100,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = memberships_as_of(as_of_date=date(2024, 6, 1), index_code="SP500")
+        assert qs.filter(pk=m1.pk).exists()
+        assert qs.count() == 1
+
+    def test_excludes_cancelled(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import memberships_as_of
+
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.CANCELLED,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = memberships_as_of(as_of_date=date(2024, 6, 1))
+        assert not qs.filter(pk=m.pk).exists()
+
+    def test_excludes_corrected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import memberships_as_of
+
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.CORRECTED,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = memberships_as_of(as_of_date=date(2024, 6, 1))
+        assert not qs.filter(pk=m.pk).exists()
+
+
+class TestCurrentMemberships:
+    def test_enabled_only(self, db: object, sp500: MarketIndex, listing: SecurityListing) -> None:
+        del db
+        from indexes.selectors import current_memberships
+
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = current_memberships(as_of_date=date(2024, 6, 1), is_enabled=True)
+        assert qs.filter(pk=m.pk).exists()
+
+    def test_disabled_excluded(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import current_memberships
+
+        sp500.is_enabled = False
+        sp500.save(update_fields=["is_enabled"])
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = current_memberships(as_of_date=date(2024, 6, 1), is_enabled=True)
+        assert not qs.filter(pk=m.pk).exists()
+
+    def test_disabled_only(self, db: object, sp500: MarketIndex, listing: SecurityListing) -> None:
+        del db
+        from indexes.selectors import current_memberships
+
+        sp500.is_enabled = False
+        sp500.save(update_fields=["is_enabled"])
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = current_memberships(as_of_date=date(2024, 6, 1), is_enabled=False)
+        assert qs.filter(pk=m.pk).exists()
+
+    def test_all_mode(
+        self, db: object, sp500: MarketIndex, nasdaq100: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import current_memberships
+
+        nasdaq100.is_enabled = False
+        nasdaq100.save(update_fields=["is_enabled"])
+        m1 = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        m2 = IndexMembership.objects.create(
+            index=nasdaq100,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = current_memberships(as_of_date=date(2024, 6, 1), is_enabled=None)
+        assert qs.filter(pk=m1.pk).exists()
+        assert qs.filter(pk=m2.pk).exists()
+        assert qs.count() == 2
+
+
+class TestListingIndexesAsOf:
+    def test_returns_market_index_objects(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import listing_indexes_as_of
+
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = listing_indexes_as_of(security_listing_id=listing.pk, as_of_date=date(2024, 6, 1))
+        assert qs.filter(pk=sp500.pk).exists()
+
+    def test_enabled_only_excludes_disabled(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import listing_indexes_as_of
+
+        sp500.is_enabled = False
+        sp500.save(update_fields=["is_enabled"])
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = listing_indexes_as_of(
+            security_listing_id=listing.pk, as_of_date=date(2024, 6, 1), is_enabled=True
+        )
+        assert not qs.exists()
+
+    def test_disabled_only_includes_disabled(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing
+    ) -> None:
+        del db
+        from indexes.selectors import listing_indexes_as_of
+
+        sp500.is_enabled = False
+        sp500.save(update_fields=["is_enabled"])
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        qs = listing_indexes_as_of(
+            security_listing_id=listing.pk, as_of_date=date(2024, 6, 1), is_enabled=False
+        )
+        assert qs.filter(pk=sp500.pk).exists()

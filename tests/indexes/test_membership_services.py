@@ -571,7 +571,7 @@ class TestCloseMembershipsForListing:
         assert m.status == "ended"
         assert m.effective_to == date(2024, 6, 30)
 
-    def test_close_ended_past_boundary_gets_corrected(
+    def test_close_ended_past_boundary_gets_ended(
         self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
     ) -> None:
         del db
@@ -591,17 +591,16 @@ class TestCloseMembershipsForListing:
             request_id=str(uuid.uuid4()),
         )
         m.refresh_from_db()
-        assert m.status == "corrected"
-        replacement = results[0].replacement
-        assert replacement is not None
-        assert replacement.effective_to == date(2024, 6, 30)
-        assert replacement.supersedes == m
+        assert m.status == "ended"
+        assert m.effective_to == date(2024, 6, 30)
+        assert results[0].action == "ended"
+        assert results[0].replacement is None
 
-    def test_close_ended_within_boundary_skipped(
+    def test_close_ended_within_boundary_gets_ended(
         self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
     ) -> None:
         del db
-        IndexMembership.objects.create(
+        m = IndexMembership.objects.create(
             index=sp500,
             security_listing=listing,
             status=IndexMembership.Status.ENDED,
@@ -616,7 +615,10 @@ class TestCloseMembershipsForListing:
             reason="Listing extended",
             request_id=str(uuid.uuid4()),
         )
-        assert results[0].action == "skipped"
+        m.refresh_from_db()
+        assert m.status == "ended"
+        assert m.effective_to == date(2024, 12, 31)
+        assert results[0].action == "ended"
 
     def test_close_skips_cancelled(
         self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
@@ -1562,3 +1564,320 @@ class TestConcurrencyReal:
             target_id=results[0].pk,
         ).count()
         assert audit_count == 1, f"Expected 1 AuditRecord, got {audit_count}"
+
+
+class TestCloseMembershipsEdgeCases:
+    """Edge cases for close_memberships_for_listing."""
+
+    def test_future_announced_cancelled(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2026, 1, 1),
+        )
+        result = close_memberships_for_listing(
+            listing=listing,
+            new_effective_to=date(2025, 7, 1),
+            as_of_date=date(2024, 6, 1),
+            actor_user=user,
+            reason="Close listing",
+            request_id="close-future-1",
+        )
+        m.refresh_from_db()
+        assert m.status == IndexMembership.Status.CANCELLED
+        assert result[0].action == "cancelled"
+
+    def test_future_active_raises_conflict(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2026, 1, 1),
+        )
+        with pytest.raises(MembershipListingHistoryConflict):
+            close_memberships_for_listing(
+                listing=listing,
+                new_effective_to=date(2025, 7, 1),
+                as_of_date=date(2024, 6, 1),
+                actor_user=user,
+                reason="Close listing",
+                request_id="close-active-1",
+            )
+
+    def test_future_ended_raises_conflict(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ENDED,
+            effective_from=date(2026, 1, 1),
+            effective_to=date(2026, 12, 31),
+        )
+        with pytest.raises(MembershipListingHistoryConflict):
+            close_memberships_for_listing(
+                listing=listing,
+                new_effective_to=date(2025, 7, 1),
+                as_of_date=date(2024, 6, 1),
+                actor_user=user,
+                reason="Close listing",
+                request_id="close-ended-1",
+            )
+
+    def test_new_effective_to_equals_listing_effective_from_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        with pytest.raises(MembershipServiceError, match="effective_from"):
+            close_memberships_for_listing(
+                listing=listing,
+                new_effective_to=listing.effective_from,
+                as_of_date=date(2024, 6, 1),
+                actor_user=user,
+                reason="Close listing",
+                request_id="close-eq-1",
+            )
+
+    def test_new_effective_to_before_listing_effective_from_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        with pytest.raises(MembershipServiceError, match="effective_from"):
+            close_memberships_for_listing(
+                listing=listing,
+                new_effective_to=date(2019, 1, 1),
+                as_of_date=date(2024, 6, 1),
+                actor_user=user,
+                reason="Close listing",
+                request_id="close-before-1",
+            )
+
+    def test_conflict_rolls_back_prior_mutations(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        other_idx = MarketIndex.objects.get_or_create(
+            code="NASDAQ100",
+            defaults={"name": "Nasdaq 100", "index_group": "LARGE", "is_enabled": True},
+        )[0]
+        m_good = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        m_bad = IndexMembership.objects.create(
+            index=other_idx,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2026, 1, 1),
+        )
+        dc_before = DataChange.objects.count()
+        audit_before = AuditRecord.objects.count()
+
+        try:
+            close_memberships_for_listing(
+                listing=listing,
+                new_effective_to=date(2025, 7, 1),
+                as_of_date=date(2024, 6, 1),
+                actor_user=user,
+                reason="Close listing",
+                request_id="rollback-1",
+            )
+        except MembershipListingHistoryConflict:
+            pass
+
+        m_good.refresh_from_db()
+        m_bad.refresh_from_db()
+        assert m_good.status == IndexMembership.Status.ACTIVE
+        assert m_good.effective_to is None
+        assert m_bad.status == IndexMembership.Status.ACTIVE
+        assert DataChange.objects.count() == dc_before
+        assert AuditRecord.objects.count() == audit_before
+
+    def test_announced_shortened_still_announced_action_accurate(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2026, 1, 1),
+        )
+        result = close_memberships_for_listing(
+            listing=listing,
+            new_effective_to=date(2025, 7, 1),
+            as_of_date=date(2024, 6, 1),
+            actor_user=user,
+            reason="Close listing",
+            request_id="close-ann-1",
+        )
+        m.refresh_from_db()
+        assert m.status == IndexMembership.Status.CANCELLED
+        assert result[0].action == "cancelled"
+
+
+class TestCorrectMembershipEdgeCases:
+    """Correction edge cases: evidence, last_verified_at, metadata."""
+
+    def test_source_evidence_in_replacement_values_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        old = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        with pytest.raises(MembershipServiceError, match="forbidden"):
+            correct_membership(
+                membership=old,
+                replacement_values={
+                    "source_evidence": "anything",
+                    "effective_to": date(2024, 12, 31),
+                },
+                actor_user=user,
+                reason="Forbidden field",
+                request_id="corr-ce-1",
+            )
+
+    def test_no_evidence_leaves_replacement_null(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        old = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        result = correct_membership(
+            membership=old,
+            replacement_values={"effective_to": date(2024, 12, 31)},
+            actor_user=user,
+            reason="No evidence",
+            request_id="corr-ce-2",
+        )
+        assert result.replacement.source_evidence_id is None
+
+    def test_old_source_evidence_unchanged(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        old = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        old_ev = old.source_evidence_id
+        correct_membership(
+            membership=old,
+            replacement_values={"effective_to": date(2024, 12, 31)},
+            actor_user=user,
+            reason="Correction",
+            request_id="corr-ce-3",
+        )
+        old.refresh_from_db()
+        assert old.source_evidence_id == old_ev
+
+    def test_last_verified_not_provided_inherits_old(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        from datetime import datetime as dt
+
+        ts = dt(2024, 6, 1, tzinfo=UTC)
+        old = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+            last_verified_at=ts,
+        )
+        result = correct_membership(
+            membership=old,
+            replacement_values={"effective_to": date(2024, 12, 31)},
+            actor_user=user,
+            reason="Correction",
+            request_id="corr-ce-4",
+        )
+        assert result.replacement.last_verified_at == ts
+
+    def test_last_verified_not_provided_inherits_none(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        old = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        result = correct_membership(
+            membership=old,
+            replacement_values={"effective_to": date(2024, 12, 31)},
+            actor_user=user,
+            reason="Correction",
+            request_id="corr-ce-5",
+        )
+        assert result.replacement.last_verified_at is None
+
+    def test_last_verified_explicit_none_overrides(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        from datetime import datetime as dt
+
+        ts = dt(2024, 6, 1, tzinfo=UTC)
+        old = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+            last_verified_at=ts,
+        )
+        result = correct_membership(
+            membership=old,
+            replacement_values={
+                "last_verified_at": None,
+                "effective_to": date(2024, 12, 31),
+            },
+            actor_user=user,
+            reason="Correction",
+            request_id="corr-ce-6",
+        )
+        assert result.replacement.last_verified_at is None
+
+    def test_metadata_only_correction(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        old = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        result = correct_membership(
+            membership=old,
+            replacement_values={
+                "announcement_date": date(2023, 12, 1),
+            },
+            actor_user=user,
+            reason="Metadata fix",
+            request_id="meta-1",
+        )
+        old.refresh_from_db()
+        assert old.status == IndexMembership.Status.CORRECTED
+        assert result.replacement.announcement_date == date(2023, 12, 1)

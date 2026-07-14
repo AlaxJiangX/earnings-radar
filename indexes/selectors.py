@@ -116,3 +116,65 @@ def company_indexes_as_of(
     elif is_enabled is False:
         qs = qs.filter(index__is_enabled=False)
     return qs.distinct()
+
+
+def memberships_as_of(
+    *,
+    as_of_date: date,
+    index_code: str | None = None,
+) -> QuerySet[IndexMembership]:
+    """Return all normative memberships as of a date, optionally filtered by index code.
+
+    Returns one membership row per (index, security_listing) pair.
+    """
+    qs = IndexMembership.objects.select_related("index", "security_listing")
+    qs = _normative_as_of(qs, as_of_date)
+    if index_code is not None:
+        qs = qs.filter(index__code=index_code.upper())
+    return qs.order_by("index__code", "security_listing__ticker")
+
+
+def current_memberships(
+    *,
+    as_of_date: date,
+    is_enabled: bool | None = True,
+) -> QuerySet[IndexMembership]:
+    """Return all currently normative memberships as of a date.
+
+    When *is_enabled* is ``True``, only memberships whose index
+    ``is_enabled=True`` are included.  When ``False``, only disabled-index
+    memberships.  When ``None``, all normative memberships are returned.
+    """
+    qs = IndexMembership.objects.select_related("index", "security_listing")
+    qs = _normative_as_of(qs, as_of_date)
+    if is_enabled is True:
+        qs = qs.filter(index__is_enabled=True)
+    elif is_enabled is False:
+        qs = qs.filter(index__is_enabled=False)
+    return qs.order_by("index__code", "security_listing__ticker")
+
+
+def listing_indexes_as_of(
+    *,
+    security_listing_id: UUID,
+    as_of_date: date,
+    is_enabled: bool | None = True,
+) -> QuerySet[MarketIndex]:
+    """Return distinct MarketIndex objects for a listing as of a date.
+
+    When *is_enabled* is ``True`` (default), only enabled indexes are
+    returned.  When ``False``, only disabled indexes.  When ``None``, all
+    indexes are returned regardless of enabled status.
+    """
+    from indexes.models import MarketIndex as MI
+
+    membership_ids = _normative_as_of(
+        IndexMembership.objects.filter(security_listing_id=security_listing_id),
+        as_of_date,
+    ).values_list("index_id", flat=True)
+    qs = MI.objects.filter(id__in=membership_ids)
+    if is_enabled is True:
+        qs = qs.filter(is_enabled=True)
+    elif is_enabled is False:
+        qs = qs.filter(is_enabled=False)
+    return qs.distinct()
