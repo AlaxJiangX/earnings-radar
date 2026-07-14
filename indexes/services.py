@@ -526,8 +526,29 @@ def cancel_membership(
     request_id: str,
     ip_address: str | None = None,
 ) -> MembershipWriteResult:
+    # --- Provenance validation (before any database mutation) ---
+    _validate_membership_source(
+        source_evidence=None,
+        sync_run=None,
+        actor_user=actor_user,
+        reason=reason,
+        request_id=request_id,
+    )
+
+    normalized_reason = reason.strip()
+    normalized_request_id = request_id.strip()
+
     with transaction.atomic():
         obj = IndexMembership.objects.select_for_update().get(pk=membership.pk)
+
+        # --- Idempotency: already cancelled → no-op ---
+        if obj.status == IndexMembership.Status.CANCELLED:
+            return MembershipWriteResult(
+                membership=obj,
+                created=False,
+                data_changes=(),
+                audit_record=None,
+            )
 
         if obj.status != "announced":
             raise InvalidMembershipState("Only announced memberships can be cancelled.")
@@ -550,8 +571,8 @@ def cancel_membership(
             new_value=IndexMembership.Status.CANCELLED,
             rule_version=MEMBERSHIP_RULE_VERSION,
             actor_user=actor_user,
-            reason=reason,
-            origin_key=request_id,
+            reason=normalized_reason,
+            origin_key=normalized_request_id,
         )
 
         audit = record_user_action(
@@ -573,8 +594,8 @@ def cancel_membership(
                 supersedes_id=str(obj.supersedes_id) if obj.supersedes_id else None,
             ),
             after=_serialize_membership(obj),
-            reason=reason,
-            request_id=request_id,
+            reason=normalized_reason,
+            request_id=normalized_request_id,
             ip_address=ip_address,
         )
 

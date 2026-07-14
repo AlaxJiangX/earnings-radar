@@ -405,6 +405,235 @@ class TestCancelMembership:
         assert not qs.filter(pk=m.pk).exists()
 
 
+class TestCancelMembershipProvenanceAndIdempotent:
+    """cancel_membership provenance validation and idempotent retry."""
+
+    def test_blank_reason_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2025, 6, 1),
+        )
+        dc_before = DataChange.objects.count()
+        audit_before = AuditRecord.objects.count()
+        with pytest.raises(MembershipServiceError, match="reason"):
+            cancel_membership(
+                membership=m,
+                as_of_date=date(2024, 1, 1),
+                actor_user=user,
+                reason="   ",
+                request_id="cancel-prov-1",
+            )
+        m.refresh_from_db()
+        assert m.status == IndexMembership.Status.ANNOUNCED
+        assert DataChange.objects.count() == dc_before
+        assert AuditRecord.objects.count() == audit_before
+
+    def test_blank_request_id_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2025, 6, 1),
+        )
+        dc_before = DataChange.objects.count()
+        audit_before = AuditRecord.objects.count()
+        with pytest.raises(MembershipServiceError, match="request_id"):
+            cancel_membership(
+                membership=m,
+                as_of_date=date(2024, 1, 1),
+                actor_user=user,
+                reason="Test",
+                request_id="   ",
+            )
+        m.refresh_from_db()
+        assert m.status == IndexMembership.Status.ANNOUNCED
+        assert DataChange.objects.count() == dc_before
+        assert AuditRecord.objects.count() == audit_before
+
+    def test_reason_stripped(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2025, 6, 1),
+        )
+        result = cancel_membership(
+            membership=m,
+            as_of_date=date(2024, 1, 1),
+            actor_user=user,
+            reason="  stripped reason  ",
+            request_id="cancel-strip-1",
+        )
+        assert result.audit_record is not None
+        assert result.audit_record.reason == "stripped reason"
+
+    def test_request_id_stripped(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2025, 6, 1),
+        )
+        result = cancel_membership(
+            membership=m,
+            as_of_date=date(2024, 1, 1),
+            actor_user=user,
+            reason="Test",
+            request_id="  stripped-id  ",
+        )
+        assert result.audit_record is not None
+        assert result.audit_record.request_id == "stripped-id"
+
+    def test_idempotent_retry_same_params(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2025, 6, 1),
+        )
+        result1 = cancel_membership(
+            membership=m,
+            as_of_date=date(2024, 1, 1),
+            actor_user=user,
+            reason="Idempotent test",
+            request_id="cancel-idem-1",
+        )
+        assert result1.audit_record is not None
+        dc_count = DataChange.objects.count()
+        audit_count = AuditRecord.objects.count()
+        result2 = cancel_membership(
+            membership=m,
+            as_of_date=date(2024, 1, 1),
+            actor_user=user,
+            reason="Idempotent test",
+            request_id="cancel-idem-1",
+        )
+        assert result2.audit_record is None
+        assert result2.data_changes == ()
+        assert DataChange.objects.count() == dc_count
+        assert AuditRecord.objects.count() == audit_count
+        m.refresh_from_db()
+        assert m.status == IndexMembership.Status.CANCELLED
+
+    def test_idempotent_retry_different_request_id(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2025, 6, 1),
+        )
+        result1 = cancel_membership(
+            membership=m,
+            as_of_date=date(2024, 1, 1),
+            actor_user=user,
+            reason="First cancel",
+            request_id="cancel-idem-2a",
+        )
+        assert result1.audit_record is not None
+        dc_count = DataChange.objects.count()
+        audit_count = AuditRecord.objects.count()
+        result2 = cancel_membership(
+            membership=m,
+            as_of_date=date(2024, 1, 1),
+            actor_user=user,
+            reason="Retry cancel",
+            request_id="cancel-idem-2b",
+        )
+        assert result2.audit_record is None
+        assert result2.data_changes == ()
+        assert DataChange.objects.count() == dc_count
+        assert AuditRecord.objects.count() == audit_count
+        m.refresh_from_db()
+        assert m.status == IndexMembership.Status.CANCELLED
+        assert m.status == IndexMembership.Status.CANCELLED
+
+    def test_active_still_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        with pytest.raises(InvalidMembershipState):
+            cancel_membership(
+                membership=m,
+                as_of_date=date(2024, 6, 1),
+                actor_user=user,
+                reason="Test",
+                request_id="cancel-active-1",
+            )
+
+    def test_ended_still_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        m = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ENDED,
+            effective_from=date(2024, 1, 1),
+            effective_to=date(2024, 6, 30),
+        )
+        with pytest.raises(InvalidMembershipState):
+            cancel_membership(
+                membership=m,
+                as_of_date=date(2024, 1, 1),
+                actor_user=user,
+                reason="Test",
+                request_id="cancel-ended-1",
+            )
+
+    def test_corrected_still_rejected(
+        self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
+    ) -> None:
+        del db
+        old = IndexMembership.objects.create(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ACTIVE,
+            effective_from=date(2024, 1, 1),
+        )
+        correct_membership(
+            membership=old,
+            replacement_values={"effective_to": date(2024, 12, 31)},
+            actor_user=user,
+            reason="Correct",
+            request_id="corr-before-cancel-1",
+        )
+        old.refresh_from_db()
+        with pytest.raises(InvalidMembershipState):
+            cancel_membership(
+                membership=old,
+                as_of_date=date(2024, 1, 1),
+                actor_user=user,
+                reason="Test",
+                request_id="cancel-corrected-1",
+            )
+
+
 class TestCorrectMembership:
     def test_correct_active_membership(
         self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User

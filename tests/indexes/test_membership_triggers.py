@@ -268,17 +268,23 @@ class TestMigrationTriggers:
 
 @pytest.mark.django_db(transaction=True)
 class TestCrossTableConcurrency:
-    """Membership vs Listing concurrent writes – trigger rejects violation."""
+    """Membership vs Listing concurrent writes with truly overlapping transactions."""
 
-    def test_listing_truncation_rejects_stale_membership(
+    def test_membership_insert_races_with_listing_shorten(
         self,
         sp500: MarketIndex,
         company: Company,
     ) -> None:
-        """B shortens listing; A inserts membership spanning old boundary → rejected."""
+        """Transaction A inserts membership; B shortens listing. A must be rejected.
+
+        Deterministic interleaving via threading.Event:
+        1. A inserts membership (uncommitted), signals membership_inserted, waits
+        2. B shortens listing, commits, signals listing_committed
+        3. A tries to commit → deferred trigger re-reads listing → IntegrityError
+        """
         import threading
 
-        from django.db import close_old_connections, connections
+        from django.db import close_old_connections, connections, transaction
 
         listing = SecurityListing.objects.create(
             company=company,
@@ -287,61 +293,79 @@ class TestCrossTableConcurrency:
             effective_from=date(2020, 1, 1),
         )
 
-        errors: list[Exception] = []
-        results: list[bool] = []
+        membership_inserted = threading.Event()
+        listing_committed = threading.Event()
+        errors_a: list[BaseException] = []
+        errors_b: list[BaseException] = []
 
-        def insert_membership() -> None:
+        def transaction_a() -> None:
+            """Insert membership spanning old listing boundary, then wait for B."""
             close_old_connections()
             try:
-                IndexMembership.objects.create(
-                    index=sp500,
-                    security_listing=listing,
-                    status=IndexMembership.Status.ACTIVE,
-                    effective_from=date(2022, 1, 1),
-                    effective_to=date(2027, 12, 31),
-                )
-                results.append(True)
-            except Exception as e:
-                errors.append(e)
+                with transaction.atomic():
+                    from django.db import connection as local_conn
+
+                    with local_conn.cursor() as c:
+                        c.execute("SET LOCAL lock_timeout = '5s'")
+                    IndexMembership.objects.create(
+                        index=sp500,
+                        security_listing=listing,
+                        status=IndexMembership.Status.ACTIVE,
+                        effective_from=date(2022, 1, 1),
+                        effective_to=date(2027, 12, 31),
+                    )
+                    membership_inserted.set()
+                    if not listing_committed.wait(timeout=10):
+                        raise TimeoutError("Transaction A: timed out waiting for B")
+                # COMMIT happens here → trigger fires → should fail
+            except BaseException as e:
+                errors_a.append(e)
             finally:
+                membership_inserted.set()  # ensure B is never stuck
                 for conn in connections.all():
                     conn.close()
 
-        def shorten_listing() -> None:
+        def transaction_b() -> None:
+            """Shorten listing after A has inserted its membership (uncommitted)."""
             close_old_connections()
             try:
-                obj = SecurityListing.objects.get(pk=listing.pk)
-                obj.effective_to = date(2024, 12, 31)
-                obj.save(update_fields=["effective_to"])
-                results.append(True)
-            except Exception as e:
-                errors.append(e)
+                if not membership_inserted.wait(timeout=10):
+                    raise TimeoutError("Transaction B: timed out waiting for A")
+                with transaction.atomic():
+                    obj = SecurityListing.objects.get(pk=listing.pk)
+                    obj.effective_to = date(2024, 12, 31)
+                    obj.save(update_fields=["effective_to"])
+                listing_committed.set()
+            except BaseException as e:
+                errors_b.append(e)
             finally:
+                listing_committed.set()  # ensure A is never stuck
                 for conn in connections.all():
                     conn.close()
 
-        # B shortens listing first
-        t_b = threading.Thread(target=shorten_listing)
-        t_b.start()
-        t_b.join(timeout=10)
-
-        # Then A tries to insert membership that would span beyond
-        t_a = threading.Thread(target=insert_membership)
+        t_a = threading.Thread(target=transaction_a)
+        t_b = threading.Thread(target=transaction_b)
         t_a.start()
-        t_a.join(timeout=10)
+        t_b.start()
+        t_a.join(timeout=20)
+        t_b.join(timeout=20)
+
+        assert not t_a.is_alive(), "Thread A hung"
+        assert not t_b.is_alive(), "Thread B hung"
 
         for conn in connections.all():
             conn.close()
         close_old_connections()
 
-        # B must succeed
+        # B must succeed with no errors
+        assert errors_b == [], f"Transaction B should have no errors, got {errors_b}"
         listing.refresh_from_db()
-        assert listing.effective_to == date(2024, 12, 31), "Listing shortening should succeed"
+        assert listing.effective_to == date(2024, 12, 31)
 
-        # A must fail because membership would exceed listing boundary
-        assert len(errors) >= 1, "Membership insert should be rejected"
-        assert any(isinstance(e, IntegrityError) for e in errors), (
-            f"Expected IntegrityError, got {errors}"
+        # A must fail with exactly one IntegrityError
+        assert len(errors_a) == 1, f"Expected exactly 1 error in A, got {len(errors_a)}"
+        assert isinstance(errors_a[0], IntegrityError), (
+            f"Expected IntegrityError, got {type(errors_a[0]).__name__}: {errors_a[0]}"
         )
 
         # No normative membership violates boundaries
