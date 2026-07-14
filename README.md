@@ -43,4 +43,4 @@ docker compose run --rm web mypy .
 
 Provider 只返回带安全 URL、请求身份/指纹、HTTP 元数据、原始 bytes 和时区感知时间的结构化结果，不写数据库。当前 HTTP client 必须显式注入 transport，仓库只提供 FakeTransport，不存在默认真实网络实现，也没有新增 HTTP 依赖。普通测试会阻断真实 HTTP；任何真实 Provider 都必须等待来源和许可确认，并由未来同步编排 Service 通过 `audit.services` 落库。
 
-Company 使用规范化的 10 位 CIK（保留前导零）或预分配 UUID 作为稳定身份；ticker 仅属于 `SecurityListing` 的交易所与有效期记录。相同交易所/ticker 的有效期不能重叠，历史 ticker 通过关闭 `[start, end)` 半开区间并创建后继 listing 保留，不能原地覆盖 company、ticker、exchange 或有效期。公司和上市身份只能通过 `companies.services` 创建、更新或受控切换：创建追加 `AuditRecord`，字段变化追加带来源或运行记录的 `DataChange`；Service 使用 SourceEvidence 时会从数据库重新验证证据、任务、数据来源与原始观察链。Admin 仅可查看、搜索和筛选，不能绕过该入口修改数据。
+Company 使用规范化的 10 位 CIK（保留前导零）或预分配 UUID 作为稳定身份；ticker 仅属于 `SecurityListing` 的交易所与有效期记录。相同交易所/ticker 的有效期不能重叠，历史 ticker 通过关闭 `[start, end)` 半开区间并创建后继 listing 保留，不能原地覆盖 company、ticker、exchange 或有效期。公司和上市身份只能通过 `companies.services` 创建、更新或受控切换：创建追加 `AuditRecord`，字段变化追加带来源或运行记录的 `DataChange`；切换的重跑还必须核对关闭 DataChange、旧 listing AuditRecord 和后继创建 AuditRecord 全部存在且一致，异常历史会拒绝成功并要求人工核查，系统不会自动补造历史。Service 使用 SourceEvidence 时会从数据库重新验证证据、任务、数据来源与原始观察链。Admin 仅可查看、搜索和筛选，不能绕过该入口修改数据。

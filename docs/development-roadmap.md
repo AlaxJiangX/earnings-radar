@@ -183,7 +183,7 @@
 
 #### 2.3 公司、CIK 与股票代码（已完成）
 
-交付：Company、SecurityListing、受控写入 Service、只读 Admin、PostgreSQL 有效期约束与自动测试。当前仅提供 Admin 搜索/筛选；面向页面的 selector 随后续公司页面任务单独实现，避免在身份基础阶段提前加入查询或 UI 功能。
+交付：Company、SecurityListing、受控写入 Service、只读 Admin、PostgreSQL 有效期约束与自动测试。SecurityListing 切换的重放只有在领域记录及关闭 DataChange、旧 listing AuditRecord、后继创建 AuditRecord 都精确一致时才可幂等成功；不完整历史必须拒绝并人工核查，不能自动补写。当前仅提供 Admin 搜索/筛选；面向页面的 selector 随后续公司页面任务单独实现，避免在身份基础阶段提前加入查询或 UI 功能。
 
 验收标准：
 

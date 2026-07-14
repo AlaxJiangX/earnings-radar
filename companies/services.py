@@ -457,6 +457,13 @@ def transition_security_listing(
                 raise ListingIdentityConflict(
                     "SecurityListing is already closed without the requested successor identity."
                 )
+            _assert_transition_audit_complete(
+                prior_listing=current,
+                successor_listing=existing_successor,
+                transition_date=normalized_transition_date,
+                closing_context=closing_context,
+                successor_context=successor_context,
+            )
             return SecurityListingTransitionResult(
                 prior_listing=current,
                 successor_listing=existing_successor,
@@ -852,6 +859,103 @@ def _record_data_changes(
             )
         )
     return tuple(results)
+
+
+def _assert_transition_audit_complete(
+    *,
+    prior_listing: SecurityListing,
+    successor_listing: SecurityListing,
+    transition_date: date,
+    closing_context: _WriteContext,
+    successor_context: _WriteContext,
+) -> None:
+    """Reject an idempotent transition replay whose append-only history is incomplete.
+
+    A successful first transition can only close an open listing, so its recorded
+    ``effective_to`` change is canonically ``null -> transition_date``.  This
+    function intentionally only reads persisted history: a partial or altered
+    legacy history requires manual review rather than a fabricated backfill.
+    """
+
+    prior_after = _listing_snapshot(prior_listing)
+    prior_before = {**prior_after, "effective_to": None}
+    expected_data_change_origin = _data_change_origin_key(closing_context)
+    expected_transition_value = transition_date.isoformat()
+    if prior_after["effective_to"] != expected_transition_value:
+        _raise_incomplete_transition_audit()
+
+    data_change_candidates = DataChange.objects.filter(
+        target_type=DataChange.TargetType.SECURITY_LISTING,
+        target_id=prior_listing.pk,
+        field_name="effective_to",
+        source_evidence=closing_context.source_evidence,
+        sync_run=closing_context.sync_run,
+        actor_user=closing_context.actor_user,
+        reason=closing_context.reason,
+        origin_key=expected_data_change_origin,
+        rule_version=IDENTITY_RULE_VERSION,
+    )
+    data_change_exists = any(
+        change.old_value == prior_before["effective_to"]
+        and change.new_value == expected_transition_value
+        for change in data_change_candidates
+    )
+    if not data_change_exists:
+        _raise_incomplete_transition_audit()
+
+    closing_action = (
+        AuditRecord.Action.MANUAL_CORRECTION
+        if closing_context.actor_user is not None
+        else AuditRecord.Action.UPDATE
+    )
+    prior_audit_candidates = AuditRecord.objects.filter(
+        actor_user=closing_context.actor_user,
+        sync_run=closing_context.sync_run,
+        action=closing_action,
+        target_type=AuditRecord.TargetType.SECURITY_LISTING,
+        target_id=prior_listing.pk,
+        reason=closing_context.reason,
+        request_id=closing_context.request_id,
+    )
+    prior_audit_exists = any(
+        record.before == prior_before and record.after == prior_after
+        for record in prior_audit_candidates
+    )
+    if not prior_audit_exists:
+        _raise_incomplete_transition_audit()
+
+    successor_audit_candidates = AuditRecord.objects.filter(
+        actor_user=successor_context.actor_user,
+        sync_run=successor_context.sync_run,
+        action=AuditRecord.Action.CREATE,
+        target_type=AuditRecord.TargetType.SECURITY_LISTING,
+        target_id=successor_listing.pk,
+        reason=successor_context.reason,
+        request_id=successor_context.request_id,
+    )
+    successor_audit_exists = any(
+        record.before == {} and record.after == _listing_snapshot(successor_listing)
+        for record in successor_audit_candidates
+    )
+    if not successor_audit_exists:
+        _raise_incomplete_transition_audit()
+
+
+def _data_change_origin_key(context: _WriteContext) -> str:
+    if context.actor_user is not None:
+        return context.request_id
+    if context.source_evidence is not None:
+        return f"source_evidence:{context.source_evidence.pk}"
+    if context.sync_run is not None:
+        return f"sync_run:{context.sync_run.pk}"
+    raise CompanyServiceError("Automatic DataChange records require a SyncRun or SourceEvidence.")
+
+
+def _raise_incomplete_transition_audit() -> None:
+    raise ListingIdentityConflict(
+        "SecurityListing transition data exists but its audit history is incomplete or "
+        "inconsistent; manual review is required."
+    )
 
 
 def _record_action(

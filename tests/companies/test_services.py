@@ -20,6 +20,7 @@ from companies.services import (
     CompanyIdentityConflict,
     CompanyServiceError,
     ListingIdentityConflict,
+    SecurityListingTransitionResult,
     create_company,
     create_security_listing,
     normalize_cik,
@@ -62,6 +63,44 @@ def _evidence(
         confidence=1,
         normalizer_version="company-identity-fixture-v1",
     ).evidence
+
+
+def _completed_listing_transition(
+    company_sync_run: SyncRun,
+) -> tuple[SecurityListing, SecurityListingTransitionResult]:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    prior = create_security_listing(
+        company=company,
+        ticker="FIX",
+        exchange="XNAS",
+        effective_from=date(2026, 1, 1),
+        sync_run=company_sync_run,
+    ).listing
+    transition = transition_security_listing(
+        listing=prior,
+        transition_date=date(2026, 3, 1),
+        ticker="NEW",
+        exchange="XNYS",
+        sync_run=company_sync_run,
+    )
+    return prior, transition
+
+
+def _replay_listing_transition(
+    prior: SecurityListing, company_sync_run: SyncRun
+) -> SecurityListingTransitionResult:
+    return transition_security_listing(
+        listing=prior,
+        transition_date=date(2026, 3, 1),
+        ticker="NEW",
+        exchange="XNYS",
+        sync_run=company_sync_run,
+    )
 
 
 def test_normalize_cik_pads_digits_and_rejects_invalid_values() -> None:
@@ -681,6 +720,96 @@ def test_transition_listing_is_idempotent_only_for_same_closed_successor(
             exchange="XNYS",
             sync_run=company_sync_run,
         )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("missing_record", ("data_change", "prior_audit", "successor_audit"))
+def test_transition_replay_rejects_missing_audit_history(
+    company_sync_run: SyncRun,
+    missing_record: str,
+) -> None:
+    prior, transition = _completed_listing_transition(company_sync_run)
+    data_change = transition.data_changes[0].change
+    assert data_change is not None
+    assert transition.prior_audit_record is not None
+    assert transition.successor_audit_record is not None
+
+    # Simulate a corrupted/legacy partial history; production code cannot use
+    # QuerySet deletion for append-only audit records.
+    record_id = {
+        "data_change": data_change.pk,
+        "prior_audit": transition.prior_audit_record.pk,
+        "successor_audit": transition.successor_audit_record.pk,
+    }[missing_record]
+    if missing_record == "data_change":
+        DataChange.objects.filter(pk=record_id).delete()
+    else:
+        AuditRecord.objects.filter(pk=record_id).delete()
+
+    audit_count = AuditRecord.objects.count()
+    change_count = DataChange.objects.count()
+    with pytest.raises(ListingIdentityConflict, match="audit history"):
+        _replay_listing_transition(prior, company_sync_run)
+
+    assert SecurityListing.objects.get(pk=prior.pk).effective_to == date(2026, 3, 1)
+    assert SecurityListing.objects.filter(ticker="NEW", exchange="XNYS").count() == 1
+    assert AuditRecord.objects.count() == audit_count
+    assert DataChange.objects.count() == change_count
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "corruption",
+    (
+        "data_change_old_value",
+        "data_change_new_value",
+        "data_change_field_name",
+        "data_change_origin_key",
+        "prior_audit_action",
+        "successor_audit_target",
+        "prior_audit_request_id",
+    ),
+)
+def test_transition_replay_rejects_inconsistent_audit_history(
+    company_sync_run: SyncRun,
+    corruption: str,
+) -> None:
+    prior, transition = _completed_listing_transition(company_sync_run)
+    data_change = transition.data_changes[0].change
+    assert data_change is not None
+    assert transition.prior_audit_record is not None
+    assert transition.successor_audit_record is not None
+
+    if corruption == "data_change_old_value":
+        DataChange.objects.filter(pk=data_change.pk).update(old_value="not-null")
+    elif corruption == "data_change_new_value":
+        DataChange.objects.filter(pk=data_change.pk).update(new_value="2026-03-02")
+    elif corruption == "data_change_field_name":
+        DataChange.objects.filter(pk=data_change.pk).update(field_name="security_name")
+    elif corruption == "data_change_origin_key":
+        DataChange.objects.filter(pk=data_change.pk).update(origin_key="other-operation")
+    elif corruption == "prior_audit_action":
+        AuditRecord.objects.filter(pk=transition.prior_audit_record.pk).update(
+            action=AuditRecord.Action.DEACTIVATE
+        )
+    elif corruption == "successor_audit_target":
+        AuditRecord.objects.filter(pk=transition.successor_audit_record.pk).update(
+            target_id=uuid.uuid4()
+        )
+    else:
+        AuditRecord.objects.filter(pk=transition.prior_audit_record.pk).update(
+            request_id="other-request"
+        )
+
+    audit_count = AuditRecord.objects.count()
+    change_count = DataChange.objects.count()
+    with pytest.raises(ListingIdentityConflict, match="audit history"):
+        _replay_listing_transition(prior, company_sync_run)
+
+    assert SecurityListing.objects.get(pk=prior.pk).effective_to == date(2026, 3, 1)
+    assert SecurityListing.objects.filter(ticker="NEW", exchange="XNYS").count() == 1
+    assert AuditRecord.objects.count() == audit_count
+    assert DataChange.objects.count() == change_count
 
 
 @pytest.mark.django_db

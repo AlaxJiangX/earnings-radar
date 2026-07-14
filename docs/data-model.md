@@ -105,7 +105,7 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | `source_evidence_id` | 当前关系的主要来源证据 |
 | `created_at`, `updated_at` | UTC |
 
-约束：同一交易所和 ticker 的有效期不能重叠；同一公司同一时点可以有多个 listing/share class，但最多一个默认展示代码。阶段 2.3 以 PostgreSQL `daterange` 半开区间排他约束（并启用 `btree_gist`）落实这两个规则，历史 ticker 通过设置 `effective_to` 保留而不覆盖。区间统一为 `[effective_from, effective_to)`：切换 ticker 或交易所时，Service 在一个事务中把旧 listing 的 `effective_to` 设为切换日，并创建从该日开始的新 UUID listing；不得通过通用更新入口改写 company、ticker、exchange、effective_from 或 effective_to。创建追加 AuditRecord，旧区间关闭写对应 DataChange，后继记录仅写创建 AuditRecord；Admin 只读。搜索索引覆盖 ticker 和公司名称。URL 使用 ticker 时应处理历史代码与歧义；长期建议内部 canonical URL 使用稳定公司 ID，但是否改变 PRD 路由待确认。
+约束：同一交易所和 ticker 的有效期不能重叠；同一公司同一时点可以有多个 listing/share class，但最多一个默认展示代码。阶段 2.3 以 PostgreSQL `daterange` 半开区间排他约束（并启用 `btree_gist`）落实这两个规则，历史 ticker 通过设置 `effective_to` 保留而不覆盖。区间统一为 `[effective_from, effective_to)`：切换 ticker 或交易所时，Service 在一个事务中把旧 listing 的 `effective_to` 设为切换日，并创建从该日开始的新 UUID listing；不得通过通用更新入口改写 company、ticker、exchange、effective_from 或 effective_to。创建追加 AuditRecord，旧区间关闭写对应 DataChange，后继记录仅写创建 AuditRecord；Admin 只读。切换的幂等成功还必须精确核对旧 listing 的 `effective_to` DataChange、旧 listing 关闭 AuditRecord 和后继创建 AuditRecord；领域记录存在但这三项历史缺失或不一致时拒绝成功并要求人工核查，绝不自动补写历史。搜索索引覆盖 ticker 和公司名称。URL 使用 ticker 时应处理历史代码与歧义；长期建议内部 canonical URL 使用稳定公司 ID，但是否改变 PRD 路由待确认。
 
 ## 5. 指数及成分关系
 
