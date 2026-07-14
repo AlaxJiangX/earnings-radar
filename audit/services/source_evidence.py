@@ -1,6 +1,7 @@
 import hashlib
 import json
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
@@ -38,6 +39,73 @@ class SourceEvidenceIntegrityError(RuntimeError):
 class SourceEvidenceWriteResult:
     evidence: SourceEvidence
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SourceEvidenceReference:
+    """A persisted evidence row together with its verified observation run."""
+
+    evidence: SourceEvidence
+    sync_run: SyncRun
+
+
+def resolve_source_evidence_reference(
+    *,
+    source_evidence: SourceEvidence,
+    sync_run: SyncRun | None,
+    target_type: str,
+    target_id: uuid.UUID,
+    field_names: Collection[str] = (),
+) -> SourceEvidenceReference:
+    """Reload and validate evidence before a domain service relies on it.
+
+    Domain services must use this instead of trusting a caller-owned model
+    instance.  The database row is the source of truth for its target, raw
+    record and observation provenance.
+    """
+
+    if source_evidence._state.adding or source_evidence.pk is None:
+        raise InvalidEvidenceReference("SourceEvidence must be saved before use.")
+    if sync_run is not None and (sync_run._state.adding or sync_run.pk is None):
+        raise InvalidEvidenceReference("SyncRun must be saved before use.")
+
+    try:
+        evidence = SourceEvidence.objects.select_related(
+            "raw_data_record__source",
+            "sync_run__source",
+        ).get(pk=source_evidence.pk)
+    except SourceEvidence.DoesNotExist as error:
+        raise InvalidEvidenceReference("SourceEvidence must exist before use.") from error
+
+    if evidence.target_type != target_type or evidence.target_id != target_id:
+        raise InvalidEvidenceReference("SourceEvidence must reference the same domain target.")
+    if evidence.field_name and field_names and evidence.field_name not in field_names:
+        raise InvalidEvidenceReference("SourceEvidence must describe a changed domain field.")
+
+    if sync_run is None:
+        current_sync_run = evidence.sync_run
+    else:
+        try:
+            current_sync_run = SyncRun.objects.select_related("source").get(pk=sync_run.pk)
+        except SyncRun.DoesNotExist as error:
+            raise InvalidEvidenceReference("SyncRun must exist before use.") from error
+        if evidence.sync_run_id != current_sync_run.pk:
+            raise InvalidEvidenceReference(
+                "SourceEvidence and SyncRun must refer to the same persisted run."
+            )
+
+    if evidence.raw_data_record.source_id != current_sync_run.source_id:
+        raise InvalidEvidenceReference(
+            "SourceEvidence RawDataRecord and SyncRun must trace to the same DataSource."
+        )
+    if not RawDataObservation.objects.filter(
+        sync_run=current_sync_run,
+        raw_data_record=evidence.raw_data_record,
+    ).exists():
+        raise InvalidEvidenceReference(
+            "SyncRun must have observed the SourceEvidence RawDataRecord."
+        )
+    return SourceEvidenceReference(evidence=evidence, sync_run=current_sync_run)
 
 
 def record_source_evidence(

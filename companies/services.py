@@ -14,9 +14,12 @@ from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
 from audit.security import InvalidAuditValue, SensitiveAuditData, normalize_json_without_credentials
 from audit.services import (
     DataChangeWriteResult,
+    InvalidEvidenceReference,
+    SourceEvidenceReference,
     record_data_change,
     record_system_action,
     record_user_action,
+    resolve_source_evidence_reference,
 )
 from companies.models import Company, SecurityListing
 
@@ -56,6 +59,16 @@ class SecurityListingWriteResult:
     created: bool
     data_changes: tuple[DataChangeWriteResult, ...]
     audit_record: AuditRecord | None
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityListingTransitionResult:
+    prior_listing: SecurityListing
+    successor_listing: SecurityListing
+    successor_created: bool
+    data_changes: tuple[DataChangeWriteResult, ...]
+    prior_audit_record: AuditRecord | None
+    successor_audit_record: AuditRecord | None
 
 
 def normalize_cik(value: str | int | None) -> str | None:
@@ -117,19 +130,20 @@ def create_company(
             _ensure_company_matches(existing, values)
             return CompanyWriteResult(existing, False, (), None)
 
-        _validate_write_context(
+        target_id = normalized_id or uuid.uuid4()
+        context = _resolve_write_context(
             target_type=DataChange.TargetType.COMPANY,
-            target_id=normalized_id,
+            target_id=target_id,
             source_evidence=source_evidence,
             sync_run=sync_run,
             actor_user=actor_user,
             reason=reason,
             request_id=request_id,
-            creation=True,
+            ip_address=ip_address,
         )
         try:
             with transaction.atomic():
-                company = Company.objects.create(id=normalized_id or uuid.uuid4(), **values)
+                company = Company.objects.create(id=target_id, **values)
         except IntegrityError as error:
             existing = _find_company_identity(
                 cik=cast(str | None, values["cik"]),
@@ -140,16 +154,6 @@ def create_company(
             _ensure_company_matches(existing, values)
             return CompanyWriteResult(existing, False, (), None)
 
-        context = _resolve_write_context(
-            target_type=DataChange.TargetType.COMPANY,
-            target_id=company.pk,
-            source_evidence=source_evidence,
-            sync_run=sync_run,
-            actor_user=actor_user,
-            reason=reason,
-            request_id=request_id,
-            ip_address=ip_address,
-        )
         audit_record = _record_action(
             context=context,
             action=AuditRecord.Action.CREATE,
@@ -188,6 +192,7 @@ def update_company(
             reason=reason,
             request_id=request_id,
             ip_address=ip_address,
+            field_names=changed_fields,
         )
         try:
             current.save(update_fields=(*changed_fields, "updated_at"))
@@ -256,20 +261,22 @@ def create_security_listing(
         if existing is not None:
             return SecurityListingWriteResult(existing, False, (), None)
 
-        _validate_write_context(
+        target_id = normalized_id or uuid.uuid4()
+        context = _resolve_write_context(
             target_type=DataChange.TargetType.SECURITY_LISTING,
-            target_id=normalized_id,
+            target_id=target_id,
             source_evidence=source_evidence,
             sync_run=sync_run,
             actor_user=actor_user,
             reason=reason,
             request_id=request_id,
-            creation=True,
+            ip_address=ip_address,
         )
+        values["source_evidence"] = context.source_evidence
         try:
             with transaction.atomic():
                 listing = SecurityListing.objects.create(
-                    id=normalized_id or uuid.uuid4(),
+                    id=target_id,
                     company=current_company,
                     **values,
                 )
@@ -281,16 +288,6 @@ def create_security_listing(
                 "SecurityListing conflicts with an overlapping exchange and ticker interval."
             ) from error
 
-        context = _resolve_write_context(
-            target_type=DataChange.TargetType.SECURITY_LISTING,
-            target_id=listing.pk,
-            source_evidence=source_evidence,
-            sync_run=sync_run,
-            actor_user=actor_user,
-            reason=reason,
-            request_id=request_id,
-            ip_address=ip_address,
-        )
         audit_record = _record_action(
             context=context,
             action=AuditRecord.Action.CREATE,
@@ -329,6 +326,7 @@ def update_security_listing(
             reason=reason,
             request_id=request_id,
             ip_address=ip_address,
+            field_names=changed_fields,
         )
         try:
             current.save(update_fields=(*changed_fields, "updated_at"))
@@ -358,6 +356,174 @@ def update_security_listing(
             after=after,
         )
         return SecurityListingWriteResult(current, False, data_changes, audit_record)
+
+
+def transition_security_listing(
+    *,
+    listing: SecurityListing,
+    transition_date: date,
+    ticker: str,
+    exchange: str,
+    security_name: str | None = None,
+    security_type: str = "unknown",
+    share_class: str | None = None,
+    is_primary: bool = False,
+    successor_effective_to: date | None = None,
+    source_evidence: SourceEvidence | None = None,
+    successor_source_evidence: SourceEvidence | None = None,
+    successor_listing_id: uuid.UUID | None = None,
+    sync_run: SyncRun | None = None,
+    actor_user: User | None = None,
+    reason: str = "",
+    request_id: str = "",
+    ip_address: str | None = None,
+) -> SecurityListingTransitionResult:
+    """Close a listing at ``transition_date`` and create its successor atomically."""
+
+    normalized_transition_date = _normalize_date(
+        transition_date,
+        value_name="transition_date",
+    )
+    if successor_source_evidence is not None and successor_listing_id is None:
+        raise CompanyServiceError(
+            "A successor SourceEvidence requires a preallocated successor_listing_id."
+        )
+    normalized_successor_id = (
+        _normalize_optional_uuid(
+            successor_listing_id,
+            value_name="successor_listing_id",
+        )
+        or uuid.uuid4()
+    )
+    successor_values = _normalize_listing_values(
+        ticker=ticker,
+        exchange=exchange,
+        effective_from=normalized_transition_date,
+        effective_to=successor_effective_to,
+        security_name=security_name,
+        security_type=security_type,
+        share_class=share_class,
+        is_primary=is_primary,
+        source_evidence=successor_source_evidence,
+    )
+
+    with transaction.atomic():
+        current = (
+            SecurityListing.objects.select_for_update().select_related("company").get(pk=listing.pk)
+        )
+        if normalized_transition_date <= current.effective_from:
+            raise CompanyServiceError("transition_date must be later than effective_from.")
+
+        effective_sync_run = sync_run
+        if source_evidence is None and successor_source_evidence is not None and sync_run is None:
+            effective_sync_run = _resolve_source_evidence(
+                source_evidence=successor_source_evidence,
+                sync_run=None,
+                target_type=DataChange.TargetType.SECURITY_LISTING,
+                target_id=normalized_successor_id,
+                field_names=(),
+            ).sync_run
+
+        closing_context = _resolve_write_context(
+            target_type=DataChange.TargetType.SECURITY_LISTING,
+            target_id=current.pk,
+            source_evidence=source_evidence,
+            sync_run=effective_sync_run,
+            actor_user=actor_user,
+            reason=reason,
+            request_id=request_id,
+            ip_address=ip_address,
+            field_names=("effective_to",),
+        )
+        successor_context = _resolve_write_context(
+            target_type=DataChange.TargetType.SECURITY_LISTING,
+            target_id=normalized_successor_id,
+            source_evidence=successor_source_evidence,
+            sync_run=closing_context.sync_run,
+            actor_user=actor_user,
+            reason=reason,
+            request_id=request_id,
+            ip_address=ip_address,
+        )
+        successor_values["source_evidence"] = successor_context.source_evidence
+
+        existing_successor = _find_exact_listing(company=current.company, values=successor_values)
+        if current.effective_to is not None:
+            if current.effective_to != normalized_transition_date:
+                raise ListingIdentityConflict(
+                    "SecurityListing is already closed at a different transition date."
+                )
+            if existing_successor is None:
+                raise ListingIdentityConflict(
+                    "SecurityListing is already closed without the requested successor identity."
+                )
+            return SecurityListingTransitionResult(
+                prior_listing=current,
+                successor_listing=existing_successor,
+                successor_created=False,
+                data_changes=(),
+                prior_audit_record=None,
+                successor_audit_record=None,
+            )
+        if existing_successor is not None:
+            raise ListingIdentityConflict(
+                "SecurityListing successor already exists before the current listing is closed."
+            )
+
+        before = _listing_snapshot(current)
+        current.effective_to = normalized_transition_date
+        current.save(update_fields=("effective_to", "updated_at"))
+        after = _listing_snapshot(current)
+        data_changes = _record_data_changes(
+            target_type=DataChange.TargetType.SECURITY_LISTING,
+            target_id=current.pk,
+            before=before,
+            after=after,
+            changed_fields=("effective_to",),
+            context=closing_context,
+        )
+        prior_audit_record = _record_action(
+            context=closing_context,
+            action=(
+                AuditRecord.Action.MANUAL_CORRECTION
+                if closing_context.actor_user is not None
+                else AuditRecord.Action.UPDATE
+            ),
+            target_type=AuditRecord.TargetType.SECURITY_LISTING,
+            target_id=current.pk,
+            before=before,
+            after=after,
+        )
+        successor_result = create_security_listing(
+            company=current.company,
+            listing_id=normalized_successor_id,
+            ticker=cast(str, successor_values["ticker"]),
+            exchange=cast(str, successor_values["exchange"]),
+            effective_from=cast(date, successor_values["effective_from"]),
+            effective_to=cast(date | None, successor_values["effective_to"]),
+            security_name=cast(str, successor_values["security_name"]),
+            security_type=cast(str, successor_values["security_type"]),
+            share_class=cast(str, successor_values["share_class"]),
+            is_primary=cast(bool, successor_values["is_primary"]),
+            source_evidence=cast(SourceEvidence | None, successor_values["source_evidence"]),
+            sync_run=successor_context.sync_run,
+            actor_user=actor_user,
+            reason=reason,
+            request_id=request_id,
+            ip_address=ip_address,
+        )
+        if not successor_result.created:
+            raise ListingIdentityConflict(
+                "SecurityListing successor creation did not create a new row."
+            )
+        return SecurityListingTransitionResult(
+            prior_listing=current,
+            successor_listing=successor_result.listing,
+            successor_created=True,
+            data_changes=data_changes,
+            prior_audit_record=prior_audit_record,
+            successor_audit_record=successor_result.audit_record,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,15 +631,23 @@ def _normalize_listing_changes(
     *,
     listing: SecurityListing,
 ) -> dict[str, object]:
-    allowed = {
+    historical_fields = {
+        "company",
         "ticker",
         "exchange",
+        "effective_from",
+        "effective_to",
+    }
+    if historical_fields.intersection(changes):
+        raise CompanyServiceError(
+            "SecurityListing identity and effective period fields must be changed "
+            "through transition_security_listing()."
+        )
+    allowed = {
         "security_name",
         "security_type",
         "share_class",
         "is_primary",
-        "effective_from",
-        "effective_to",
         "source_evidence",
     }
     _require_allowed_change_fields(changes, allowed=allowed, domain_name="SecurityListing")
@@ -538,9 +712,9 @@ def _validate_write_context(
     actor_user: User | None,
     reason: str,
     request_id: str,
-    creation: bool,
+    field_names: tuple[str, ...] = (),
 ) -> None:
-    if creation and source_evidence is not None and target_id is None:
+    if source_evidence is not None and target_id is None:
         raise CompanyServiceError(
             "Creating from SourceEvidence requires a preallocated stable target UUID."
         )
@@ -551,7 +725,13 @@ def _validate_write_context(
     if actor_user is not None and not request_id.strip():
         raise CompanyServiceError("Manual writes require a request_id.")
     if source_evidence is not None and target_id is not None:
-        _validate_evidence_target(source_evidence, target_type=target_type, target_id=target_id)
+        _resolve_source_evidence(
+            source_evidence=source_evidence,
+            sync_run=sync_run,
+            target_type=target_type,
+            target_id=target_id,
+            field_names=field_names,
+        )
 
 
 def _resolve_write_context(
@@ -564,6 +744,7 @@ def _resolve_write_context(
     reason: str,
     request_id: str,
     ip_address: str | None,
+    field_names: tuple[str, ...] = (),
 ) -> _WriteContext:
     _validate_write_context(
         target_type=target_type,
@@ -573,10 +754,24 @@ def _resolve_write_context(
         actor_user=actor_user,
         reason=reason,
         request_id=request_id,
-        creation=False,
+        field_names=field_names,
     )
-    derived_sync_run = sync_run or (
-        source_evidence.sync_run if source_evidence is not None else None
+    evidence_reference = (
+        _resolve_source_evidence(
+            source_evidence=source_evidence,
+            sync_run=sync_run,
+            target_type=target_type,
+            target_id=target_id,
+            field_names=field_names,
+        )
+        if source_evidence is not None
+        else None
+    )
+    persisted_evidence = evidence_reference.evidence if evidence_reference is not None else None
+    derived_sync_run = (
+        evidence_reference.sync_run
+        if evidence_reference is not None
+        else _resolve_sync_run(sync_run)
     )
     if actor_user is None and derived_sync_run is None:
         raise CompanyServiceError("Automatic writes require a SyncRun or SourceEvidence.")
@@ -587,7 +782,7 @@ def _resolve_write_context(
             raise CompanyServiceError("Automatic audit records require a SyncRun.")
         normalized_request_id = f"sync-run:{derived_sync_run.pk}"
     return _WriteContext(
-        source_evidence=source_evidence,
+        source_evidence=persisted_evidence,
         sync_run=derived_sync_run,
         actor_user=actor_user,
         reason=reason.strip(),
@@ -596,16 +791,35 @@ def _resolve_write_context(
     )
 
 
-def _validate_evidence_target(
+def _resolve_source_evidence(
     source_evidence: SourceEvidence,
     *,
+    sync_run: SyncRun | None,
     target_type: str,
     target_id: uuid.UUID,
-) -> None:
-    if source_evidence._state.adding:
-        raise CompanyServiceError("source_evidence must be saved before use.")
-    if source_evidence.target_type != target_type or source_evidence.target_id != target_id:
-        raise CompanyServiceError("SourceEvidence must reference the same domain target.")
+    field_names: tuple[str, ...],
+) -> SourceEvidenceReference:
+    try:
+        return resolve_source_evidence_reference(
+            source_evidence=source_evidence,
+            sync_run=sync_run,
+            target_type=target_type,
+            target_id=target_id,
+            field_names=field_names,
+        )
+    except InvalidEvidenceReference as error:
+        raise CompanyServiceError(str(error)) from None
+
+
+def _resolve_sync_run(sync_run: SyncRun | None) -> SyncRun | None:
+    if sync_run is None:
+        return None
+    if sync_run._state.adding or sync_run.pk is None:
+        raise CompanyServiceError("sync_run must be saved before use.")
+    try:
+        return SyncRun.objects.select_related("source").get(pk=sync_run.pk)
+    except SyncRun.DoesNotExist as error:
+        raise CompanyServiceError("sync_run must exist before use.") from error
 
 
 def _record_data_changes(

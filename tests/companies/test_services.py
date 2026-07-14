@@ -7,11 +7,13 @@ from django.utils import timezone
 
 import companies.services as company_services
 from accounts.models import User
-from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
+from audit.models import AuditRecord, DataChange, DataSource, SourceEvidence, SyncRun
 from audit.services import (
+    DataChangeWriteResult,
     SensitiveDataChangeValue,
     record_raw_data_observation,
     record_source_evidence,
+    start_sync_run,
 )
 from companies.models import Company, SecurityListing
 from companies.services import (
@@ -21,6 +23,7 @@ from companies.services import (
     create_company,
     create_security_listing,
     normalize_cik,
+    transition_security_listing,
     update_company,
     update_security_listing,
 )
@@ -532,3 +535,409 @@ def test_listing_update_skips_equal_values(company_sync_run: SyncRun) -> None:
 
     assert result.data_changes == ()
     assert result.audit_record is None
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("company", object()),
+        ("ticker", "NEW"),
+        ("exchange", "XNYS"),
+        ("effective_from", date(2025, 12, 31)),
+        ("effective_to", date(2026, 2, 1)),
+    ),
+)
+def test_listing_update_rejects_historical_identity_fields(
+    company_sync_run: SyncRun,
+    field_name: str,
+    value: object,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    listing = create_security_listing(
+        company=company,
+        ticker="FIX",
+        exchange="XNAS",
+        effective_from=date(2026, 1, 1),
+        sync_run=company_sync_run,
+    ).listing
+    prior_audits = AuditRecord.objects.count()
+
+    with pytest.raises(CompanyServiceError) as error:
+        update_security_listing(
+            listing=listing,
+            changes={field_name: value},
+            sync_run=company_sync_run,
+        )
+
+    assert "transition_security_listing" in str(error.value)
+    current = SecurityListing.objects.get(pk=listing.pk)
+    assert current.company_id == company.pk
+    assert current.ticker == "FIX"
+    assert current.exchange == "XNAS"
+    assert current.effective_from == date(2026, 1, 1)
+    assert current.effective_to is None
+    assert DataChange.objects.filter(target_id=listing.pk).count() == 0
+    assert AuditRecord.objects.count() == prior_audits
+
+
+@pytest.mark.django_db
+def test_transition_listing_closes_history_and_creates_successor(
+    company_sync_run: SyncRun,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    prior = create_security_listing(
+        company=company,
+        ticker="FIX",
+        exchange="XNAS",
+        effective_from=date(2026, 1, 1),
+        is_primary=True,
+        sync_run=company_sync_run,
+    ).listing
+
+    result = transition_security_listing(
+        listing=prior,
+        transition_date=date(2026, 3, 1),
+        ticker="NEW",
+        exchange="XNYS",
+        security_name="Fixture Class A",
+        is_primary=True,
+        sync_run=company_sync_run,
+    )
+
+    old_listing = SecurityListing.objects.get(pk=prior.pk)
+    successor = SecurityListing.objects.get(pk=result.successor_listing.pk)
+    assert result.successor_created is True
+    assert old_listing.pk == prior.pk
+    assert old_listing.effective_to == date(2026, 3, 1)
+    assert successor.pk != old_listing.pk
+    assert successor.effective_from == date(2026, 3, 1)
+    assert successor.effective_to is None
+    assert (old_listing.ticker, old_listing.exchange) == ("FIX", "XNAS")
+    assert (successor.ticker, successor.exchange) == ("NEW", "XNYS")
+    assert (
+        DataChange.objects.filter(target_id=old_listing.pk, field_name="effective_to").count() == 1
+    )
+    assert DataChange.objects.filter(target_id=successor.pk).count() == 0
+    assert result.prior_audit_record is not None
+    assert result.successor_audit_record is not None
+
+
+@pytest.mark.django_db
+def test_transition_listing_is_idempotent_only_for_same_closed_successor(
+    company_sync_run: SyncRun,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    prior = create_security_listing(
+        company=company,
+        ticker="FIX",
+        exchange="XNAS",
+        effective_from=date(2026, 1, 1),
+        sync_run=company_sync_run,
+    ).listing
+    first = transition_security_listing(
+        listing=prior,
+        transition_date=date(2026, 3, 1),
+        ticker="NEW",
+        exchange="XNYS",
+        sync_run=company_sync_run,
+    )
+    audit_count = AuditRecord.objects.count()
+    change_count = DataChange.objects.count()
+
+    second = transition_security_listing(
+        listing=prior,
+        transition_date=date(2026, 3, 1),
+        ticker="NEW",
+        exchange="XNYS",
+        sync_run=company_sync_run,
+    )
+
+    assert second.successor_created is False
+    assert second.successor_listing.pk == first.successor_listing.pk
+    assert AuditRecord.objects.count() == audit_count
+    assert DataChange.objects.count() == change_count
+
+    with pytest.raises(ListingIdentityConflict):
+        transition_security_listing(
+            listing=prior,
+            transition_date=date(2026, 4, 1),
+            ticker="NEW",
+            exchange="XNYS",
+            sync_run=company_sync_run,
+        )
+
+
+@pytest.mark.django_db
+def test_transition_listing_rejects_invalid_date_and_rolls_back_conflicts(
+    company_sync_run: SyncRun,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    prior = create_security_listing(
+        company=company,
+        ticker="FIX",
+        exchange="XNAS",
+        effective_from=date(2026, 1, 1),
+        sync_run=company_sync_run,
+    ).listing
+    other = create_company(
+        legal_name="Other Incorporated",
+        display_name="Other",
+        cik="123457",
+        sync_run=company_sync_run,
+    ).company
+    create_security_listing(
+        company=other,
+        ticker="NEW",
+        exchange="XNYS",
+        effective_from=date(2026, 2, 1),
+        sync_run=company_sync_run,
+    )
+
+    with pytest.raises(CompanyServiceError):
+        transition_security_listing(
+            listing=prior,
+            transition_date=date(2026, 1, 1),
+            ticker="NEW",
+            exchange="XNYS",
+            sync_run=company_sync_run,
+        )
+    with pytest.raises(ListingIdentityConflict):
+        transition_security_listing(
+            listing=prior,
+            transition_date=date(2026, 3, 1),
+            ticker="NEW",
+            exchange="XNYS",
+            sync_run=company_sync_run,
+        )
+
+    assert SecurityListing.objects.get(pk=prior.pk).effective_to is None
+    assert DataChange.objects.filter(target_id=prior.pk).count() == 0
+
+
+@pytest.mark.django_db
+def test_transition_listing_primary_conflict_rolls_back_old_interval(
+    company_sync_run: SyncRun,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    prior = create_security_listing(
+        company=company,
+        ticker="FIX",
+        exchange="XNAS",
+        effective_from=date(2026, 1, 1),
+        sync_run=company_sync_run,
+    ).listing
+    create_security_listing(
+        company=company,
+        ticker="PRIMARY",
+        exchange="XNYS",
+        effective_from=date(2026, 1, 1),
+        is_primary=True,
+        sync_run=company_sync_run,
+    )
+
+    with pytest.raises(ListingIdentityConflict):
+        transition_security_listing(
+            listing=prior,
+            transition_date=date(2026, 3, 1),
+            ticker="NEW",
+            exchange="ARCX",
+            is_primary=True,
+            sync_run=company_sync_run,
+        )
+
+    assert SecurityListing.objects.get(pk=prior.pk).effective_to is None
+    assert SecurityListing.objects.filter(company=company, ticker="NEW").count() == 0
+
+
+@pytest.mark.django_db
+def test_transition_listing_rolls_back_when_audit_or_change_write_fails(
+    company_sync_run: SyncRun,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    prior = create_security_listing(
+        company=company,
+        ticker="FIX",
+        exchange="XNAS",
+        effective_from=date(2026, 1, 1),
+        sync_run=company_sync_run,
+    ).listing
+
+    def fail_data_changes(**_: object) -> tuple[DataChangeWriteResult, ...]:
+        raise CompanyServiceError("fixture data-change failure")
+
+    monkeypatch.setattr(company_services, "_record_data_changes", fail_data_changes)
+    with pytest.raises(CompanyServiceError):
+        transition_security_listing(
+            listing=prior,
+            transition_date=date(2026, 3, 1),
+            ticker="NEW",
+            exchange="XNYS",
+            sync_run=company_sync_run,
+        )
+    assert SecurityListing.objects.get(pk=prior.pk).effective_to is None
+
+    monkeypatch.undo()
+
+    def fail_audit(**_: object) -> AuditRecord:
+        raise CompanyServiceError("fixture audit failure")
+
+    monkeypatch.setattr(company_services, "_record_action", fail_audit)
+    with pytest.raises(CompanyServiceError):
+        transition_security_listing(
+            listing=prior,
+            transition_date=date(2026, 3, 1),
+            ticker="NEW",
+            exchange="XNYS",
+            sync_run=company_sync_run,
+        )
+    assert SecurityListing.objects.get(pk=prior.pk).effective_to is None
+    assert SecurityListing.objects.filter(company=company, ticker="NEW").count() == 0
+
+
+@pytest.mark.django_db
+def test_company_service_uses_persisted_source_evidence_context(
+    company_sync_run: SyncRun,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    evidence = _evidence(
+        company_sync_run,
+        target_type=SourceEvidence.TargetType.COMPANY,
+        target_id=uuid.uuid4(),
+        field_name="display_name",
+    )
+    evidence.target_id = company.pk
+    evidence.sync_run = company_sync_run
+
+    with pytest.raises(CompanyServiceError) as error:
+        update_company(
+            company=company,
+            changes={"display_name": "Updated Fixture"},
+            source_evidence=evidence,
+        )
+
+    assert "domain target" in str(error.value)
+    assert Company.objects.get(pk=company.pk).display_name == "Fixture"
+    assert DataChange.objects.count() == 0
+    assert AuditRecord.objects.filter(target_id=company.pk).count() == 1
+
+
+@pytest.mark.django_db
+def test_company_service_rejects_evidence_and_sync_run_from_different_sources(
+    company_sync_run: SyncRun,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    evidence = _evidence(
+        company_sync_run,
+        target_type=SourceEvidence.TargetType.COMPANY,
+        target_id=company.pk,
+        field_name="display_name",
+    )
+    other_source = DataSource.objects.create(
+        key="company-other-source",
+        name="Company other source",
+        source_type=DataSource.SourceType.MANUAL,
+        license_notes="Synthetic test-only source.",
+    )
+    other_run = start_sync_run(
+        job_type="fixture.company-other",
+        source=other_source,
+        scope={"fixture": "other"},
+        idempotency_key="fixture.company-other:initial",
+    )
+
+    with pytest.raises(CompanyServiceError) as error:
+        update_company(
+            company=company,
+            changes={"display_name": "Updated Fixture"},
+            source_evidence=evidence,
+            sync_run=other_run,
+        )
+
+    assert "SourceEvidence and SyncRun" in str(error.value)
+    assert "fixture" not in str(error.value)
+    assert Company.objects.get(pk=company.pk).display_name == "Fixture"
+    assert DataChange.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_listing_write_rejects_unsaved_or_wrong_target_evidence_without_writes(
+    company_sync_run: SyncRun,
+) -> None:
+    company = create_company(
+        legal_name="Fixture Incorporated",
+        display_name="Fixture",
+        cik="123456",
+        sync_run=company_sync_run,
+    ).company
+    listing = create_security_listing(
+        company=company,
+        ticker="FIX",
+        exchange="XNAS",
+        effective_from=date(2026, 1, 1),
+        sync_run=company_sync_run,
+    ).listing
+
+    with pytest.raises(CompanyServiceError):
+        update_security_listing(
+            listing=listing,
+            changes={"security_name": "Updated"},
+            source_evidence=SourceEvidence(),
+        )
+
+    wrong_evidence = _evidence(
+        company_sync_run,
+        target_type=SourceEvidence.TargetType.COMPANY,
+        target_id=listing.pk,
+        field_name="security_name",
+    )
+    with pytest.raises(CompanyServiceError):
+        update_security_listing(
+            listing=listing,
+            changes={"security_name": "Updated"},
+            source_evidence=wrong_evidence,
+        )
+
+    assert SecurityListing.objects.get(pk=listing.pk).security_name == ""
+    assert DataChange.objects.filter(target_id=listing.pk).count() == 0

@@ -84,7 +84,7 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 - 值没有变化时不创建 DataChange、日期变化或通知；
 - 当前值变化时，在可靠事务中保存旧值、新值、来源、任务 ID、操作者/系统身份和原因；
 - DataChange 和 AuditRecord 只能通过 `audit.services` 的公开写入函数追加；不得用 Admin、模型实例更新、QuerySet update/delete 或通用写库接口改写/删除历史；
-- Company 和 SecurityListing 只能通过 `companies.services` 的公开写入函数创建或更新；创建必须追加 AuditRecord，字段变化必须追加 DataChange，Admin 不得成为写入后门；
+- Company 和 SecurityListing 只能通过 `companies.services` 的公开写入函数创建或更新；创建必须追加 AuditRecord，字段变化必须追加 DataChange，Admin 不得成为写入后门。SecurityListing 的 company、ticker、exchange 和有效期不得原地改写，必须通过原子后继切换关闭旧区间并创建新记录；
 - 关键历史记录使用结束有效期、停用、取消或修正，不物理删除；
 - 指数偏移保留底层加入/移除原子事实，再创建聚合事件；
 - 通知使用稳定 `idempotency_key`，发送尝试单独追加记录。
@@ -107,6 +107,7 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 - 时间相关测试覆盖 UTC、美东时间、用户本地时间和 DST 切换。
 - 用户资源的每个 query 和 mutation 都必须按当前用户过滤；前端隐藏不等于权限控制。
 - 审计、日志和原始响应不得包含密码、API key、session、认证头或其他秘密。
+- 领域 Service 使用 SourceEvidence 时，只能以传入主键从数据库重新加载，并验证持久化 target、SyncRun、DataSource 和 RawDataObservation 链；不得信任调用方内存中修改过的来源字段。
 
 ## 8. 修改纪律
 

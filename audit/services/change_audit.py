@@ -13,12 +13,16 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
-from audit.models import AuditRecord, DataChange, RawDataObservation, SourceEvidence, SyncRun
+from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
 from audit.security import (
     InvalidAuditValue,
     SensitiveAuditData,
     is_sensitive_field_name,
     normalize_json_without_credentials,
+)
+from audit.services.source_evidence import (
+    InvalidEvidenceReference,
+    resolve_source_evidence_reference,
 )
 
 if TYPE_CHECKING:
@@ -144,13 +148,18 @@ def record_data_change(
     with transaction.atomic():
         current_evidence = _load_source_evidence(source_evidence)
         current_sync_run = _load_sync_run(sync_run)
-        _validate_change_evidence_reference(
-            source_evidence=current_evidence,
-            sync_run=current_sync_run,
-            target_type=normalized_target_type,
-            target_id=normalized_target_id,
-            field_name=normalized_field_name,
-        )
+        if current_evidence is not None:
+            try:
+                evidence_reference = resolve_source_evidence_reference(
+                    source_evidence=current_evidence,
+                    sync_run=current_sync_run,
+                    target_type=normalized_target_type,
+                    target_id=normalized_target_id,
+                    field_names=(normalized_field_name,),
+                )
+            except InvalidEvidenceReference as error:
+                raise InvalidDataChange(str(error)) from None
+            current_evidence = evidence_reference.evidence
         change_key = _build_change_key(
             target_type=normalized_target_type,
             target_id=normalized_target_id,
@@ -477,35 +486,6 @@ def _load_source_evidence(source_evidence: SourceEvidence | None) -> SourceEvide
     return SourceEvidence.objects.select_related("raw_data_record__source").get(
         pk=source_evidence.pk
     )
-
-
-def _validate_change_evidence_reference(
-    *,
-    source_evidence: SourceEvidence | None,
-    sync_run: SyncRun | None,
-    target_type: str,
-    target_id: uuid.UUID,
-    field_name: str,
-) -> None:
-    if source_evidence is None:
-        return
-    if (
-        source_evidence.target_type != target_type
-        or source_evidence.target_id != target_id
-        or source_evidence.field_name not in ("", field_name)
-    ):
-        raise InvalidDataChange(
-            "SourceEvidence must describe the same target and field as DataChange."
-        )
-    if sync_run is None:
-        return
-    if source_evidence.raw_data_record.source_id != sync_run.source_id:
-        raise InvalidDataChange("SyncRun and SourceEvidence must trace to the same DataSource.")
-    if not RawDataObservation.objects.filter(
-        sync_run=sync_run,
-        raw_data_record=source_evidence.raw_data_record,
-    ).exists():
-        raise InvalidDataChange("SyncRun must have observed the SourceEvidence raw data record.")
 
 
 def _build_change_key(

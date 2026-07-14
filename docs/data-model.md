@@ -105,7 +105,7 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 | `source_evidence_id` | 当前关系的主要来源证据 |
 | `created_at`, `updated_at` | UTC |
 
-约束：同一交易所和 ticker 的有效期不能重叠；同一公司同一时点可以有多个 listing/share class，但最多一个默认展示代码。阶段 2.3 以 PostgreSQL `daterange` 半开区间排他约束（并启用 `btree_gist`）落实这两个规则，历史 ticker 通过设置 `effective_to` 保留而不覆盖。Service 规范化 ticker/exchange 并只允许通过受控入口写入：创建追加 AuditRecord，实际字段变化追加 DataChange；Admin 只读。搜索索引覆盖 ticker 和公司名称。URL 使用 ticker 时应处理历史代码与歧义；长期建议内部 canonical URL 使用稳定公司 ID，但是否改变 PRD 路由待确认。
+约束：同一交易所和 ticker 的有效期不能重叠；同一公司同一时点可以有多个 listing/share class，但最多一个默认展示代码。阶段 2.3 以 PostgreSQL `daterange` 半开区间排他约束（并启用 `btree_gist`）落实这两个规则，历史 ticker 通过设置 `effective_to` 保留而不覆盖。区间统一为 `[effective_from, effective_to)`：切换 ticker 或交易所时，Service 在一个事务中把旧 listing 的 `effective_to` 设为切换日，并创建从该日开始的新 UUID listing；不得通过通用更新入口改写 company、ticker、exchange、effective_from 或 effective_to。创建追加 AuditRecord，旧区间关闭写对应 DataChange，后继记录仅写创建 AuditRecord；Admin 只读。搜索索引覆盖 ticker 和公司名称。URL 使用 ticker 时应处理历史代码与歧义；长期建议内部 canonical URL 使用稳定公司 ID，但是否改变 PRD 路由待确认。
 
 ## 5. 指数及成分关系
 
@@ -434,7 +434,7 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 
 数据库使用复合外键要求 `SourceEvidence(sync_run_id, raw_data_record_id)` 对应已存在的 `RawDataObservation(sync_run_id, raw_data_record_id)`；写入 service 还校验 SyncRun 与 RawDataRecord 的 DataSource 一致。幂等键输入为 `raw_data_record_id + target_type + target_id + field_name + canonical normalized_value + normalizer_version`，不包含 raw body、DataSource、SyncRun、confidence 或 observed_at。同一 RawDataRecord 对同一目标字段产生相同标准化值和规则版本时复用原证据；不同 RawDataRecord 即使来自同一 DataSource 且标准化值相同，也分别保存证据，以保持每份原始文档的独立追溯链。
 
-同一领域记录仍可因不同来源、字段、标准化值或规则版本拥有多条证据；领域表中的 `primary_source_evidence_id` 只是当前选中来源的快捷引用。
+同一领域记录仍可因不同来源、字段、标准化值或规则版本拥有多条证据；领域表中的 `primary_source_evidence_id` 只是当前选中来源的快捷引用。领域 Service 使用证据时只接受其主键作为入口，重新加载持久化的 SourceEvidence、RawDataRecord、DataSource、SyncRun 和 RawDataObservation；证据 target 必须匹配领域目标，显式传入的 SyncRun 必须与证据的持久化 SyncRun 相同，并且该任务必须观察过该原始记录。调用方在内存中修改 evidence 的 target、来源或任务字段不能改变验证结果。
 
 `0004_rekey_source_evidence_by_raw_record` 只正向重算 evidence_key，不删除、合并或改写证据内容；其反向迁移为 noop。若需要回退代码，必须先评估旧版 key 语义与当前数据的兼容性，不能假定反向迁移会恢复旧 key。
 

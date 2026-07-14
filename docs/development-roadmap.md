@@ -194,6 +194,8 @@
 - NVDA 可由 ticker 和英文名称搜索（使用测试数据）。
 - 同一交易所/ticker 和同一公司主要展示 listing 的重叠有效期由 PostgreSQL 排他约束拒绝；历史区间关闭后可复用 ticker。
 - 创建追加 AuditRecord，实际字段变化追加可追溯 DataChange；Admin 不能新增、编辑或删除。
+- listing 的 company、ticker、exchange 和有效期不能通过通用更新入口覆盖；ticker/交易所切换必须原子关闭旧 `[start, end)` 区间并创建后继 listing，旧记录保留。
+- 使用 SourceEvidence 的领域写入必须从数据库重新验证 target、SyncRun、DataSource 和 RawDataObservation，拒绝调用方内存伪造或跨来源组合。
 
 ### 阶段 3：指数能力
 
