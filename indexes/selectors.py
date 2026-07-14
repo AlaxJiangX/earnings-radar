@@ -12,13 +12,6 @@ if TYPE_CHECKING:
     from indexes.models import MarketIndex
 
 
-_NORMATIVE_DATE_FILTER = (
-    Q(status__in=NORMATIVE_MEMBERSHIP_STATUSES)
-    & Q(effective_from__lte=date.today())
-    & (Q(effective_to__isnull=True) | Q(effective_to__gt=date.today()))
-)
-
-
 def _normative_as_of(
     queryset: QuerySet[IndexMembership],
     as_of_date: date,
@@ -99,22 +92,28 @@ def company_indexes_as_of(
     company_id: UUID,
     as_of_date: date,
     is_enabled: bool | None = True,
-) -> QuerySet[IndexMembership]:
-    """Return normative IndexMembership for all listings of a company as of a date.
+) -> QuerySet[MarketIndex]:
+    """Return distinct MarketIndex objects a company belongs to as of a date.
 
-    Only one membership row per (index, security_listing) pair is returned.
+    Indexes are derived from normative IndexMembership records across all
+    of the company's SecurityListings.  When *is_enabled* is ``True``
+    (default), only enabled indexes are returned.  When ``False``, only
+    disabled indexes.  When ``None``, all indexes are returned regardless
+    of enabled status.
     """
     from companies.models import SecurityListing
+    from indexes.models import MarketIndex as MI
 
     listing_ids = SecurityListing.objects.filter(company_id=company_id).values("id")
-    qs = IndexMembership.objects.select_related("index").filter(
-        security_listing_id__in=listing_ids,
-    )
-    qs = _normative_as_of(qs, as_of_date)
+    membership_ids = _normative_as_of(
+        IndexMembership.objects.filter(security_listing_id__in=listing_ids),
+        as_of_date,
+    ).values_list("index_id", flat=True)
+    qs = MI.objects.filter(id__in=membership_ids)
     if is_enabled is True:
-        qs = qs.filter(index__is_enabled=True)
+        qs = qs.filter(is_enabled=True)
     elif is_enabled is False:
-        qs = qs.filter(index__is_enabled=False)
+        qs = qs.filter(is_enabled=False)
     return qs.distinct()
 
 

@@ -227,7 +227,7 @@ class TestCurrentSelectors:
         self, db: object, sp500: MarketIndex, company: Company, listing: SecurityListing
     ) -> None:
         del db
-        m = IndexMembership.objects.create(
+        IndexMembership.objects.create(
             index=sp500,
             security_listing=listing,
             status=IndexMembership.Status.ACTIVE,
@@ -236,7 +236,8 @@ class TestCurrentSelectors:
         qs = company_indexes_as_of(
             company_id=company.pk, as_of_date=date(2024, 6, 1), is_enabled=True
         )
-        assert qs.filter(pk=m.pk).exists()
+        # Returns QuerySet[MarketIndex], not IndexMembership
+        assert qs.filter(pk=sp500.pk).exists()
 
 
 class TestMembershipsAsOf:

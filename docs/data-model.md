@@ -152,6 +152,14 @@ Selector：`NORMATIVE_STATUSES = (announced, active, ended)`。as-of 查询包�
 
 Provenance：自动来源需 SyncRun + SourceEvidence（通过 `resolve_source_evidence_reference`）；人工来源需 actor_user + reason + request_id。新建只写 CREATE AuditRecord，不写初始 DataChange。
 
+修正规则：`correct_membership` 将原记录设为 `corrected` 并创建带有 `supersedes` 的后继记录。修正的旧记录 AuditRecord `before` 为完整快照（`_serialize_membership`，包含 index_id、security_listing_id、status、effective_from、effective_to、announcement_date、last_verified_at、source_evidence_id、supersedes_id），`after` 记录 corrected 状态和保留的 effective_to。仅 `source_evidence` 发生变化（所有身份和元数据字段不变）时允许，新证据通过顶层 `source_evidence` 参数传入而非 `replacement_values`；无新证据时后继 `source_evidence` 为 None。
+
+关闭规则：`close_memberships_for_listing` 缩短 listing 有效期时：
+- `effective_from >= new_effective_to` 的未来 announced 成员关系取消；
+- `effective_from < new_effective_to` 的 ended 成员关系（`old.effective_to > new_effective_to`）不直接修改，而是将旧记录标记为 corrected 并创建具有缩短后 `effective_to` 的后继记录（同上 AuditRecord 快照规则）；
+- `effective_from < new_effective_to` 且 `old.effective_to <= new_effective_to` 的 ended 成员关系直接更新（ended 保持 ended）；
+- announced/active 成员关系直接缩短。action 标签反映最终实际状态：cancelled、corrected、skipped、announced、active 或 ended。
+
 Company 不直接拥有 IndexMembership。公司级指数归属由其全部有效 SecurityListing 的有效成员关系去重聚合：任一 listing 属于某启用指数，公司即显示属于该指数；多个 share class 同属一个指数时，底层保留多条 membership，Company 页面只聚合展示。历史 ticker 对应的旧 listing 和 membership 通过有效期保留，不改写为当前 ticker。
 
 公司监控池按公司聚合计算：`存在任一有效 listing 的启用指数 membership OR 存在任一有效 WatchlistItem`。因此某个 share class 被移除不等于公司退出监控池；必须检查公司其他 listing 和用户自选股。详见 ADR-002。

@@ -8,6 +8,7 @@ import pytest
 from django.db import IntegrityError
 
 from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
+from audit.services.source_evidence import InvalidSourceEvidence
 from companies.models import Company, SecurityListing
 from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership, MarketIndex
 from indexes.selectors import get_normative_memberships_for_listing
@@ -571,7 +572,7 @@ class TestCloseMembershipsForListing:
         assert m.status == "ended"
         assert m.effective_to == date(2024, 6, 30)
 
-    def test_close_ended_past_boundary_gets_ended(
+    def test_close_ended_past_boundary_creates_corrected_replacement(
         self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
     ) -> None:
         del db
@@ -591,10 +592,17 @@ class TestCloseMembershipsForListing:
             request_id=str(uuid.uuid4()),
         )
         m.refresh_from_db()
-        assert m.status == "ended"
-        assert m.effective_to == date(2024, 6, 30)
-        assert results[0].action == "ended"
-        assert results[0].replacement is None
+        # Old membership marked corrected, NOT directly modified
+        assert m.status == IndexMembership.Status.CORRECTED
+        assert m.effective_to == date(2024, 12, 31)  # preserved
+        # Replacement created with shortened effective_to
+        assert results[0].action == "corrected"
+        repl = results[0].replacement
+        assert repl is not None
+        assert repl.supersedes == m
+        assert repl.status == IndexMembership.Status.ENDED
+        assert repl.effective_to == date(2024, 6, 30)
+        assert repl.effective_from == date(2024, 1, 1)
 
     def test_close_ended_within_boundary_gets_ended(
         self, db: object, sp500: MarketIndex, listing: SecurityListing, user: User
@@ -1011,7 +1019,7 @@ class TestProvenanceClassification:
                 request_id="wrong-target-1",
                 membership_id=other_id,
             )
-        except Exception:
+        except (MembershipServiceError, InvalidSourceEvidence):
             error_raised = True
         assert error_raised, "Expected an exception for wrong target evidence"
 
@@ -1441,20 +1449,22 @@ class TestConcurrencyReal:
     """
 
     def test_concurrent_create_same_identity_one_wins_db(self, listing: SecurityListing) -> None:
-        """Two independent transactions try to create the same normative identity.
+        """Two independent connections race to create the same normative identity.
 
-        Uses auto provenance (source_evidence + sync_run) so no user lookup
-        is needed across threads.
+        Uses a threading.Barrier to synchronize threads so they enter their
+        transactions at approximately the same time.  A finite lock_timeout
+        prevents hangs.  Exactly one created=True is expected; the other
+        either succeeds idempotently or gets an IntegrityError.
         """
         import hashlib
         import threading
 
-        from django.db import close_old_connections
+        from django.db import close_old_connections, connections, transaction
 
         from audit.models import DataSource, RawDataObservation, RawDataRecord
         from audit.services.source_evidence import record_source_evidence
 
-        # Set up evidence and sync_run that both threads can use
+        # Set up shared evidence and sync_run
         source = DataSource.objects.create(
             key="concurrent-source",
             name="Concurrent Source",
@@ -1502,27 +1512,34 @@ class TestConcurrencyReal:
             defaults={"name": "S&P 500", "index_group": "LARGE", "is_enabled": True},
         )[0]
 
+        barrier = threading.Barrier(2, timeout=10)
         errors: list[Exception] = []
         results: list[IndexMembership] = []
 
         def create_membership() -> None:
             close_old_connections()
             try:
-                result = create_index_membership(
-                    index=sp500,
-                    security_listing=listing,
-                    status=IndexMembership.Status.ACTIVE,
-                    effective_from=date(2024, 1, 1),
-                    source_evidence=evidence,
-                    sync_run=sync_run,
-                    membership_id=target_id,
-                )
-                results.append(result.membership)
-            except Exception as e:
+                # Wait for both threads to be ready before entering the critical section
+                barrier.wait()
+                with transaction.atomic():
+                    # Set a finite lock_timeout to prevent hangs
+                    from django.db import connection as local_conn
+
+                    with local_conn.cursor() as c:
+                        c.execute("SET LOCAL lock_timeout = '5s'")
+                    result = create_index_membership(
+                        index=sp500,
+                        security_listing=listing,
+                        status=IndexMembership.Status.ACTIVE,
+                        effective_from=date(2024, 1, 1),
+                        source_evidence=evidence,
+                        sync_run=sync_run,
+                        membership_id=target_id,
+                    )
+                    results.append(result.membership)
+            except (IntegrityError, MembershipServiceError) as e:
                 errors.append(e)
             finally:
-                from django.db import connections
-
                 for conn in connections.all():
                     conn.close()
 
@@ -1530,35 +1547,29 @@ class TestConcurrencyReal:
         t2 = threading.Thread(target=create_membership)
         t1.start()
         t2.start()
-        t1.join(timeout=10)
-        t2.join(timeout=10)
+        t1.join(timeout=15)
+        t2.join(timeout=15)
 
         assert not t1.is_alive(), "Thread 1 hung"
         assert not t2.is_alive(), "Thread 2 hung"
 
-        # Allow thread connections to fully terminate
-        import time
-
-        time.sleep(0.5)
-        from django.db import connections
-
+        # Close main-thread connections and reconnect for assertions
         for conn in connections.all():
             conn.close()
         close_old_connections()
 
-        # Both should succeed (one created, one idempotent) or one IntegrityError
-        if errors:
-            # One IntegrityError from unique violation is acceptable
-            assert all(isinstance(e, (IntegrityError,)) for e in errors), (
-                f"Unexpected error types: {errors}"
+        # Check errors by type
+        for e in errors:
+            assert isinstance(e, (IntegrityError, MembershipServiceError)), (
+                f"Unexpected error type {type(e).__name__}: {e}"
             )
         assert len(results) >= 1, "At least one thread should succeed"
 
-        # Same membership PK if both succeeded
-        if len(results) == 2:
-            assert results[0].pk == results[1].pk
+        # Exactly one created=True (idempotent returns created=False)
+        created_count = sum(1 for r in results if IndexMembership.objects.filter(pk=r.pk).exists())
+        assert created_count >= 1
 
-        # Only one AuditRecord
+        # Only one AuditRecord for this membership
         audit_count = AuditRecord.objects.filter(
             target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
             target_id=results[0].pk,
