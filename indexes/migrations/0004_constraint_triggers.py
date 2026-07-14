@@ -29,13 +29,15 @@ BEGIN
        FOR UPDATE;
 
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'SecurityListing not found for membership %', NEW.id;
+        RAISE EXCEPTION 'SecurityListing not found for membership %', NEW.id
+        USING ERRCODE = '23514';
     END IF;
 
     IF current_row.effective_from < listing.effective_from THEN
         RAISE EXCEPTION
             'Membership % effective_from % is before listing effective_from %',
-            NEW.id, current_row.effective_from, listing.effective_from;
+            NEW.id, current_row.effective_from, listing.effective_from
+        USING ERRCODE = '23514';
     END IF;
 
     IF listing.effective_to IS NOT NULL AND (
@@ -44,7 +46,8 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'Membership % effective_to % exceeds listing effective_to %',
-            NEW.id, current_row.effective_to, listing.effective_to;
+            NEW.id, current_row.effective_to, listing.effective_to
+        USING ERRCODE = '23514';
     END IF;
 
     RETURN NEW;
@@ -104,7 +107,8 @@ BEGIN
     IF violating IS NOT NULL THEN
         RAISE EXCEPTION
             'Listing % boundary change violates membership %',
-            NEW.id, violating;
+            NEW.id, violating
+        USING ERRCODE = '23514';
     END IF;
 
     RETURN NEW;

@@ -76,6 +76,8 @@ def current_listing_indexes_as_of(
 ) -> QuerySet[IndexMembership]:
     """Return normative IndexMembership records for a listing as of a date.
 
+    Returns one membership row per (index, security_listing) pair.
+
     When *is_enabled* is ``True``, only memberships whose index
     ``is_enabled=True`` are included.  When ``False``, only disabled-index
     memberships.  When ``None``, all normative memberships are returned
@@ -113,4 +115,4 @@ def company_indexes_as_of(
         qs = qs.filter(index__is_enabled=True)
     elif is_enabled is False:
         qs = qs.filter(index__is_enabled=False)
-    return qs
+    return qs.distinct()

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
 from audit.services import (
@@ -415,21 +416,33 @@ def end_membership(
     with transaction.atomic():
         obj = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
-        if effective_to <= obj.effective_from:
-            raise MembershipServiceError(
-                f"effective_to {effective_to} must be later than "
-                f"effective_from {obj.effective_from}."
-            )
+        # --- Idempotency ordering (lock first, then classify) ---
 
-        if obj.status not in ("announced", "active"):
-            raise InvalidMembershipState(f"Membership {obj.pk} is {obj.status}, cannot be ended.")
-
-        # True no-op: effective_to already matches AND status is already ended
-        if obj.effective_to == effective_to and obj.status == IndexMembership.Status.ENDED:
+        # Already ended with same effective_to → pure no-op
+        if obj.status == IndexMembership.Status.ENDED and obj.effective_to == effective_to:
             return MembershipEndResult(
                 membership=obj,
                 data_changes=(),
                 audit_record=None,
+            )
+
+        # Already ended but with different effective_to → reject
+        if obj.status == IndexMembership.Status.ENDED:
+            raise InvalidMembershipState(
+                f"Membership {obj.pk} is already ended with effective_to={obj.effective_to}. "
+                f"Use correct_membership to change the historical end date, "
+                f"not end_membership."
+            )
+
+        # Corrected and cancelled are invalid starting states for end
+        if obj.status not in ("announced", "active"):
+            raise InvalidMembershipState(f"Membership {obj.pk} is {obj.status}, cannot be ended.")
+
+        # Requested effective_to must be later than the database effective_from
+        if effective_to <= obj.effective_from:
+            raise MembershipServiceError(
+                f"effective_to {effective_to} must be later than "
+                f"effective_from {obj.effective_from}."
             )
 
         old_effective_to = obj.effective_to
@@ -565,26 +578,48 @@ def correct_membership(
     *,
     membership: IndexMembership,
     replacement_values: Mapping[str, object],
+    source_evidence: SourceEvidence | None = None,
     actor_user: User,
     reason: str,
     request_id: str,
     ip_address: str | None = None,
 ) -> MembershipCorrectionResult:
-    # actor_user context is always manual for corrections (no automatic self-correction)
-    _resolve_membership_write_context(
-        source_evidence=None,
+    """Atomically correct a membership.
+
+    The original record is set to ``corrected`` and a *replacement* record is
+    created in the same transaction.  Only specific fields are allowed in
+    *replacement_values* and the replacement must pass all validation before
+    any mutation occurs.
+    """
+    # Validate replacement field whitelist *before* any mutation
+    _validate_replacement_fields(replacement_values)
+
+    replacement_id = uuid4()
+
+    # Resolve write context (manual correction)
+    _validate_membership_source(
+        source_evidence=source_evidence,
+        sync_run=None,
+        actor_user=actor_user,
+        reason=reason,
+        request_id=request_id,
+    )
+    context = _resolve_membership_write_context(
+        source_evidence=source_evidence,
         sync_run=None,
         actor_user=actor_user,
         reason=reason,
         request_id=request_id,
         ip_address=ip_address,
         target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
-        target_id=membership.pk,
+        target_id=replacement_id,
     )
+    resolved_evidence = context.source_evidence
 
     with transaction.atomic():
         old = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
+        # Prevent double-correction
         if IndexMembership.objects.filter(supersedes=old).exists():
             raise AlreadyCorrected(f"Membership {old.pk} already has a replacement.")
 
@@ -593,7 +628,68 @@ def correct_membership(
                 f"Membership {old.pk} is {old.status}, cannot be corrected."
             )
 
-        # Verify listing still exists and is consistent with historical membership
+        # --- Extract and validate replacement values ---
+        from datetime import datetime as dt
+
+        new_index = _extract_replacement(replacement_values, "index", old.index, MarketIndex)
+        new_listing = _extract_replacement(
+            replacement_values, "security_listing", old.security_listing, SecurityListing
+        )
+        new_status = _extract_replacement(replacement_values, "status", old.status, str)
+        new_eff_from = _extract_replacement(
+            replacement_values, "effective_from", old.effective_from, date
+        )
+        new_eff_to = _extract_replacement(
+            replacement_values, "effective_to", old.effective_to, (date, type(None))
+        )
+        new_ann_date = _extract_replacement(
+            replacement_values, "announcement_date", old.announcement_date, (date, type(None))
+        )
+        new_last_verified = _extract_replacement(
+            replacement_values,
+            "last_verified_at",
+            old.last_verified_at,
+            (dt, type(None)),
+        )
+        raw_new_evidence = _extract_replacement(
+            replacement_values,
+            "source_evidence",
+            resolved_evidence,
+            (SourceEvidence, type(None)),
+        )
+
+        # Validate replacement invariants
+        _validate_replacement_membership(
+            status=new_status,  # type: ignore[arg-type]
+            effective_from=new_eff_from,  # type: ignore[arg-type]
+            effective_to=new_eff_to,  # type: ignore[arg-type]
+            announcement_date=new_ann_date,  # type: ignore[arg-type]
+            source_evidence=raw_new_evidence if raw_new_evidence is not None else None,  # type: ignore[arg-type]
+        )
+
+        # Re-read + lock replacement index and listing
+        locked_index = _locked_market_index(new_index)  # type: ignore[arg-type]
+        locked_listing = _locked_security_listing(new_listing)  # type: ignore[arg-type]
+
+        # Validate replacement within listing boundaries
+        _validate_membership_within_listing(
+            effective_from=new_eff_from,  # type: ignore[arg-type]
+            effective_to=new_eff_to,  # type: ignore[arg-type]
+            listing_effective_from=locked_listing.effective_from,
+            listing_effective_to=locked_listing.effective_to,
+        )
+
+        # Prevent exact self-supersede: replacement must differ from original
+        _prevent_self_supersede(
+            old,
+            locked_index,
+            locked_listing,
+            new_eff_from,  # type: ignore[arg-type]
+            new_eff_to,  # type: ignore[arg-type]
+            new_status,  # type: ignore[arg-type]
+        )
+
+        # --- Verify old listing still exists and is consistent ---
         try:
             listing = SecurityListing.objects.select_for_update().get(pk=old.security_listing_id)
         except SecurityListing.DoesNotExist as exc:
@@ -615,6 +711,7 @@ def correct_membership(
                 f"exceeds listing {listing.pk} effective_to={listing.effective_to}."
             )
 
+        # --- Mutate: set old to corrected, create replacement ---
         old_status_before = old.status
         old.status = IndexMembership.Status.CORRECTED
         old.save(update_fields=["status", "updated_at"])
@@ -643,25 +740,17 @@ def correct_membership(
             ip_address=ip_address,
         )
 
-        new_index = _cast_mapping_value(replacement_values, "index", old.index)
-        new_listing = _cast_mapping_value(
-            replacement_values, "security_listing", old.security_listing
-        )
-        new_status = _cast_mapping_value(replacement_values, "status", old_status_before)
-        new_eff_from = _cast_mapping_value(replacement_values, "effective_from", old.effective_from)
-        new_eff_to = _cast_mapping_value(replacement_values, "effective_to", old.effective_to)
-        new_ann_date = _cast_mapping_value(
-            replacement_values, "announcement_date", old.announcement_date
-        )
-
         replacement = IndexMembership.objects.create(  # type: ignore[misc]
+            id=replacement_id,
             supersedes=old,
-            index=new_index,
-            security_listing=new_listing,
+            index=locked_index,
+            security_listing=locked_listing,
             status=new_status,
             effective_from=new_eff_from,
             effective_to=new_eff_to,
             announcement_date=new_ann_date,
+            last_verified_at=new_last_verified if new_last_verified is not None else timezone.now(),
+            source_evidence=raw_new_evidence if raw_new_evidence is not None else None,
         )
 
         replacement_audit = record_user_action(
@@ -883,8 +972,91 @@ def close_memberships_for_listing(
 # ---------------------------------------------------------------------------
 
 
-def _cast_mapping_value(mapping: Mapping[str, object], key: str, default: object) -> object:
-    return mapping.get(key, default)
+def _prevent_self_supersede(
+    old: IndexMembership,
+    new_index: MarketIndex,
+    new_listing: SecurityListing,
+    new_eff_from: date,
+    new_eff_to: date | None,
+    new_status: str,
+) -> None:
+    """Reject replacement that is identical to the original."""
+    if (
+        new_index.pk == old.index_id
+        and new_listing.pk == old.security_listing_id
+        and new_eff_from == old.effective_from
+        and new_eff_to == old.effective_to
+        and new_status == old.status
+    ):
+        raise MembershipServiceError(
+            "Replacement is identical to the original membership. At least one field must differ."
+        )
+
+
+# ---- Replacement validation helpers ----
+
+_ALLOWED_REPLACEMENT_FIELDS = frozenset(
+    {
+        "index",
+        "security_listing",
+        "status",
+        "effective_from",
+        "effective_to",
+        "announcement_date",
+        "last_verified_at",
+        "source_evidence",
+    }
+)
+
+_REPLACEMENT_STATUSES = frozenset(
+    {IndexMembership.Status.ANNOUNCED, IndexMembership.Status.ACTIVE, IndexMembership.Status.ENDED}
+)
+
+
+def _validate_replacement_fields(replacement_values: Mapping[str, object]) -> None:
+    forbidden = set(replacement_values.keys()) - _ALLOWED_REPLACEMENT_FIELDS
+    if forbidden:
+        raise MembershipServiceError(
+            f"Replacement contains forbidden fields: {', '.join(sorted(forbidden))}."
+        )
+
+
+def _extract_replacement(
+    mapping: Mapping[str, object],
+    key: str,
+    default: object,
+    expected_type: type | tuple[type, ...],
+) -> object:
+    value = mapping.get(key, default)
+    if not isinstance(value, expected_type):
+        raise MembershipServiceError(
+            f"Replacement field {key!r} must be of type {expected_type!r}, "
+            f"got {type(value).__name__!r}."
+        )
+    return value
+
+
+def _validate_replacement_membership(
+    *,
+    status: str,
+    effective_from: date,
+    effective_to: date | None,
+    announcement_date: date | None,
+    source_evidence: SourceEvidence | None,
+) -> None:
+    if status not in _REPLACEMENT_STATUSES:
+        raise MembershipServiceError(
+            f"Replacement status {status!r} is not allowed. "
+            f"Only announced, active, and ended are valid."
+        )
+    if effective_to is not None and effective_to <= effective_from:
+        raise MembershipServiceError("Replacement effective_to must be later than effective_from.")
+    if status == IndexMembership.Status.ENDED and effective_to is None:
+        raise MembershipServiceError("Replacement with ended status requires effective_to.")
+    if announcement_date is not None and announcement_date > effective_from:
+        raise MembershipServiceError(
+            "Replacement announcement_date must not be after effective_from."
+        )
 
 
 def _validate_membership_status(status: str) -> None:
@@ -904,26 +1076,42 @@ def _validate_membership_source(
     reason: str,
     request_id: str,
 ) -> None:
-    has_auto = source_evidence is not None or sync_run is not None
-    has_human = actor_user is not None
+    """Enforce frozen provenance classification (auto vs manual).
 
-    if has_auto and has_human:
+    Auto:  sync_run is not None AND actor_user is None AND source_evidence is not None
+    Manual: actor_user is not None AND sync_run is None AND reason/request_id non-empty
+
+    Reject: SyncRun without SourceEvidence, SourceEvidence without actor_user or
+    SyncRun, actor_user + SyncRun together, both sources empty, blank reason, blank request_id.
+    """
+    has_sync_run = sync_run is not None
+    has_actor = actor_user is not None
+    has_evidence = source_evidence is not None
+
+    # Reject: actor_user + SyncRun mixed
+    if has_actor and has_sync_run:
+        raise MembershipServiceError("Cannot provide both actor_user and sync_run provenance.")
+
+    # Reject: SyncRun without SourceEvidence
+    if has_sync_run and not has_evidence:
+        raise MembershipServiceError("Automatic provenance requires source_evidence.")
+
+    # Reject: SourceEvidence alone without actor_user or SyncRun
+    if has_evidence and not has_actor and not has_sync_run:
         raise MembershipServiceError(
-            "Cannot provide both automatic (source_evidence/sync_run) "
-            "and manual (actor_user) provenance."
+            "SourceEvidence requires either actor_user or sync_run provenance."
         )
-    if has_auto:
-        if source_evidence is None:
-            raise MembershipServiceError("Automatic provenance requires source_evidence.")
-        if sync_run is None:
-            raise MembershipServiceError("Automatic provenance requires sync_run.")
-    elif has_human:
+
+    # Reject: neither source
+    if not has_actor and not has_sync_run:
+        raise MembershipServiceError("Must provide either source_evidence+sync_run or actor_user.")
+
+    # Manual validation
+    if has_actor:
         if not reason or not reason.strip():
             raise MembershipServiceError("Manual operations require non-empty reason.")
         if not request_id or not request_id.strip():
             raise MembershipServiceError("Manual operations require non-empty request_id.")
-    else:
-        raise MembershipServiceError("Must provide either source_evidence+sync_run or actor_user.")
 
 
 def _validate_membership_within_listing(

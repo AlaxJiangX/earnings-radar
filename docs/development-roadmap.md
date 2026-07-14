@@ -199,12 +199,12 @@
 
 ### 阶段 3：指数能力
 
-#### 3.1 指数与成分历史（3.1A ✅ | 3.1B 实现中，Draft PR #6）
+#### 3.1 指数与成分历史（3.1A ✅ | 3.1B ✅）
 
 ##### 3.1A MarketIndex — 已完成 ✅
 交付：四个内置 MarketIndex（SP500 / NASDAQ100 / DJIA / RUSSELL2000）。
 
-##### 3.1B IndexMembership — 实现中（Draft PR #6）
+##### 3.1B IndexMembership — 已实现
 交付：IndexMembership 模型、五状态生命周期、两侧 deferred constraint trigger、Service、Selector、只读 Admin。
 
 已实现：
