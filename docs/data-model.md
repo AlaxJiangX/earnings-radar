@@ -109,7 +109,7 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 
 ## 5. 指数及成分关系
 
-### 5.1 `MarketIndex`
+### 5.1 `MarketIndex`（3.1A 已实现；provider_symbol 延后至 3.2）
 
 | 字段 | 说明 |
 |---|---|
