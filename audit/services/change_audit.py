@@ -13,12 +13,16 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
 
-from audit.models import AuditRecord, DataChange, RawDataObservation, SourceEvidence, SyncRun
+from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
 from audit.security import (
     InvalidAuditValue,
     SensitiveAuditData,
     is_sensitive_field_name,
     normalize_json_without_credentials,
+)
+from audit.services.source_evidence import (
+    InvalidEvidenceReference,
+    resolve_source_evidence_reference,
 )
 
 if TYPE_CHECKING:
@@ -144,19 +148,24 @@ def record_data_change(
     with transaction.atomic():
         current_evidence = _load_source_evidence(source_evidence)
         current_sync_run = _load_sync_run(sync_run)
-        _validate_change_evidence_reference(
-            source_evidence=current_evidence,
-            sync_run=current_sync_run,
+        if current_evidence is not None:
+            try:
+                evidence_reference = resolve_source_evidence_reference(
+                    source_evidence=current_evidence,
+                    sync_run=current_sync_run,
+                    target_type=normalized_target_type,
+                    target_id=normalized_target_id,
+                    field_names=(normalized_field_name,),
+                )
+            except InvalidEvidenceReference as error:
+                raise InvalidDataChange(str(error)) from None
+            current_evidence = evidence_reference.evidence
+        change_key = build_data_change_key(
             target_type=normalized_target_type,
             target_id=normalized_target_id,
             field_name=normalized_field_name,
-        )
-        change_key = _build_change_key(
-            target_type=normalized_target_type,
-            target_id=normalized_target_id,
-            field_name=normalized_field_name,
-            canonical_old_value=canonical_old,
-            canonical_new_value=canonical_new,
+            old_value=normalized_old,
+            new_value=normalized_new,
             rule_version=normalized_rule,
             source_evidence=current_evidence,
             sync_run=current_sync_run,
@@ -479,36 +488,48 @@ def _load_source_evidence(source_evidence: SourceEvidence | None) -> SourceEvide
     )
 
 
-def _validate_change_evidence_reference(
+def build_data_change_key(
     *,
-    source_evidence: SourceEvidence | None,
-    sync_run: SyncRun | None,
     target_type: str,
     target_id: uuid.UUID,
     field_name: str,
-) -> None:
-    if source_evidence is None:
-        return
-    if (
-        source_evidence.target_type != target_type
-        or source_evidence.target_id != target_id
-        or source_evidence.field_name not in ("", field_name)
-    ):
-        raise InvalidDataChange(
-            "SourceEvidence must describe the same target and field as DataChange."
-        )
-    if sync_run is None:
-        return
-    if source_evidence.raw_data_record.source_id != sync_run.source_id:
-        raise InvalidDataChange("SyncRun and SourceEvidence must trace to the same DataSource.")
-    if not RawDataObservation.objects.filter(
+    old_value: object,
+    new_value: object,
+    rule_version: str,
+    source_evidence: SourceEvidence | None,
+    sync_run: SyncRun | None,
+    actor_user: User | None,
+    origin_key: str,
+) -> str:
+    """Build a stable DataChange key with the canonical JSON rules used by writes.
+
+    This function is pure; callers remain responsible for validating domain and
+    persistence invariants before they use its result.
+    """
+
+    _, canonical_old_value = _canonicalize_secure_json(
+        old_value,
+        value_name="DataChange old_value",
+    )
+    _, canonical_new_value = _canonicalize_secure_json(
+        new_value,
+        value_name="DataChange new_value",
+    )
+    return _build_data_change_key_from_canonical_values(
+        target_type=target_type,
+        target_id=target_id,
+        field_name=field_name,
+        canonical_old_value=canonical_old_value,
+        canonical_new_value=canonical_new_value,
+        rule_version=rule_version,
+        source_evidence=source_evidence,
         sync_run=sync_run,
-        raw_data_record=source_evidence.raw_data_record,
-    ).exists():
-        raise InvalidDataChange("SyncRun must have observed the SourceEvidence raw data record.")
+        actor_user=actor_user,
+        origin_key=origin_key,
+    )
 
 
-def _build_change_key(
+def _build_data_change_key_from_canonical_values(
     *,
     target_type: str,
     target_id: uuid.UUID,

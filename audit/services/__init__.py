@@ -7,6 +7,7 @@ from audit.services.change_audit import (
     InvalidDataChange,
     SensitiveAuditRecordValue,
     SensitiveDataChangeValue,
+    build_data_change_key,
     record_data_change,
     record_system_action,
     record_user_action,
@@ -28,8 +29,10 @@ from audit.services.source_evidence import (
     InvalidSourceEvidence,
     SensitiveEvidenceValue,
     SourceEvidenceIntegrityError,
+    SourceEvidenceReference,
     SourceEvidenceWriteResult,
     record_source_evidence,
+    resolve_source_evidence_reference,
 )
 from audit.services.sync_runs import (
     InvalidSyncRunCount,
@@ -45,6 +48,7 @@ from audit.services.sync_runs import (
 __all__ = [
     "AuditRecordIntegrityError",
     "AuditRecordWriteResult",
+    "build_data_change_key",
     "DataChangeIntegrityError",
     "DataChangeWriteResult",
     "InvalidAuditRecord",
@@ -63,6 +67,7 @@ __all__ = [
     "SensitiveDataChangeValue",
     "SensitiveEvidenceValue",
     "SourceEvidenceIntegrityError",
+    "SourceEvidenceReference",
     "SourceEvidenceWriteResult",
     "build_request_fingerprint",
     "mark_raw_data_parse_failed",
@@ -74,6 +79,7 @@ __all__ = [
     "record_raw_data_observation",
     "record_data_change",
     "record_source_evidence",
+    "resolve_source_evidence_reference",
     "record_system_action",
     "record_user_action",
     "start_sync_run",
