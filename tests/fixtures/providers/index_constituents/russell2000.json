@@ -1,0 +1,41 @@
+{
+  "index_code": "RUSSELL2000",
+  "as_of_date": "2026-07-15",
+  "constituents": [
+    {
+      "ticker": "KILO",
+      "exchange": "NYSE",
+      "company_name": "Kilo Fixture Energy",
+      "share_class": null,
+      "provider_security_id": "fixture-r2k-001"
+    },
+    {
+      "ticker": "LIMA",
+      "exchange": "NASDAQ",
+      "company_name": "Lima Fixture Biotech",
+      "share_class": null,
+      "provider_security_id": "fixture-r2k-002"
+    },
+    {
+      "ticker": "MIKE",
+      "exchange": "NYSE",
+      "company_name": "Mike Fixture Retail",
+      "share_class": null,
+      "provider_security_id": "fixture-r2k-003"
+    },
+    {
+      "ticker": "NOVB",
+      "exchange": "NASDAQ",
+      "company_name": "November Fixture Media",
+      "share_class": null,
+      "provider_security_id": "fixture-r2k-004"
+    },
+    {
+      "ticker": "OSCR",
+      "exchange": "NYSE",
+      "company_name": "Oscar Fixture Manufacturing",
+      "share_class": null,
+      "provider_security_id": "fixture-r2k-005"
+    }
+  ]
+}
