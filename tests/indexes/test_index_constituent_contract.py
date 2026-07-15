@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -125,28 +126,20 @@ class TestFixtureIndexConstituentProvider:
 
 
 class TestParserNonBytes:
-    def test_rejects_str_raw_content(self) -> None:
+    @pytest.mark.parametrize(
+        "raw_content",
+        [
+            "not-bytes",
+            bytearray(b"{}"),
+            memoryview(b"{}"),
+        ],
+    )
+    def test_rejects_non_bytes_raw_content(self, raw_content: object) -> None:
         with pytest.raises(InvalidIndexConstituentSnapshot, match="must be bytes"):
-            parse_index_constituent_snapshot("not-bytes", expected_index_code="SP500")  # type: ignore[arg-type]
-
-    def test_rejects_bytearray_raw_content(self) -> None:
-        with pytest.raises(InvalidIndexConstituentSnapshot, match="must be bytes"):
-            parse_index_constituent_snapshot(bytearray(b"{}"), expected_index_code="SP500")  # type: ignore[arg-type]
-
-    def test_rejects_memoryview_raw_content(self) -> None:
-        with pytest.raises(InvalidIndexConstituentSnapshot, match="must be bytes"):
-            parse_index_constituent_snapshot(memoryview(b"{}"), expected_index_code="SP500")  # type: ignore[arg-type]
-
-
-def _parse_any(raw: object, expected: str, match: str) -> None:
-    """Call the parser with a deliberately mis-typed argument so the
-    runtime isinstance(bytes, …) guard is exercised.
-
-    The single-line call is needed for mypy to associate the
-    # type: ignore[arg-type] suppression with the call.
-    """
-    with pytest.raises(InvalidIndexConstituentSnapshot, match=match):
-        parse_index_constituent_snapshot(raw, expected_index_code=expected)  # type: ignore[arg-type]
+            parse_index_constituent_snapshot(
+                cast(Any, raw_content),
+                expected_index_code="SP500",
+            )
 
 
 class TestParserInvalidJson:

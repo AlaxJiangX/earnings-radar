@@ -168,19 +168,15 @@ def _validate_as_of_date(data: dict[str, object]) -> date:
     raw = data.get("as_of_date")
     if raw is None:
         raise InvalidIndexConstituentSnapshot("Missing required field 'as_of_date'.")
-    if not isinstance(raw, str) or not raw.strip():
+    if not isinstance(raw, str) or not raw:
         raise InvalidIndexConstituentSnapshot("'as_of_date' must be a non-empty string.")
-    raw_str = raw.strip()
-    if not isinstance(raw, str) or not raw.strip():
-        raise InvalidIndexConstituentSnapshot("'as_of_date' must be a non-empty string.")
-    raw_str = raw.strip()
-    if not _AS_OF_DATE_RE.fullmatch(raw_str):
+    if not _AS_OF_DATE_RE.fullmatch(raw):
         raise InvalidIndexConstituentSnapshot(
             f"'as_of_date' must be exactly YYYY-MM-DD, got {raw!r}."
         )
     try:
-        return date.fromisoformat(raw_str)
-    except (ValueError, TypeError) as exc:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
         raise InvalidIndexConstituentSnapshot(
             f"'as_of_date' {raw!r} is not a valid ISO date."
         ) from exc
