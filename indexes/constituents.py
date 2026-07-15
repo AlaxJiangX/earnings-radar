@@ -120,7 +120,7 @@ def parse_index_constituent_snapshot(
         entries.append(entry)
 
     # ---- 6. Deterministic sort -------------------------------------------
-    entries.sort(key=lambda e: (e.ticker, e.exchange, e.share_class or ""))
+    entries.sort(key=lambda e: (e.ticker, e.exchange))
 
     return IndexConstituentSnapshot(
         index_code=index_code,
