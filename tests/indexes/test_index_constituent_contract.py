@@ -124,6 +124,31 @@ class TestFixtureIndexConstituentProvider:
 # ---------------------------------------------------------------------------
 
 
+class TestParserNonBytes:
+    def test_rejects_str_raw_content(self) -> None:
+        with pytest.raises(InvalidIndexConstituentSnapshot, match="must be bytes"):
+            parse_index_constituent_snapshot("not-bytes", expected_index_code="SP500")  # type: ignore[arg-type]
+
+    def test_rejects_bytearray_raw_content(self) -> None:
+        with pytest.raises(InvalidIndexConstituentSnapshot, match="must be bytes"):
+            parse_index_constituent_snapshot(bytearray(b"{}"), expected_index_code="SP500")  # type: ignore[arg-type]
+
+    def test_rejects_memoryview_raw_content(self) -> None:
+        with pytest.raises(InvalidIndexConstituentSnapshot, match="must be bytes"):
+            parse_index_constituent_snapshot(memoryview(b"{}"), expected_index_code="SP500")  # type: ignore[arg-type]
+
+
+def _parse_any(raw: object, expected: str, match: str) -> None:
+    """Call the parser with a deliberately mis-typed argument so the
+    runtime isinstance(bytes, …) guard is exercised.
+
+    The single-line call is needed for mypy to associate the
+    # type: ignore[arg-type] suppression with the call.
+    """
+    with pytest.raises(InvalidIndexConstituentSnapshot, match=match):
+        parse_index_constituent_snapshot(raw, expected_index_code=expected)  # type: ignore[arg-type]
+
+
 class TestParserInvalidJson:
     def test_rejects_malformed_json(self) -> None:
         with pytest.raises(InvalidIndexConstituentSnapshot, match="JSON"):
@@ -166,7 +191,7 @@ class TestParserAsOfDate:
 
     def test_rejects_illegal_iso(self) -> None:
         raw = b'{"index_code":"SP500","as_of_date":"not-a-date","constituents":[]}'
-        with pytest.raises(InvalidIndexConstituentSnapshot, match="ISO date"):
+        with pytest.raises(InvalidIndexConstituentSnapshot, match="YYYY-MM-DD"):
             parse_index_constituent_snapshot(raw, expected_index_code="SP500")
 
 
@@ -293,6 +318,13 @@ class TestParserDoesNotModifyRaw:
         assert raw == raw_copy
 
 
+class TestAllowedIndexCodeDrift:
+    def test_constituent_codes_match_market_index_codes(self) -> None:
+        from indexes.models import ALLOWED_CODES
+
+        assert ALLOWED_INDEX_CODES == ALLOWED_CODES
+
+
 class TestSecurity:
     def test_fixture_data_is_fictional(self) -> None:
         real_tickers = {"AAPL", "MSFT", "GOOGL", "NVDA", "TSLA", "AMZN", "META", "JPM"}
@@ -303,7 +335,7 @@ class TestSecurity:
                 assert entry.ticker not in real_tickers
                 assert (
                     entry.provider_security_id is None or "fixture-" in entry.provider_security_id
-                )  # noqa: E501
+                )
 
     def test_fixtures_contain_no_credentials(self) -> None:
         for index_code in ALLOWED_INDEX_CODES:

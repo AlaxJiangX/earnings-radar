@@ -194,14 +194,8 @@ class FixtureIndexConstituentProvider(Provider):
     provider_version = "fixture-v1"
     capabilities = frozenset({ProviderCapability.INDEX_CONSTITUENTS})
 
-    def __init__(
-        self,
-        *,
-        fixtures: dict[str, bytes] | None = None,
-        api_key: str = "fixture-api-key-not-a-secret",
-    ) -> None:
+    def __init__(self, *, fixtures: dict[str, bytes] | None = None) -> None:
         self._fixtures = dict(fixtures or {})
-        self.api_key = api_key
 
     def _fetch(self, request: ProviderRequest) -> ProviderResult:
         """Return a curated fixture snapshot for the requested index."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -63,14 +64,18 @@ def parse_index_constituent_snapshot(
 
     Returns:
         A fully validated :class:`IndexConstituentSnapshot` with entries
-        deterministically ordered by ``(ticker, exchange, share_class)``.
+        deterministically ordered by ``(ticker, exchange)``.
 
     Raises:
         InvalidIndexConstituentSnapshot: For any structural, value, or
             duplicate error.  Error messages include field/row context but
             never echo the full raw payload.
     """
-    # ---- 0. Validate expected_index_code ----------------------------------
+    # ---- 0a. Runtime type guard -------------------------------------------
+    if not isinstance(raw_content, bytes):
+        raise InvalidIndexConstituentSnapshot("'raw_content' must be bytes.")
+
+    # ---- 0b. Validate expected_index_code ---------------------------------
     _validate_expected_index_code(expected_index_code)
 
     # ---- 1. Parse JSON ---------------------------------------------------
@@ -99,19 +104,17 @@ def parse_index_constituent_snapshot(
 
     # ---- 5. Parse and validate each row ----------------------------------
     entries: list[IndexConstituentEntry] = []
-    seen: set[tuple[str, str, str | None]] = set()
+    seen: set[tuple[str, str]] = set()
 
     for raw_position, raw_entry in enumerate(raw_constituents, start=1):
         entry = _parse_constituent_entry(
             raw_entry,
             raw_position=raw_position,
         )
-        identity = (entry.ticker, entry.exchange, entry.share_class)
+        identity = (entry.ticker, entry.exchange)
         if identity in seen:
             raise InvalidIndexConstituentSnapshot(
-                f"Duplicate constituent {entry.ticker}/{entry.exchange}"
-                f"{'/' + entry.share_class if entry.share_class else ''}"
-                f" at row {raw_position}."
+                f"Duplicate constituent {entry.ticker}/{entry.exchange} at row {raw_position}."
             )
         seen.add(identity)
         entries.append(entry)
@@ -158,14 +161,25 @@ def _validate_index_code(data: dict[str, object], expected: str) -> str:
     return code
 
 
+_AS_OF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _validate_as_of_date(data: dict[str, object]) -> date:
     raw = data.get("as_of_date")
     if raw is None:
         raise InvalidIndexConstituentSnapshot("Missing required field 'as_of_date'.")
     if not isinstance(raw, str) or not raw.strip():
         raise InvalidIndexConstituentSnapshot("'as_of_date' must be a non-empty string.")
+    raw_str = raw.strip()
+    if not isinstance(raw, str) or not raw.strip():
+        raise InvalidIndexConstituentSnapshot("'as_of_date' must be a non-empty string.")
+    raw_str = raw.strip()
+    if not _AS_OF_DATE_RE.fullmatch(raw_str):
+        raise InvalidIndexConstituentSnapshot(
+            f"'as_of_date' must be exactly YYYY-MM-DD, got {raw!r}."
+        )
     try:
-        return date.fromisoformat(raw.strip())
+        return date.fromisoformat(raw_str)
     except (ValueError, TypeError) as exc:
         raise InvalidIndexConstituentSnapshot(
             f"'as_of_date' {raw!r} is not a valid ISO date."
