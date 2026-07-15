@@ -35,12 +35,16 @@ class FakeProviderScenario(StrEnum):
     TRANSPORT_ERROR_WITH_TOKEN = "transport_error_with_token"
 
 
+_DEFAULT_FAKE_BODY = b'{"items":[{"company":"Example Test Corp","symbol":"FAKE"}]}'
+
+
 class FakeHttpTransport:
-    def __init__(self, scenario: FakeProviderScenario) -> None:
+    def __init__(self, scenario: FakeProviderScenario, *, body: bytes | None = None) -> None:
         self.scenario = scenario
         self.call_count = 0
         self.last_connect_timeout_seconds: float | None = None
         self.last_read_timeout_seconds: float | None = None
+        self._explicit_body = body
         self.last_max_response_bytes: int | None = None
         self.last_user_agent = ""
 
@@ -58,7 +62,7 @@ class FakeHttpTransport:
 
         status_code = 200
         headers: dict[str, str] = {"Content-Type": "application/json"}
-        body = b'{"items":[{"company":"Example Test Corp","symbol":"FAKE"}]}'
+        body = self._explicit_body if self._explicit_body is not None else _DEFAULT_FAKE_BODY
 
         if self.scenario is FakeProviderScenario.EMPTY:
             status_code = 204
@@ -162,3 +166,85 @@ def make_fake_provider_request(
         source_url=source_url,
         request_identity={"page": page},
     )
+
+
+# ---------------------------------------------------------------------------
+# FixtureIndexConstituentProvider — dedicated INDEX_CONSTITUENTS fixture
+# ---------------------------------------------------------------------------
+
+
+class FixtureIndexConstituentProvider(Provider):
+    """A test-only Provider that returns curated fixture snapshots.
+
+    Fixture bytes are injected via the *fixtures* constructor parameter,
+    so the Provider itself has no knowledge of the filesystem layout or
+    the repository root.  Test helpers are responsible for reading fixture
+    JSON from disk.
+
+    All company names, tickers, and identifiers are fictional — no real
+    index data is embedded.
+
+    Uses the same ``FakeHttpTransport`` and ``ProviderHttpClient``
+    infrastructure as ``FakeProvider``, so timeout, rate-limit, and
+    credential-free behaviour is already covered by the existing provider
+    contract tests.
+    """
+
+    provider_key = "fixture-index-constituents"
+    provider_version = "fixture-v1"
+    capabilities = frozenset({ProviderCapability.INDEX_CONSTITUENTS})
+
+    def __init__(self, *, fixtures: dict[str, bytes] | None = None) -> None:
+        self._fixtures = dict(fixtures or {})
+
+    def _fetch(self, request: ProviderRequest) -> ProviderResult:
+        """Return a curated fixture snapshot for the requested index."""
+        index_code = _require_scope_index_code(request)
+        body = self._get_fixture_bytes(index_code)
+
+        transport = FakeHttpTransport(FakeProviderScenario.SUCCESS, body=body)
+        client = ProviderHttpClient(
+            transport=transport,
+            config=HttpClientConfig(
+                retry_policy=RetryPolicy(max_attempts=1, base_delay_seconds=0, max_delay_seconds=0)
+            ),
+            sleeper=lambda _seconds: None,
+        )
+
+        result = client.fetch(
+            provider_key=self.provider_key,
+            provider_version=self.provider_version,
+            request=request,
+            headers={"Accept": "application/json"},
+            metadata={"fixture_provider": "FixtureIndexConstituentProvider"},
+        )
+
+        if result.raw_content:
+            try:
+                parsed = json.loads(result.raw_content)
+            except json.JSONDecodeError:
+                raise ProviderValidationError(
+                    "Provider response does not contain valid JSON."
+                ) from None
+            if not isinstance(parsed, dict):
+                raise ProviderValidationError("Provider response JSON must be an object.")
+
+        return result
+
+    def _get_fixture_bytes(self, index_code: str) -> bytes:
+        try:
+            return self._fixtures[index_code]
+        except KeyError:
+            raise ProviderValidationError(
+                f"No fixture registered for index {index_code!r}."
+            ) from None
+
+
+def _require_scope_index_code(request: ProviderRequest) -> str:
+    scope = dict(request.scope)
+    code = scope.get("index_code")
+    if not isinstance(code, str) or not code.strip():
+        raise ProviderValidationError(
+            "INDEX_CONSTITUENTS request scope must include a non-empty 'index_code'."
+        )
+    return code.strip().upper()

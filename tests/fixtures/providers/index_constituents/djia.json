@@ -1,0 +1,27 @@
+{
+  "index_code": "DJIA",
+  "as_of_date": "2026-07-15",
+  "constituents": [
+    {
+      "ticker": "HOTE",
+      "exchange": "NYSE",
+      "company_name": "Hotel Fixture Industrial",
+      "share_class": null,
+      "provider_security_id": "fixture-djia-001"
+    },
+    {
+      "ticker": "INDI",
+      "exchange": "NYSE",
+      "company_name": "India Fixture Financial",
+      "share_class": null,
+      "provider_security_id": "fixture-djia-002"
+    },
+    {
+      "ticker": "JULI",
+      "exchange": "NYSE",
+      "company_name": "Juliet Fixture Healthcare",
+      "share_class": null,
+      "provider_security_id": "fixture-djia-003"
+    }
+  ]
+}

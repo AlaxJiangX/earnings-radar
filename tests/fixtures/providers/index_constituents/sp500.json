@@ -1,0 +1,34 @@
+{
+  "index_code": "SP500",
+  "as_of_date": "2026-07-15",
+  "constituents": [
+    {
+      "ticker": "ALPH",
+      "exchange": "NYSE",
+      "company_name": "Alpha Fixture Corporation",
+      "share_class": null,
+      "provider_security_id": "fixture-sp500-001"
+    },
+    {
+      "ticker": "BRAV",
+      "exchange": "NASDAQ",
+      "company_name": "Bravo Fixture Inc.",
+      "share_class": null,
+      "provider_security_id": "fixture-sp500-002"
+    },
+    {
+      "ticker": "CHAR",
+      "exchange": "NYSE",
+      "company_name": "Charlie Fixture Group",
+      "share_class": "A",
+      "provider_security_id": "fixture-sp500-003"
+    },
+    {
+      "ticker": "DELT",
+      "exchange": "NASDAQ",
+      "company_name": "Delta Fixture Holdings",
+      "share_class": null,
+      "provider_security_id": "fixture-sp500-004"
+    }
+  ]
+}

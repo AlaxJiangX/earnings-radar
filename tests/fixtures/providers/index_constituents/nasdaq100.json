@@ -1,0 +1,27 @@
+{
+  "index_code": "NASDAQ100",
+  "as_of_date": "2026-07-15",
+  "constituents": [
+    {
+      "ticker": "ECHO",
+      "exchange": "NASDAQ",
+      "company_name": "Echo Fixture Technologies",
+      "share_class": null,
+      "provider_security_id": "fixture-nq100-001"
+    },
+    {
+      "ticker": "FOXT",
+      "exchange": "NASDAQ",
+      "company_name": "Foxtrot Fixture Software",
+      "share_class": null,
+      "provider_security_id": "fixture-nq100-002"
+    },
+    {
+      "ticker": "GOLF",
+      "exchange": "NASDAQ",
+      "company_name": "Golf Fixture Semiconductor",
+      "share_class": null,
+      "provider_security_id": "fixture-nq100-003"
+    }
+  ]
+}
