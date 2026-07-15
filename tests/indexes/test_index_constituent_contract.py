@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -135,7 +136,10 @@ class TestParserNonBytes:
     )
     def test_rejects_non_bytes_raw_content(self, raw_content: object) -> None:
         with pytest.raises(InvalidIndexConstituentSnapshot, match="must be bytes"):
-            _parse_bytes_guard(raw_content, "SP500")
+            parse_index_constituent_snapshot(
+                cast(bytes, raw_content),
+                expected_index_code="SP500",
+            )
 
 
 class TestParserInvalidJson:
@@ -395,12 +399,6 @@ class TestSecurity:
         with pytest.raises(InvalidIndexConstituentSnapshot) as exc_info:
             parse_index_constituent_snapshot(raw, expected_index_code="SP500")
         assert "X" * 2000 not in str(exc_info.value)
-
-
-def _parse_bytes_guard(raw: object, expected_index_code: str) -> None:
-    """Intentionally bypass the static bytes annotation to exercise the runtime
-    isinstance guard in parse_index_constituent_snapshot."""
-    parse_index_constituent_snapshot(raw, expected_index_code=expected_index_code)  # type: ignore[arg-type]
 
 
 def _scan_keys(obj: object, forbidden: set[str], path: tuple[str, ...]) -> None:
