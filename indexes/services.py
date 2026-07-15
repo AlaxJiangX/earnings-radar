@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
 from audit.services import (
@@ -1452,8 +1453,6 @@ def _serialize_membership(membership: IndexMembership) -> dict[str, object]:
 # Activate due memberships
 # ---------------------------------------------------------------------------
 
-ACTIVATE_RULE_VERSION = "index-membership-v1"
-
 
 @dataclass(frozen=True, slots=True)
 class MembershipActivationResult:
@@ -1465,12 +1464,8 @@ class MembershipActivationResult:
     data_changes: tuple[DataChangeWriteResult, ...]
     """DataChange records for every membership whose status was changed."""
 
-    audit_records: tuple[AuditRecord | None, ...]
+    audit_records: tuple[AuditRecord, ...]
     """AuditRecord for every membership whose status was changed."""
-
-
-class MembershipActivationServiceError(MembershipServiceError):
-    pass
 
 
 def activate_due_memberships(
@@ -1512,9 +1507,7 @@ def activate_due_memberships(
         MembershipActivationResult with counts and the audit/change records for
         every membership that was actually activated.
     """
-    from django.utils import timezone as tz
-
-    resolved_date = as_of_date if as_of_date is not None else tz.localdate()
+    resolved_date = as_of_date if as_of_date is not None else timezone.localdate()
 
     is_auto = actor_user is None
 
@@ -1541,9 +1534,24 @@ def activate_due_memberships(
             raise MembershipServiceError("Manual operations require non-empty request_id.")
 
     data_changes: list[DataChangeWriteResult] = []
-    audit_records: list[AuditRecord | None] = []
+    audit_records: list[AuditRecord] = []
 
     with transaction.atomic():
+        current_sync_run: SyncRun | None = None
+        if is_auto:
+            assert sync_run is not None
+            try:
+                current_sync_run = (
+                    SyncRun.objects.select_for_update().select_related("source").get(pk=sync_run.pk)
+                )
+            except SyncRun.DoesNotExist as error:
+                raise MembershipServiceError(f"SyncRun {sync_run.pk} does not exist.") from error
+            if current_sync_run.status != SyncRun.Status.RUNNING:
+                raise MembershipServiceError(
+                    f"SyncRun {current_sync_run.pk} is {current_sync_run.status!r}; "
+                    f"only running runs may activate memberships."
+                )
+
         candidates = list(
             IndexMembership.objects.select_for_update()
             .filter(
@@ -1562,7 +1570,7 @@ def activate_due_memberships(
             obj.save(update_fields=["status", "updated_at"])
 
             if is_auto:
-                assert sync_run is not None
+                assert current_sync_run is not None
                 activation_reason = f"Date-based activation (effective_from={obj.effective_from})"
                 dc = record_data_change(
                     target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
@@ -1570,15 +1578,15 @@ def activate_due_memberships(
                     field_name="status",
                     old_value=old_status,
                     new_value=IndexMembership.Status.ACTIVE,
-                    rule_version=ACTIVATE_RULE_VERSION,
+                    rule_version=MEMBERSHIP_RULE_VERSION,
                     source_evidence=None,
-                    sync_run=sync_run,
+                    sync_run=current_sync_run,
                     actor_user=None,
                     reason=activation_reason,
-                    origin_key=f"sync-run:{sync_run.pk}",
+                    origin_key=f"sync-run:{current_sync_run.pk}",
                 )
                 ar_result = record_system_action(
-                    sync_run=sync_run,
+                    sync_run=current_sync_run,
                     action=AuditRecord.Action.UPDATE,
                     target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
                     target_id=obj.pk,
@@ -1601,7 +1609,7 @@ def activate_due_memberships(
                     ),
                     after=_serialize_membership(obj),
                     reason=activation_reason,
-                    request_id=f"sync-run:{sync_run.pk}",
+                    request_id=f"sync-run:{current_sync_run.pk}",
                 )
                 data_changes.append(dc)
                 audit_records.append(ar_result.record)
@@ -1612,7 +1620,7 @@ def activate_due_memberships(
                     field_name="status",
                     old_value=old_status,
                     new_value=IndexMembership.Status.ACTIVE,
-                    rule_version=ACTIVATE_RULE_VERSION,
+                    rule_version=MEMBERSHIP_RULE_VERSION,
                     source_evidence=None,
                     sync_run=None,
                     actor_user=actor_user,

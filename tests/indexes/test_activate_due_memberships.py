@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import pytest
+from django.utils import timezone
 
-from audit.models import AuditRecord, DataChange
+from audit.models import AuditRecord, DataChange, SyncRun
+from audit.services import (
+    AuditRecordWriteResult,
+    mark_sync_run_failed,
+    mark_sync_run_partial,
+    mark_sync_run_succeeded,
+    record_user_action,
+)
 from indexes.models import IndexMembership, MarketIndex
 from indexes.services import (
     MembershipActivationResult,
@@ -21,7 +29,7 @@ from indexes.services import (
 
 if TYPE_CHECKING:
     from accounts.models import User
-    from audit.models import SourceEvidence, SyncRun
+    from audit.models import SourceEvidence
     from companies.models import Company, SecurityListing
 
 
@@ -75,23 +83,49 @@ def user(db: object) -> User:
 _REQ_ID = "activate-due-test-req"
 
 
-def _make_sync_run() -> SyncRun:
+def _make_sync_run(*, status: str = SyncRun.Status.RUNNING) -> SyncRun:
     from audit.models import DataSource
-    from audit.models import SyncRun as SR
 
     source = DataSource.objects.create(
         key=f"sync-source-{uuid.uuid4().hex[:8]}",
         name="Sync Source",
         source_type="index",
     )
-    return SR.objects.create(
+    timestamp_fields = {}
+    if status == SyncRun.Status.SKIPPED:
+        # There is no public skipped transition service; create a valid terminal test run.
+        timestamp = timezone.now()
+        timestamp_fields = {
+            "started_at": timestamp,
+            "heartbeat_at": timestamp,
+            "finished_at": timestamp,
+        }
+    elif status != SyncRun.Status.RUNNING:
+        raise ValueError(f"Unsupported direct SyncRun status {status!r}.")
+
+    return SyncRun.objects.create(
         job_type="activate-test",
         source=source,
-        status="running",
+        status=status,
         idempotency_key=f"activate-sync-{uuid.uuid4().hex}",
         code_version="test",
         parser_version="test",
+        **timestamp_fields,
     )
+
+
+def _make_terminal_sync_run(status: str) -> SyncRun:
+    if status == SyncRun.Status.SKIPPED:
+        return _make_sync_run(status=status)
+
+    sync_run = _make_sync_run()
+    if status == SyncRun.Status.SUCCEEDED:
+        return mark_sync_run_succeeded(sync_run.pk)
+    if status == SyncRun.Status.PARTIAL:
+        return mark_sync_run_partial(sync_run.pk, error_summary="partial fixture run")
+    if status == SyncRun.Status.FAILED:
+        return mark_sync_run_failed(sync_run.pk, error_summary="failed fixture run")
+    raise ValueError(f"Unsupported terminal SyncRun status {status!r}.")
 
 
 def _make_evidence(
@@ -560,6 +594,132 @@ class TestActivateAutoAcrossSyncRuns:
         assert dc.source_evidence_id is None
 
 
+class TestActivateAutoSyncRunValidation:
+    @pytest.mark.parametrize(
+        "terminal_status",
+        [
+            SyncRun.Status.SUCCEEDED,
+            SyncRun.Status.PARTIAL,
+            SyncRun.Status.FAILED,
+            SyncRun.Status.SKIPPED,
+        ],
+    )
+    def test_rejects_terminal_sync_run(
+        self,
+        terminal_status: str,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        user: User,
+    ) -> None:
+        membership = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2026, 1, 1),
+            actor_user=user,
+            reason="setup",
+            request_id=_REQ_ID,
+        ).membership
+        terminal_run = _make_terminal_sync_run(terminal_status)
+        data_change_count = DataChange.objects.filter(
+            target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
+            target_id=membership.pk,
+        ).count()
+        audit_record_count = AuditRecord.objects.filter(
+            target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
+            target_id=membership.pk,
+        ).count()
+
+        with pytest.raises(
+            MembershipServiceError,
+            match="only running runs may activate memberships",
+        ):
+            activate_due_memberships(
+                as_of_date=date(2026, 7, 1),
+                sync_run=terminal_run,
+            )
+
+        membership.refresh_from_db()
+        assert membership.status == IndexMembership.Status.ANNOUNCED
+        assert (
+            DataChange.objects.filter(
+                target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
+                target_id=membership.pk,
+            ).count()
+            == data_change_count
+        )
+        assert (
+            AuditRecord.objects.filter(
+                target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
+                target_id=membership.pk,
+            ).count()
+            == audit_record_count
+        )
+
+    def test_rejects_stale_running_sync_run_object(
+        self,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        user: User,
+    ) -> None:
+        membership = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2026, 1, 1),
+            actor_user=user,
+            reason="setup",
+            request_id=_REQ_ID,
+        ).membership
+        stale_sync_run = _make_sync_run()
+        current_sync_run = mark_sync_run_succeeded(stale_sync_run.pk)
+        assert stale_sync_run.status == SyncRun.Status.RUNNING
+        assert current_sync_run.status == SyncRun.Status.SUCCEEDED
+
+        with pytest.raises(
+            MembershipServiceError,
+            match="only running runs may activate memberships",
+        ):
+            activate_due_memberships(
+                as_of_date=date(2026, 7, 1),
+                sync_run=stale_sync_run,
+            )
+
+        membership.refresh_from_db()
+        assert membership.status == IndexMembership.Status.ANNOUNCED
+
+    def test_rejects_sync_run_deleted_after_loading(
+        self,
+        sp500: MarketIndex,
+        listing: SecurityListing,
+        user: User,
+    ) -> None:
+        membership = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2026, 1, 1),
+            actor_user=user,
+            reason="setup",
+            request_id=_REQ_ID,
+        ).membership
+        deleted_sync_run = _make_sync_run()
+        deleted_sync_run_id = deleted_sync_run.pk
+        SyncRun.objects.filter(pk=deleted_sync_run_id).delete()
+
+        with pytest.raises(
+            MembershipServiceError,
+            match=rf"SyncRun {deleted_sync_run_id} does not exist",
+        ):
+            activate_due_memberships(
+                as_of_date=date(2026, 7, 1),
+                sync_run=deleted_sync_run,
+            )
+
+        membership.refresh_from_db()
+        assert membership.status == IndexMembership.Status.ANNOUNCED
+
+
 class TestActivateBatch:
     def test_activates_multiple(
         self,
@@ -681,7 +841,7 @@ class TestActivateRejectsBothSources:
 
 
 class TestActivateTransactionIntegrity:
-    def test_batch_atomic_manual(
+    def test_activates_multiple_memberships_in_one_batch(
         self,
         sp500: MarketIndex,
         nasdaq100: MarketIndex,
@@ -710,3 +870,52 @@ class TestActivateTransactionIntegrity:
         assert result.activated_count == 2
         m2.refresh_from_db()
         assert m2.status == "active"
+
+    def test_rolls_back_entire_batch_when_second_audit_fails(
+        self,
+        sp500: MarketIndex,
+        nasdaq100: MarketIndex,
+        listing: SecurityListing,
+        user: User,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        first_membership = create_index_membership(
+            index=sp500,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2026, 1, 1),
+            actor_user=user,
+            reason="setup 1",
+            request_id=f"{_REQ_ID}-1",
+        ).membership
+        second_membership = create_index_membership(
+            index=nasdaq100,
+            security_listing=listing,
+            status=IndexMembership.Status.ANNOUNCED,
+            effective_from=date(2026, 2, 1),
+            actor_user=user,
+            reason="setup 2",
+            request_id=f"{_REQ_ID}-2",
+        ).membership
+        data_change_count = DataChange.objects.count()
+        audit_record_count = AuditRecord.objects.count()
+        call_count = 0
+
+        def fail_on_second(**kwargs: Any) -> AuditRecordWriteResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("forced second membership failure")
+            return record_user_action(**kwargs)
+
+        monkeypatch.setattr("indexes.services.record_user_action", fail_on_second)
+
+        with pytest.raises(RuntimeError, match="forced second membership failure"):
+            _activate_manual(as_of_date=date(2026, 7, 1), actor_user=user)
+
+        first_membership.refresh_from_db()
+        second_membership.refresh_from_db()
+        assert first_membership.status == IndexMembership.Status.ANNOUNCED
+        assert second_membership.status == IndexMembership.Status.ANNOUNCED
+        assert DataChange.objects.count() == data_change_count
+        assert AuditRecord.objects.count() == audit_record_count
