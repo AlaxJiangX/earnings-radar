@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
 
 from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
 from audit.services import (
@@ -1446,3 +1447,218 @@ def _serialize_membership(membership: IndexMembership) -> dict[str, object]:
         ),
         "supersedes_id": str(membership.supersedes_id) if membership.supersedes_id else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Activate due memberships
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MembershipActivationResult:
+    """Result of a batch ``activate_due_memberships`` call."""
+
+    activated_count: int
+    """Number of memberships that were actually activated in this call."""
+
+    data_changes: tuple[DataChangeWriteResult, ...]
+    """DataChange records for every membership whose status was changed."""
+
+    audit_records: tuple[AuditRecord, ...]
+    """AuditRecord for every membership whose status was changed."""
+
+
+def activate_due_memberships(
+    *,
+    as_of_date: date | None = None,
+    sync_run: SyncRun | None = None,
+    actor_user: User | None = None,
+    reason: str = "",
+    request_id: str = "",
+    ip_address: str | None = None,
+) -> MembershipActivationResult:
+    """Activate all announced memberships whose effective_from is on or before *as_of_date*.
+
+    Only memberships with ``status='announced'`` and ``effective_from <= as_of_date``
+    are eligible.  Already active, ended, cancelled or corrected memberships are
+    silently skipped.
+
+    **Automatic provenance** (recommended for sync commands):
+    Pass *sync_run* (and omit *actor_user*).  The membership's existing
+    ``source_evidence`` is **not** required to belong to this *sync_run* — it
+    remains untouched on the membership row.  The status transition is recorded
+    as a ``DataChange`` attributed to *sync_run* (without a new
+    ``SourceEvidence``) and an ``AuditRecord`` as a system action under
+    *sync_run*.
+
+    Memberships created via the manual path (``source_evidence=None``) are also
+    activated in auto mode, since the transition is date-driven rather than
+    evidence-driven.
+
+    **Manual provenance**:
+    Pass *actor_user* with non-empty *reason* and *request_id*.
+    No external source evidence is required or created.
+
+    The function does **not** create new ``IndexMembership`` rows, does **not**
+    modify ``supersedes``, ``last_verified_at``, or ``source_evidence`` on the
+    membership, and does **not** generate new ``SourceEvidence``.
+
+    Returns:
+        MembershipActivationResult with counts and the audit/change records for
+        every membership that was actually activated.
+    """
+    resolved_date = as_of_date if as_of_date is not None else timezone.localdate()
+
+    is_auto = actor_user is None
+
+    # --- provenance validation ---
+    if is_auto:
+        if sync_run is None:
+            raise MembershipServiceError("Automatic provenance requires a sync_run.")
+        if sync_run._state.adding or sync_run.pk is None:
+            raise MembershipServiceError("SyncRun must be saved before use.")
+        if reason.strip():
+            raise MembershipServiceError(
+                "Automatic provenance must use an empty reason; the system provides it."
+            )
+        if request_id.strip():
+            raise MembershipServiceError(
+                "Automatic provenance must use an empty request_id; the system provides it."
+            )
+    else:
+        if sync_run is not None:
+            raise MembershipServiceError("Cannot provide both actor_user and sync_run provenance.")
+        if not reason.strip():
+            raise MembershipServiceError("Manual operations require non-empty reason.")
+        if not request_id.strip():
+            raise MembershipServiceError("Manual operations require non-empty request_id.")
+
+    data_changes: list[DataChangeWriteResult] = []
+    audit_records: list[AuditRecord] = []
+
+    with transaction.atomic():
+        current_sync_run: SyncRun | None = None
+        if is_auto:
+            assert sync_run is not None
+            try:
+                current_sync_run = (
+                    SyncRun.objects.select_for_update().select_related("source").get(pk=sync_run.pk)
+                )
+            except SyncRun.DoesNotExist as error:
+                raise MembershipServiceError(f"SyncRun {sync_run.pk} does not exist.") from error
+            if current_sync_run.status != SyncRun.Status.RUNNING:
+                raise MembershipServiceError(
+                    f"SyncRun {current_sync_run.pk} is {current_sync_run.status!r}; "
+                    f"only running runs may activate memberships."
+                )
+
+        candidates = list(
+            IndexMembership.objects.select_for_update()
+            .filter(
+                status=IndexMembership.Status.ANNOUNCED,
+                effective_from__lte=resolved_date,
+            )
+            .order_by("pk")
+        )
+
+        for obj in candidates:
+            if obj.status != IndexMembership.Status.ANNOUNCED:
+                continue
+
+            old_status = obj.status
+            obj.status = IndexMembership.Status.ACTIVE
+            obj.save(update_fields=["status", "updated_at"])
+
+            if is_auto:
+                assert current_sync_run is not None
+                activation_reason = f"Date-based activation (effective_from={obj.effective_from})"
+                dc = record_data_change(
+                    target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
+                    target_id=obj.pk,
+                    field_name="status",
+                    old_value=old_status,
+                    new_value=IndexMembership.Status.ACTIVE,
+                    rule_version=MEMBERSHIP_RULE_VERSION,
+                    source_evidence=None,
+                    sync_run=current_sync_run,
+                    actor_user=None,
+                    reason=activation_reason,
+                    origin_key=f"sync-run:{current_sync_run.pk}",
+                )
+                ar_result = record_system_action(
+                    sync_run=current_sync_run,
+                    action=AuditRecord.Action.UPDATE,
+                    target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
+                    target_id=obj.pk,
+                    before=_serialize_membership_from_fields(
+                        index_id=str(obj.index_id),
+                        security_listing_id=str(obj.security_listing_id),
+                        status=old_status,
+                        effective_from=obj.effective_from.isoformat(),
+                        effective_to=obj.effective_to.isoformat() if obj.effective_to else None,
+                        announcement_date=obj.announcement_date.isoformat()
+                        if obj.announcement_date
+                        else None,
+                        last_verified_at=obj.last_verified_at.isoformat()
+                        if obj.last_verified_at
+                        else None,
+                        source_evidence_id=str(obj.source_evidence_id)
+                        if obj.source_evidence_id
+                        else None,
+                        supersedes_id=str(obj.supersedes_id) if obj.supersedes_id else None,
+                    ),
+                    after=_serialize_membership(obj),
+                    reason=activation_reason,
+                    request_id=f"sync-run:{current_sync_run.pk}",
+                )
+                data_changes.append(dc)
+                audit_records.append(ar_result.record)
+            else:
+                dc = record_data_change(
+                    target_type=DataChange.TargetType.INDEX_MEMBERSHIP,
+                    target_id=obj.pk,
+                    field_name="status",
+                    old_value=old_status,
+                    new_value=IndexMembership.Status.ACTIVE,
+                    rule_version=MEMBERSHIP_RULE_VERSION,
+                    source_evidence=None,
+                    sync_run=None,
+                    actor_user=actor_user,
+                    reason=reason,
+                    origin_key=request_id,
+                )
+                ar_result = record_user_action(
+                    actor_user=cast("User", actor_user),
+                    action=AuditRecord.Action.UPDATE,
+                    target_type=AuditRecord.TargetType.INDEX_MEMBERSHIP,
+                    target_id=obj.pk,
+                    before=_serialize_membership_from_fields(
+                        index_id=str(obj.index_id),
+                        security_listing_id=str(obj.security_listing_id),
+                        status=old_status,
+                        effective_from=obj.effective_from.isoformat(),
+                        effective_to=obj.effective_to.isoformat() if obj.effective_to else None,
+                        announcement_date=obj.announcement_date.isoformat()
+                        if obj.announcement_date
+                        else None,
+                        last_verified_at=obj.last_verified_at.isoformat()
+                        if obj.last_verified_at
+                        else None,
+                        source_evidence_id=str(obj.source_evidence_id)
+                        if obj.source_evidence_id
+                        else None,
+                        supersedes_id=str(obj.supersedes_id) if obj.supersedes_id else None,
+                    ),
+                    after=_serialize_membership(obj),
+                    reason=reason,
+                    request_id=request_id,
+                    ip_address=ip_address,
+                )
+                data_changes.append(dc)
+                audit_records.append(ar_result.record)
+
+    return MembershipActivationResult(
+        activated_count=len(data_changes),
+        data_changes=tuple(data_changes),
+        audit_records=tuple(audit_records),
+    )
