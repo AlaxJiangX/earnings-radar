@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -98,3 +99,22 @@ def test_provider_rejects_unsupported_capability_before_transport() -> None:
         provider.fetch(request)
 
     assert provider.transport.call_count == 0
+
+
+@pytest.mark.parametrize(
+    ("result_change", "changed_value"),
+    [("request_method", "POST"), ("source_url", "https://other.example.test/calendar")],
+)
+def test_provider_rejects_result_from_different_request_context(
+    result_change: str,
+    changed_value: str,
+) -> None:
+    class MismatchedResultProvider(FakeProvider):
+        def _fetch(self, request: ProviderRequest) -> ProviderResult:
+            result = super()._fetch(request)
+            if result_change == "request_method":
+                return replace(result, request_method=changed_value)
+            return replace(result, source_url=changed_value)
+
+    with pytest.raises(ProviderValidationError, match="request context"):
+        MismatchedResultProvider().fetch(make_fake_provider_request())

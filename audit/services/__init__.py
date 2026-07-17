@@ -38,10 +38,12 @@ from audit.services.sync_runs import (
     InvalidSyncRunCount,
     InvalidSyncRunTimestamp,
     InvalidSyncRunTransition,
+    SyncRunStartResult,
     mark_sync_run_failed,
     mark_sync_run_partial,
     mark_sync_run_succeeded,
     start_sync_run,
+    start_sync_run_with_result,
     update_sync_run_counts,
 )
 
@@ -69,6 +71,7 @@ __all__ = [
     "SourceEvidenceIntegrityError",
     "SourceEvidenceReference",
     "SourceEvidenceWriteResult",
+    "SyncRunStartResult",
     "build_request_fingerprint",
     "mark_raw_data_parse_failed",
     "mark_raw_data_parsed",
@@ -83,5 +86,6 @@ __all__ = [
     "record_system_action",
     "record_user_action",
     "start_sync_run",
+    "start_sync_run_with_result",
     "update_sync_run_counts",
 ]

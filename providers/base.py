@@ -4,6 +4,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
+from audit.security import sanitize_url
 from providers.exceptions import ProviderValidationError
 from providers.types import ProviderCapability, ProviderRequest, ProviderResult
 
@@ -22,12 +23,15 @@ class Provider(ABC):
                 f"Provider {self.provider_key} does not support {request.capability.value}."
             )
         result = self._fetch(request)
+        expected_source_url = sanitize_url(request.source_url).stored
         if (
             result.provider_key != self.provider_key
             or result.provider_version != self.provider_version
             or result.capability != request.capability
             or dict(result.scope) != dict(request.scope)
             or result.request_started_at != request.request_started_at
+            or result.request_method != request.method
+            or result.source_url != expected_source_url
         ):
             raise ProviderValidationError(
                 "Provider result does not match the provider identity or request context."

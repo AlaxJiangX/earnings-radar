@@ -12,6 +12,7 @@ from audit.services import (
     mark_sync_run_partial,
     mark_sync_run_succeeded,
     start_sync_run,
+    start_sync_run_with_result,
     update_sync_run_counts,
 )
 
@@ -38,6 +39,29 @@ def test_start_sync_run_is_idempotent_for_same_window(data_source: DataSource) -
     assert first.status == SyncRun.Status.RUNNING
     assert first.scope == {"date": "2026-07-13"}
     assert first.started_at == first.heartbeat_at
+
+
+@pytest.mark.django_db
+def test_start_sync_run_with_result_reports_idempotent_ownership(
+    data_source: DataSource,
+) -> None:
+    first = start_sync_run_with_result(
+        job_type="fixture.sync",
+        source=data_source,
+        scope={"date": "2026-07-13"},
+        idempotency_key="fixture.sync:ownership",
+    )
+    replay = start_sync_run_with_result(
+        job_type="fixture.sync",
+        source=data_source,
+        scope={"date": "ignored-on-retry"},
+        idempotency_key="fixture.sync:ownership",
+    )
+
+    assert first.created is True
+    assert replay.created is False
+    assert replay.sync_run.pk == first.sync_run.pk
+    assert replay.sync_run.scope == {"date": "2026-07-13"}
 
 
 @pytest.mark.django_db
