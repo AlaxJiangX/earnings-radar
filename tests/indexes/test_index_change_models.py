@@ -104,8 +104,11 @@ class TestIndexChangeEventModel:
         assert ev.announcement_date is None
 
     def test_supersedes_chain(self) -> None:
-        original = _make_event()
-        corrected = _make_event(supersedes=original)
+        original = _make_event(effective_date=date(2026, 1, 1))
+        corrected = _make_event(
+            effective_date=date(2026, 7, 1),  # different date for the correction
+            supersedes=original,
+        )
         assert corrected.supersedes == original
         assert original.superseded_by is not None
         assert original.superseded_by == corrected

@@ -270,6 +270,10 @@ class IndexChangeEvent(models.Model):
                 condition=Q(monitoring_impact__in=ALLOWED_MONITORING_IMPACTS),
                 name="indexes_change_event_monitoring_valid",
             ),
+            models.UniqueConstraint(
+                fields=("company", "effective_date"),
+                name="indexes_change_event_company_date_unique",
+            ),
         ]
 
     def __str__(self) -> str:
