@@ -33,8 +33,7 @@ _Last updated: 2026-07-17_
 | 3.2A | Activate due memberships | Complete |
 | 3.2B-1 | Offline index fixture Provider and canonical snapshot contract | Complete |
 | 3.2B-3 | RawDataParseAttempt audit trail | Complete |
-| 3.3 | IndexChangeEvent, IndexChangeLeg, event classification | In Progress — fixture-first development (ADR-005) |
-| 3.3 | IndexChangeEvent, IndexChangeLeg, event classification | In Progress — fixture-first development (ADR-005) |
+| 3.3 | IndexChangeEvent, IndexChangeLeg, event classification, correlation, correction | Complete |
 
 ## Active Development
 
@@ -61,7 +60,7 @@ _Last updated: 2026-07-17_
 
 ## Next Planned Stage
 
-- `3.3` — IndexChangeEvent + IndexChangeLeg domain model (currently in progress on `codex/3.3-index-change-domain-model`, fixture-first per ADR-005)
+- `3.4` — Index changes public page (`/index-changes` list, labels, filtering, HTMX pagination)
 - `3.2` — Live index Provider + sync command (blocked by source/licensing gate)
 - Stage 4 — Earnings events (after index stages complete)
 
