@@ -299,7 +299,7 @@ class TestIndexChangeLegModel:
             action=IndexChangeLeg.Action.ADDED,
             effective_date=date(2026, 6, 15),
         )
-        leg1 = IndexChangeLeg.objects.create(
+        IndexChangeLeg.objects.create(
             event=ev,
             index=sp500,
             security_listing=listing,

@@ -251,7 +251,7 @@ class TestMonitoringImpact:
     ):
         """Company had membership before (ended), now re-entering."""
         # Old ended membership
-        m = IndexMembership.objects.create(
+        IndexMembership.objects.create(
             index=sp500,
             security_listing=listing,
             status=IndexMembership.Status.ENDED,
@@ -343,7 +343,7 @@ class TestMonitoringImpact:
             action=IndexChangeLeg.Action.ADDED,
             effective_date=future,
         )
-        result = classify_index_change_event(ev)
+        classify_index_change_event(ev)
         # No membership created
         assert (
             IndexMembership.objects.filter(

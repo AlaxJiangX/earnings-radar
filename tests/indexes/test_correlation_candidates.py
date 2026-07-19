@@ -151,7 +151,7 @@ class TestCandidateGeneration:
         listing: SecurityListing,
     ) -> None:
         e1 = _make_event(company, date(2026, 6, 15), index=sp500, listing=listing)
-        e2 = _make_event(company, date(2026, 6, 16), index=sp500, listing=listing)
+        _make_event(company, date(2026, 6, 16), index=sp500, listing=listing)
         result = generate_index_change_correlation_candidates(e1)
         assert result.created_count == 1
         assert result.existing_count == 0
@@ -164,7 +164,7 @@ class TestCandidateGeneration:
         listing: SecurityListing,
     ) -> None:
         e1 = _make_event(company, date(2026, 6, 15), index=sp500, listing=listing)
-        e2 = _make_event(company, date(2026, 6, 22), index=sp500, listing=listing)
+        _make_event(company, date(2026, 6, 22), index=sp500, listing=listing)
         result = generate_index_change_correlation_candidates(e1)
         assert result.created_count == 1
 
