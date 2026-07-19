@@ -69,11 +69,11 @@ class EarningsEvent(models.Model):
         help_text="SHA-256 canonical identity hash; NULL for CANDIDATE events.",
     )
 
-    identity_rule_version = models.CharField(
+    identity_rule_version = models.CharField(  # noqa: DJ001
         max_length=16,
         null=True,
         blank=True,
-        help_text="Rule version used to derive identity_key.",
+        help_text="Rule version used to derive identity_key.",  # noqa: DJ001
     )
 
     # --- Business identity fields ---
@@ -89,7 +89,7 @@ class EarningsEvent(models.Model):
         help_text="Fiscal period end date; required for CANONICAL events.",
     )
 
-    period_type = models.CharField(
+    period_type = models.CharField(  # noqa: DJ001
         max_length=8,
         choices=PeriodType.choices,
         null=True,
@@ -133,7 +133,7 @@ class EarningsEvent(models.Model):
     earnings_release_at = models.DateTimeField(null=True, blank=True)
     conference_call_at = models.DateTimeField(null=True, blank=True)
 
-    release_session = models.CharField(
+    release_session = models.CharField(  # noqa: DJ001
         max_length=16,
         choices=ReleaseSession.choices,
         null=True,
@@ -238,4 +238,7 @@ class EarningsEvent(models.Model):
 
     def __str__(self) -> str:
         company_name = self.company.display_name if self.company_id else "?"
-        return f"{company_name} {self.period_type or '?'} @ {self.period_end_date or '?'} [{self.status}]"
+        return (
+            f"{company_name} {self.period_type or '?'} "
+            f"@{self.period_end_date or '?'} [{self.status}]"
+        )
