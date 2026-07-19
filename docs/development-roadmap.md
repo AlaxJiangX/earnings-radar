@@ -257,6 +257,8 @@
 
 #### 3.3 加入、移除和偏移识别
 
+> **ADR-005（Fixture-First Index Change Domain Development）已接受。** 领域模型和事件分类可以使用 synthetic fixture 独立开发；live Provider 集成在 index source/licensing gate 通过前保持阻塞。
+
 交付：IndexChangeEvent、证券级 IndexChangeLeg，以及独立的原子动作、偏移方向和监控影响维度。
 
 验收标准：
