@@ -24,6 +24,7 @@ from audit.services.source_evidence import (
 from companies.models import Company, SecurityListing
 from indexes.models import (
     NORMATIVE_MEMBERSHIP_STATUSES,
+    IndexChangeCorrelation,
     IndexChangeEvent,
     IndexChangeLeg,
     IndexMembership,
@@ -1914,3 +1915,87 @@ def _complete_leg_metadata(
         for field, value in updates.items():
             setattr(leg, field, value)
         leg.save(update_fields=list(updates.keys()))
+
+
+# ---------------------------------------------------------------------------
+#  Stage 3.3 Step 3 — Cross-Date Correlation Candidate Service
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelationCandidatesResult:
+    candidates: tuple[IndexChangeCorrelation, ...]
+    created_count: int
+    existing_count: int
+
+
+def generate_index_change_correlation_candidates(
+    event: IndexChangeEvent,
+) -> CorrelationCandidatesResult:
+    """Find ACTIVE events within ±7 days for the same company and create PENDING correlations.
+
+    Only processes ACTIVE events. CANCELLED / CORRECTED events are rejected.
+    Matches are filtered to other ACTIVE events of the same company with
+    effective_date differing by 1–7 days inclusive.
+
+    Idempotent: existing correlations (any status) are not reset.
+    """
+    from datetime import timedelta
+
+    if event.status != IndexChangeEvent.Status.ACTIVE:
+        return CorrelationCandidatesResult(
+            candidates=(),
+            created_count=0,
+            existing_count=0,
+        )
+
+    window_start = event.effective_date - timedelta(days=7)
+    window_end = event.effective_date + timedelta(days=7)
+
+    others = (
+        IndexChangeEvent.objects.filter(
+            company_id=event.company_id,
+            status=IndexChangeEvent.Status.ACTIVE,
+            effective_date__gte=window_start,
+            effective_date__lte=window_end,
+        )
+        .exclude(pk=event.pk)
+        .exclude(effective_date=event.effective_date)
+    )
+
+    candidates: list[IndexChangeCorrelation] = []
+    created_count = 0
+    existing_count = 0
+
+    for other in others:
+        gap = abs((event.effective_date - other.effective_date).days)
+        if gap < 1 or gap > 7:
+            continue
+
+        earlier, later = _normalize_pair(event, other)
+        correlation, created = IndexChangeCorrelation.objects.get_or_create(
+            earlier_event=earlier,
+            later_event=later,
+            defaults={"status": IndexChangeCorrelation.Status.PENDING},
+        )
+        candidates.append(correlation)
+        if created:
+            created_count += 1
+        else:
+            existing_count += 1
+
+    return CorrelationCandidatesResult(
+        candidates=tuple(candidates),
+        created_count=created_count,
+        existing_count=existing_count,
+    )
+
+
+def _normalize_pair(
+    a: IndexChangeEvent,
+    b: IndexChangeEvent,
+) -> tuple[IndexChangeEvent, IndexChangeEvent]:
+    """Return (earlier, later) ordered by effective_date."""
+    if a.effective_date <= b.effective_date:
+        return a, b
+    return b, a

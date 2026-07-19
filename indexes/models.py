@@ -284,6 +284,70 @@ class IndexChangeEvent(models.Model):
         )
 
 
+class IndexChangeCorrelation(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        CONFIRMED = "confirmed", "Confirmed"
+        REJECTED = "rejected", "Rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    earlier_event = models.ForeignKey(
+        IndexChangeEvent,
+        on_delete=models.PROTECT,
+        related_name="correlations_as_earlier",
+    )
+
+    later_event = models.ForeignKey(
+        IndexChangeEvent,
+        on_delete=models.PROTECT,
+        related_name="correlations_as_later",
+    )
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+
+    displacement = models.CharField(
+        max_length=16,
+        choices=IndexChangeEvent.Displacement.choices,
+        null=True,
+        blank=True,
+    )
+
+    monitoring_impact = models.CharField(
+        max_length=20,
+        choices=IndexChangeEvent.MonitoringImpact.choices,
+        null=True,
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(status__in=("pending", "confirmed", "rejected")),
+                name="indexes_correlation_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=~Q(earlier_event=F("later_event")),
+                name="indexes_correlation_not_self",
+            ),
+            models.UniqueConstraint(
+                fields=("earlier_event", "later_event"),
+                name="indexes_correlation_pair_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.earlier_event_id} ↔ {self.later_event_id} [{self.status}]"
+
+
 class IndexChangeLeg(models.Model):
     class Action(models.TextChoices):
         ADDED = "added", "Added"
