@@ -105,6 +105,7 @@ class TestRecordIndexChangeLeg:
         assert result.event_created is True
         assert result.leg_created is True
         assert result.leg.action == IndexChangeLeg.Action.ADDED
+        assert result.leg.announcement_date is None
         assert result.event.company == company
 
     def test_first_removed_creates_event_and_leg(
@@ -261,6 +262,7 @@ class TestRecordIndexChangeLeg:
     def test_announcement_after_effective_rejected(
         self, sp500: MarketIndex, company: Company, listing: SecurityListing
     ) -> None:
+        # announcement_date > effective_date rejected at leg level
         with pytest.raises(InvalidIndexChangeInput, match="after effective"):
             record_index_change_leg(
                 company=company,
@@ -283,10 +285,12 @@ class TestRecordIndexChangeLeg:
             announcement_date=None,
         )
         assert result.event_created
+        assert result.leg.announcement_date is None
 
     def test_conflicting_announcement_date_rejected(
         self, sp500: MarketIndex, company: Company, listing: SecurityListing
     ) -> None:
+        # Record first leg with announcement_date June 1
         record_index_change_leg(
             company=company,
             security_listing=listing,
@@ -295,12 +299,13 @@ class TestRecordIndexChangeLeg:
             effective_date=date(2026, 6, 15),
             announcement_date=date(2026, 6, 1),
         )
+        # Replay same leg with DIFFERENT announcement_date → conflict
         with pytest.raises(IndexChangeIntegrityError, match="announcement_date"):
             record_index_change_leg(
                 company=company,
                 security_listing=listing,
                 index=sp500,
-                action="removed",
+                action="added",  # same action, not removed
                 effective_date=date(2026, 6, 15),
                 announcement_date=date(2026, 6, 2),
             )
@@ -441,20 +446,21 @@ class TestRecordIndexChangeLeg:
         )
         assert result.event.source_evidence is None
 
-    def test_effective_date_future_rejected(
+    def test_future_effective_date_accepted(
         self, sp500: MarketIndex, company: Company, listing: SecurityListing
     ) -> None:
         from datetime import timedelta
 
         future = date.today() + timedelta(days=10)
-        with pytest.raises(InvalidIndexChangeInput, match="future"):
-            record_index_change_leg(
-                company=company,
-                security_listing=listing,
-                index=sp500,
-                action="added",
-                effective_date=future,
-            )
+        result = record_index_change_leg(
+            company=company,
+            security_listing=listing,
+            index=sp500,
+            action="added",
+            effective_date=future,
+        )
+        assert result.event_created
+        assert result.event.effective_date == future
 
     def test_effective_date_today_accepted(
         self, sp500: MarketIndex, company: Company, listing: SecurityListing

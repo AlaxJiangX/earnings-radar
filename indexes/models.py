@@ -227,7 +227,6 @@ class IndexChangeEvent(models.Model):
         related_name="change_events",
     )
 
-    announcement_date = models.DateField(null=True, blank=True)
     effective_date = models.DateField()
 
     supersedes = models.OneToOneField(
@@ -272,7 +271,8 @@ class IndexChangeEvent(models.Model):
             ),
             models.UniqueConstraint(
                 fields=("company", "effective_date"),
-                name="indexes_change_event_company_date_unique",
+                condition=Q(status="active"),
+                name="indexes_change_event_active_company_date_unique",
             ),
         ]
 
@@ -310,6 +310,8 @@ class IndexChangeLeg(models.Model):
     )
 
     action = models.CharField(max_length=8, choices=Action.choices)
+
+    announcement_date = models.DateField(null=True, blank=True)
 
     effective_date = models.DateField()
 

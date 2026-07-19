@@ -1728,12 +1728,17 @@ def record_index_change_leg(
         event, event_created = _resolve_canonical_event(
             company=company,
             effective_date=effective_date,
-            announcement_date=announcement_date,
             source_evidence=source_evidence,
         )
 
         _validate_leg_company_consistency(event, security_listing, Company)
         _validate_leg_date_consistency(event, effective_date)
+
+        if announcement_date is not None and announcement_date > effective_date:
+            raise InvalidIndexChangeInput(
+                f"announcement_date {announcement_date} is after "
+                f"effective_date {effective_date} for a normal (non-correction) leg."
+            )
 
         leg, leg_created = _resolve_canonical_leg(
             event=event,
@@ -1741,6 +1746,7 @@ def record_index_change_leg(
             security_listing=security_listing,
             action=action,
             effective_date=effective_date,
+            announcement_date=announcement_date,
             detected_at=resolved_detected_at,
             membership=membership,
             source_evidence=source_evidence,
@@ -1765,8 +1771,7 @@ def _validate_action(action: str) -> None:
 
 
 def _validate_effective_date(effective_date: date) -> None:
-    if effective_date > date.today():
-        raise InvalidIndexChangeInput(f"effective_date {effective_date} is in the future.")
+    pass  # future effective_dates are allowed for announced-but-not-yet-effective changes
 
 
 def _validate_leg_inputs(
@@ -1795,52 +1800,31 @@ def _validate_membership_consistency(
 
 def _resolve_canonical_event(
     *,
-    company: Company,  # noqa: F821
+    company: Company,
     effective_date: date,
-    announcement_date: date | None,
     source_evidence: SourceEvidence | None,
-) -> tuple[IndexChangeEvent, bool]:  # noqa: F821
-    from indexes.models import IndexChangeEvent
-
-    if announcement_date is not None and announcement_date > effective_date:
-        raise InvalidIndexChangeInput(
-            f"announcement_date {announcement_date} is after "
-            f"effective_date {effective_date} for a normal (non-correction) event."
-        )
-
+) -> tuple[IndexChangeEvent, bool]:
     event, created = IndexChangeEvent.objects.get_or_create(
         company=company,
         effective_date=effective_date,
+        status=IndexChangeEvent.Status.ACTIVE,
         defaults={
-            "announcement_date": announcement_date,
             "source_evidence": source_evidence,
         },
     )
 
-    if not created:
-        _check_event_metadata(event, announcement_date, source_evidence)
+    if not created and source_evidence is not None and event.source_evidence is None:
+        event.source_evidence = source_evidence
+        event.save(update_fields=["source_evidence"])
 
-    return event, created
-
-
-def _check_event_metadata(
-    event: IndexChangeEvent,  # noqa: F821
-    announcement_date: date | None,
-    source_evidence: SourceEvidence | None,
-) -> None:
-    if announcement_date is not None and event.announcement_date is not None:
-        if announcement_date != event.announcement_date:
-            raise IndexChangeIntegrityError(
-                f"Existing event {event.pk} has announcement_date "
-                f"{event.announcement_date}; cannot replay with "
-                f"{announcement_date}."
-            )
-    if source_evidence is not None and event.source_evidence is not None:
+    if not created and source_evidence is not None and event.source_evidence_id is not None:
         if source_evidence.pk != event.source_evidence_id:
             raise IndexChangeIntegrityError(
                 f"Existing event {event.pk} has different source_evidence; "
                 "cannot replay with conflicting provenance."
             )
+
+    return event, created
 
 
 def _validate_leg_company_consistency(
@@ -1868,17 +1852,16 @@ def _validate_leg_date_consistency(
 
 def _resolve_canonical_leg(
     *,
-    event: IndexChangeEvent,  # noqa: F821
+    event: IndexChangeEvent,
     index: MarketIndex,
     security_listing: SecurityListing,
     action: str,
     effective_date: date,
+    announcement_date: date | None,
     detected_at: datetime,
     membership: IndexMembership | None,
     source_evidence: SourceEvidence | None,
-) -> tuple[IndexChangeLeg, bool]:  # noqa: F821
-    from indexes.models import IndexChangeLeg
-
+) -> tuple[IndexChangeLeg, bool]:
     leg, created = IndexChangeLeg.objects.get_or_create(
         event=event,
         index=index,
@@ -1886,10 +1869,58 @@ def _resolve_canonical_leg(
         action=action,
         defaults={
             "effective_date": effective_date,
+            "announcement_date": announcement_date,
             "detected_at": detected_at,
             "membership": membership,
             "source_evidence": source_evidence,
         },
     )
 
+    if not created:
+        _complete_leg_metadata(
+            leg,
+            announcement_date=announcement_date,
+            membership=membership,
+            source_evidence=source_evidence,
+        )
+
     return leg, created
+
+
+def _complete_leg_metadata(
+    leg: IndexChangeLeg,
+    *,
+    announcement_date: date | None,
+    membership: IndexMembership | None,
+    source_evidence: SourceEvidence | None,
+) -> None:
+    updates: dict[str, object] = {}
+
+    if announcement_date is not None and leg.announcement_date is None:
+        updates["announcement_date"] = announcement_date
+    elif announcement_date is not None and leg.announcement_date != announcement_date:
+        raise IndexChangeIntegrityError(
+            f"Existing leg {leg.pk} has announcement_date "
+            f"{leg.announcement_date}; cannot replay with {announcement_date}."
+        )
+
+    if membership is not None and leg.membership is None:
+        updates["membership"] = membership
+    elif membership is not None and leg.membership_id != membership.pk:
+        raise IndexChangeIntegrityError(
+            f"Existing leg {leg.pk} has different membership; "
+            "cannot replay with conflicting membership."
+        )
+
+    if source_evidence is not None and leg.source_evidence is None:
+        updates["source_evidence"] = source_evidence
+    elif source_evidence is not None and leg.source_evidence_id != source_evidence.pk:
+        raise IndexChangeIntegrityError(
+            f"Existing leg {leg.pk} has different source_evidence; "
+            "cannot replay with conflicting provenance."
+        )
+
+    if updates:
+        for field, value in updates.items():
+            setattr(leg, field, value)
+        leg.save(update_fields=list(updates.keys()))

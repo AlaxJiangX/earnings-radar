@@ -92,17 +92,6 @@ class TestIndexChangeEventModel:
         with pytest.raises(IntegrityError), transaction.atomic():
             _make_event(monitoring_impact="unknown_impact")
 
-    def test_announcement_before_effective_allowed(self) -> None:
-        ev = _make_event(
-            announcement_date=date(2025, 12, 15),
-            effective_date=date(2026, 1, 1),
-        )
-        assert ev.announcement_date == date(2025, 12, 15)
-
-    def test_announcement_null_allowed(self) -> None:
-        ev = _make_event(announcement_date=None)
-        assert ev.announcement_date is None
-
     def test_supersedes_chain(self) -> None:
         original = _make_event(effective_date=date(2026, 1, 1))
         corrected = _make_event(
