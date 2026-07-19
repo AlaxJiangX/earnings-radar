@@ -32,10 +32,12 @@ _Last updated: 2026-07-17_
 | 3.1B | IndexMembership, lifecycle, triggers, services, selectors | Complete |
 | 3.2A | Activate due memberships | Complete |
 | 3.2B-1 | Offline index fixture Provider and canonical snapshot contract | Complete |
+| 3.2B-3 | RawDataParseAttempt audit trail | Complete |
 
 ## Active Development
 
 - **3.2B-2 (Offline snapshot ingestion orchestration)**: implemented on `codex/3.2b-2-index-sync-orchestration`; pending merge. It intentionally stops before live Provider, membership reconciliation and the command entry point.
+- **3.2B-3 (RawDataParseAttempt audit trail)**: model, recording service, consumer regression verification completed on `codex/3.2b-3-raw-data-parse-attempt`.
 
 ## Development Tooling
 
@@ -57,7 +59,7 @@ _Last updated: 2026-07-17_
 
 ## Next Planned Stage
 
-- `3.2` — Confirm one index source/license, then implement its real Provider + guarded sync command
+- `3.3` — IndexChangeEvent, IndexChangeLeg, membership reconciliation
 - Stage 4 — Earnings events (after index stages complete)
 
 ## Blocked Product Decisions
