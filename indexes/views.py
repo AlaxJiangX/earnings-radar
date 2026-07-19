@@ -32,6 +32,19 @@ def index_changes(request: HttpRequest) -> HttpResponse:
     paginator = Paginator(qs, DEFAULT_PAGE_SIZE, orphans=2)
     page = paginator.get_page(params["page"])
 
+    # Build validated query string from filter params (excluding page)
+    # for pagination links so filters survive page navigation.
+    _get_params = {
+        "index": params["index"],
+        "action": params["action"],
+        "displacement": params["displacement"],
+        "from": params["from_date"] is not None and str(params["from_date"]) or None,
+        "to": params["to_date"] is not None and str(params["to_date"]) or None,
+        "history": params["include_cancelled_corrected"] and "all" or None,
+    }
+    # Remove empty values from query string
+    query_string = "&".join(f"{k}={v}" for k, v in _get_params.items() if v is not None)
+
     context = {
         "events": page,
         "today": today,
@@ -40,6 +53,7 @@ def index_changes(request: HttpRequest) -> HttpResponse:
         "displacement_choices": sorted(ALLOWED_DISPLACEMENTS),
         "action_choices": sorted(ALLOWED_CHANGE_LEG_ACTIONS),
         "has_results": page.paginator.count > 0,
+        "query_string": query_string,
     }
 
     if request.headers.get("HX-Request"):

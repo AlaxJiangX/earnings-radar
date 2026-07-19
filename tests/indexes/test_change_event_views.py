@@ -350,3 +350,91 @@ class TestIndexChangesAnnouncementDate:
         content = response.content.decode()
         assert "&mdash;" in content
         assert co.display_name in content
+
+
+@pytest.mark.django_db
+class TestIndexChangesPaginationFilterPreservation:
+    """Regression tests for pagination preserving filter query params."""
+
+    def test_preserves_single_filter(self, sp500: MarketIndex) -> None:
+        co = _vc_make_company("0001080001", "PageFilt1")
+        for i in range(30):
+            ev = _vc_make_event(company=co, effective_date=TODAY + timedelta(days=i))
+            _vc_make_leg(event=ev, index=sp500, action="added")
+        client = Client()
+        response = client.get("/index-changes/?index=SP500&page=1")
+        content = response.content.decode()
+        assert "Next" in content
+        assert "index=SP500" in content
+
+    def test_preserves_combined_filters(self, sp500: MarketIndex) -> None:
+        co = _vc_make_company("0001080002", "PageFilt2")
+        for i in range(30):
+            ev = _vc_make_event(
+                company=co,
+                effective_date=TODAY + timedelta(days=i),
+                displacement="upgrade",
+            )
+            _vc_make_leg(event=ev, index=sp500, action="added")
+        client = Client()
+        url = (
+            "/index-changes/?"
+            "index=SP500&action=added&displacement=upgrade&"
+            "from=2026-01-01&to=2026-12-31&history=all&page=1"
+        )
+        response = client.get(url)
+        content = response.content.decode()
+        assert "Next" in content
+        assert "index=SP500" in content
+        assert "action=added" in content
+        assert "displacement=upgrade" in content
+        assert "from=2026-01-01" in content
+        assert "to=2026-12-31" in content
+        assert "history=all" in content
+
+    def test_no_duplicate_page(self, sp500: MarketIndex) -> None:
+        co = _vc_make_company("0001080003", "PageFilt3")
+        for i in range(30):
+            ev = _vc_make_event(company=co, effective_date=TODAY + timedelta(days=i))
+            _vc_make_leg(event=ev, index=sp500, action="added")
+        client = Client()
+        response = client.get("/index-changes/?index=SP500&page=1")
+        content = response.content.decode()
+        assert "page=1&page=2" not in content
+
+    def test_previous_page_preserves(self, sp500: MarketIndex) -> None:
+        co = _vc_make_company("0001080004", "PageFilt4")
+        for i in range(30):
+            ev = _vc_make_event(company=co, effective_date=TODAY + timedelta(days=i))
+            _vc_make_leg(event=ev, index=sp500, action="added")
+        client = Client()
+        response = client.get("/index-changes/?index=SP500&page=2")
+        content = response.content.decode()
+        assert "Previous" in content
+        assert "index=SP500" in content
+
+    def test_htmx_preserves(self, sp500: MarketIndex) -> None:
+        co = _vc_make_company("0001080005", "PageFilt5")
+        for i in range(30):
+            ev = _vc_make_event(company=co, effective_date=TODAY + timedelta(days=i))
+            _vc_make_leg(event=ev, index=sp500, action="added")
+        client = Client()
+        response = client.get(
+            "/index-changes/?index=SP500&action=added&page=1",
+            HTTP_HX_REQUEST="true",
+        )
+        content = response.content.decode()
+        assert "hx-get" in content
+        assert "index=SP500" in content
+        assert "action=added" in content
+
+    def test_href_and_hx_get_match(self, sp500: MarketIndex) -> None:
+        co = _vc_make_company("0001080008", "PageFilt8")
+        for i in range(30):
+            ev = _vc_make_event(company=co, effective_date=TODAY + timedelta(days=i))
+            _vc_make_leg(event=ev, index=sp500, action="added")
+        client = Client()
+        response = client.get("/index-changes/?index=SP500&page=1")
+        content = response.content.decode()
+        assert 'href="?index=SP500' in content
+        assert 'hx-get="?index=SP500' in content
