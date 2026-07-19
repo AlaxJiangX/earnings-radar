@@ -187,6 +187,47 @@ does not automate any of these:
 2. **After CI passes**: Review and approve PR ready state.
 3. **After final review**: Approve merge.
 
+## Commit Message Guidelines
+
+Use the repository's `.gitmessage` file as the default structure for important
+commits. A one-line summary is enough for trivial changes, but anything that
+touches behavior, architecture, or non-obvious design choices should include a
+body.
+
+Keep the Conventional Commit style summary line:
+
+```text
+<type>(<scope>): <summary>
+```
+
+When writing the body, prefer these sections in this order:
+
+- **Why** — default for important commits. Explain the problem this change
+  solves or the motivation behind it.
+- **Decision** — include only when the implementation or design choice is not
+  obvious from the diff alone.
+- **Alternatives considered** — include only when real alternatives were
+  actually evaluated. Do not fabricate options to fill the template.
+- **Refs** — optional pointer to a GitHub Issue, PR, or ADR.
+
+Rules of thumb:
+
+- Do not invent reasons, alternatives, issue numbers, PR numbers, or ADR
+  references that do not exist.
+- Do not force a trivial typo fix, formatting change, or minor test addition
+  to carry a full Decision or Alternatives section.
+- The goal is to help future maintainers — and future AI/Codex instances —
+  understand intent, not to add ceremonial text.
+
+To install the template for this repository only, run:
+
+```bash
+git config commit.template .gitmessage
+```
+
+This is never done automatically; set it only when you want the template to
+appear in your editor on every `git commit`.
+
 ## Current Limitations (First Version)
 
 The first version of `codex-issue` is read-only:

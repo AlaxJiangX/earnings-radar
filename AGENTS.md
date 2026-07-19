@@ -155,6 +155,7 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 - 不把未实现能力写成 README 中的已完成能力。
 - 阶段完成状态只在 `docs/development-roadmap.md` 维护。完成并合并一个阶段时必须更新其中的完成标记；其他文档若仍含重复进度快照，应在同一任务中删除或同步，且不得新增新的状态副本或把阶段状态复制回 `AGENTS.md`。
 - 合并前必须审阅完整 diff，确认只包含当前任务文件、迁移可解释、文档与实现一致且没有秘密或本地绝对路径。
+ - Commit message 遵循仓库根目录 `.gitmessage` 模板，并参考 `docs/codex-development-workflow.md` 中的 Commit Message Guidelines；重要提交必须通过 body 解释 Why，不得编造不存在的 alternatives 或 refs。
 
 ## 11. 测试与验收
 
