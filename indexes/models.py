@@ -7,11 +7,22 @@ from django.contrib.postgres.fields import DateRangeField
 from django.contrib.postgres.fields.ranges import RangeOperators
 from django.db import models
 from django.db.models import F, Q
+from django.utils import timezone
 
 ALLOWED_CODES = frozenset({"SP500", "NASDAQ100", "DJIA", "RUSSELL2000"})
 ALLOWED_INDEX_GROUPS = frozenset({"LARGE", "SMALL"})
 NORMATIVE_MEMBERSHIP_STATUSES = ("announced", "active", "ended")
 ALLOWED_MEMBERSHIP_STATUSES = NORMATIVE_MEMBERSHIP_STATUSES + ("cancelled", "corrected")
+
+ALLOWED_CHANGE_LEG_ACTIONS = ("added", "removed")
+ALLOWED_EVENT_STATUSES = ("active", "cancelled", "corrected")
+ALLOWED_DISPLACEMENTS = ("upgrade", "downgrade", "cross_index", "none")
+ALLOWED_MONITORING_IMPACTS = (
+    "continues",
+    "enters_base_pool",
+    "exits_base_pool",
+    "reenters_base_pool",
+)
 
 
 class MarketIndex(models.Model):
@@ -170,3 +181,243 @@ class IndexMembership(models.Model):
         index_code = self.index.code if self.index_id else "?"
         listing_ticker = self.security_listing.ticker if self.security_listing_id else "?"
         return f"{index_code}:{listing_ticker} [{self.status}]"
+
+
+class IndexChangeEvent(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        CANCELLED = "cancelled", "Cancelled"
+        CORRECTED = "corrected", "Corrected"
+
+    class Displacement(models.TextChoices):
+        UPGRADE = "upgrade", "Upgrade"
+        DOWNGRADE = "downgrade", "Downgrade"
+        CROSS_INDEX = "cross_index", "Cross Index"
+        NONE = "none", "None"
+
+    class MonitoringImpact(models.TextChoices):
+        CONTINUES = "continues", "Continues"
+        ENTERS_BASE_POOL = "enters_base_pool", "Enters Base Pool"
+        EXITS_BASE_POOL = "exits_base_pool", "Exits Base Pool"
+        REENTERS_BASE_POOL = "reenters_base_pool", "Reenters Base Pool"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+
+    displacement = models.CharField(
+        max_length=16,
+        choices=Displacement.choices,
+        default=Displacement.NONE,
+    )
+
+    monitoring_impact = models.CharField(
+        max_length=20,
+        choices=MonitoringImpact.choices,
+        default=MonitoringImpact.CONTINUES,
+    )
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.PROTECT,
+        related_name="change_events",
+    )
+
+    effective_date = models.DateField()
+
+    supersedes = models.OneToOneField(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="superseded_by",
+    )
+
+    source_evidence = models.ForeignKey(
+        "audit.SourceEvidence",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="change_events",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-effective_date",)
+        indexes = [
+            models.Index(fields=("company", "effective_date")),
+            models.Index(fields=("status", "effective_date")),
+            models.Index(fields=("displacement", "effective_date")),
+            models.Index(fields=("monitoring_impact", "effective_date")),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(status__in=ALLOWED_EVENT_STATUSES),
+                name="indexes_change_event_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(displacement__in=ALLOWED_DISPLACEMENTS),
+                name="indexes_change_event_displacement_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(monitoring_impact__in=ALLOWED_MONITORING_IMPACTS),
+                name="indexes_change_event_monitoring_valid",
+            ),
+            models.UniqueConstraint(
+                fields=("company", "effective_date"),
+                condition=Q(status="active"),
+                name="indexes_change_event_active_company_date_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"{self.company.display_name if self.company_id else '?'}: "
+            f"{self.displacement}/{self.monitoring_impact} "
+            f"@{self.effective_date} [{self.status}]"
+        )
+
+
+class IndexChangeCorrelation(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        CONFIRMED = "confirmed", "Confirmed"
+        REJECTED = "rejected", "Rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    earlier_event = models.ForeignKey(
+        IndexChangeEvent,
+        on_delete=models.PROTECT,
+        related_name="correlations_as_earlier",
+    )
+
+    later_event = models.ForeignKey(
+        IndexChangeEvent,
+        on_delete=models.PROTECT,
+        related_name="correlations_as_later",
+    )
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+
+    displacement = models.CharField(
+        max_length=16,
+        choices=IndexChangeEvent.Displacement.choices,
+        blank=True,
+    )
+
+    monitoring_impact = models.CharField(
+        max_length=20,
+        choices=IndexChangeEvent.MonitoringImpact.choices,
+        blank=True,
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(status__in=("pending", "confirmed", "rejected")),
+                name="indexes_correlation_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=~Q(earlier_event=F("later_event")),
+                name="indexes_correlation_not_self",
+            ),
+            models.UniqueConstraint(
+                fields=("earlier_event", "later_event"),
+                name="indexes_correlation_pair_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.earlier_event_id} ↔ {self.later_event_id} [{self.status}]"
+
+
+class IndexChangeLeg(models.Model):
+    class Action(models.TextChoices):
+        ADDED = "added", "Added"
+        REMOVED = "removed", "Removed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    event = models.ForeignKey(
+        IndexChangeEvent,
+        on_delete=models.CASCADE,
+        related_name="legs",
+    )
+
+    index = models.ForeignKey(
+        MarketIndex,
+        on_delete=models.PROTECT,
+        related_name="change_legs",
+    )
+
+    security_listing = models.ForeignKey(
+        "companies.SecurityListing",
+        on_delete=models.PROTECT,
+        related_name="change_legs",
+    )
+
+    action = models.CharField(max_length=8, choices=Action.choices)
+
+    announcement_date = models.DateField(null=True, blank=True)
+
+    effective_date = models.DateField()
+
+    membership = models.ForeignKey(
+        IndexMembership,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="change_legs",
+    )
+
+    detected_at = models.DateTimeField(default=timezone.now)
+
+    source_evidence = models.ForeignKey(
+        "audit.SourceEvidence",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="change_legs",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-effective_date", "index", "security_listing")
+        indexes = [
+            models.Index(fields=("index", "effective_date")),
+            models.Index(fields=("security_listing", "effective_date")),
+            models.Index(fields=("action", "effective_date")),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(action__in=ALLOWED_CHANGE_LEG_ACTIONS),
+                name="indexes_change_leg_action_valid",
+            ),
+            models.UniqueConstraint(
+                fields=("event", "index", "security_listing", "action"),
+                name="indexes_change_leg_action_unique_per_event",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"{self.index.code if self.index_id else '?'}: "
+            f"{self.action} {self.security_listing.ticker if self.security_listing_id else '?'} "
+            f"@{self.effective_date}"
+        )

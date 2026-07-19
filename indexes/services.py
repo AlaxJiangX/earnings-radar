@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -21,8 +22,15 @@ from audit.services import (
 from audit.services.source_evidence import (
     resolve_source_evidence_reference,
 )
-from companies.models import SecurityListing
-from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership, MarketIndex
+from companies.models import Company, SecurityListing
+from indexes.models import (
+    NORMATIVE_MEMBERSHIP_STATUSES,
+    IndexChangeCorrelation,
+    IndexChangeEvent,
+    IndexChangeLeg,
+    IndexMembership,
+    MarketIndex,
+)
 
 if TYPE_CHECKING:
     from accounts.models import User
@@ -1662,3 +1670,728 @@ def activate_due_memberships(
         data_changes=tuple(data_changes),
         audit_records=tuple(audit_records),
     )
+
+
+# ---------------------------------------------------------------------------
+#  Stage 3.3 Step 2 — Atomic Index Change Recording Service
+# ---------------------------------------------------------------------------
+
+
+class IndexChangeIntegrityError(RuntimeError):
+    """Raised when a canonical event identity or metadata conflict is detected."""
+
+
+class InvalidIndexChangeInput(ValueError):
+    """Raised when service-level validation fails before persistence."""
+
+
+@dataclass(frozen=True, slots=True)
+class IndexChangeWriteResult:
+    event: IndexChangeEvent  # noqa: F821
+    leg: IndexChangeLeg  # noqa: F821
+    event_created: bool
+    leg_created: bool
+
+
+def record_index_change_leg(
+    *,
+    company: Company,  # noqa: F821
+    security_listing: SecurityListing,
+    index: MarketIndex,
+    action: str,
+    effective_date: date,
+    announcement_date: date | None = None,
+    detected_at: datetime | None = None,
+    membership: IndexMembership | None = None,
+    source_evidence: SourceEvidence | None = None,
+) -> IndexChangeWriteResult:
+    """Record an atomic ADDED or REMOVED index change leg.
+
+    The canonical event is found or created by (company, effective_date).
+    If an event already exists for the same company and effective_date,
+    the leg is added to the existing event.
+
+    Idempotency:  same (event, index, security_listing, action) does not
+    create a duplicate leg; same event metadata does not error.
+    Conflicting event metadata raises IndexChangeIntegrityError.
+    """
+    from companies.models import Company
+
+    _validate_action(action)
+    _validate_effective_date(effective_date)
+    _validate_leg_inputs(security_listing, index, Company)
+
+    if membership is not None:
+        _validate_membership_consistency(membership, security_listing, index)
+
+    resolved_detected_at = detected_at or timezone.now()
+
+    with transaction.atomic():
+        event, event_created = _resolve_canonical_event(
+            company=company,
+            effective_date=effective_date,
+        )
+
+        _validate_leg_company_consistency(event, security_listing, Company)
+        _validate_leg_date_consistency(event, effective_date)
+
+        if announcement_date is not None and announcement_date > effective_date:
+            raise InvalidIndexChangeInput(
+                f"announcement_date {announcement_date} is after "
+                f"effective_date {effective_date} for a normal (non-correction) leg."
+            )
+
+        leg, leg_created = _resolve_canonical_leg(
+            event=event,
+            index=index,
+            security_listing=security_listing,
+            action=action,
+            effective_date=effective_date,
+            announcement_date=announcement_date,
+            detected_at=resolved_detected_at,
+            membership=membership,
+            source_evidence=source_evidence,
+        )
+
+        return IndexChangeWriteResult(
+            event=event,
+            leg=leg,
+            event_created=event_created,
+            leg_created=leg_created,
+        )
+
+
+# ---------------------------------------------------------------------------
+#  Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_action(action: str) -> None:
+    if action not in ("added", "removed"):
+        raise InvalidIndexChangeInput(f"action must be 'added' or 'removed', got {action!r}.")
+
+
+def _validate_effective_date(effective_date: date) -> None:
+    pass  # future effective_dates are allowed for announced-but-not-yet-effective changes
+
+
+def _validate_leg_inputs(
+    security_listing: SecurityListing,
+    index: MarketIndex,
+    Company: type,
+) -> None:
+    if not isinstance(security_listing, SecurityListing):
+        raise InvalidIndexChangeInput("security_listing must be a SecurityListing instance.")
+    if not isinstance(index, MarketIndex):
+        raise InvalidIndexChangeInput("index must be a MarketIndex instance.")
+
+
+def _validate_membership_consistency(
+    membership: IndexMembership,
+    security_listing: SecurityListing,
+    index: MarketIndex,
+) -> None:
+    if membership.security_listing_id != security_listing.pk:
+        raise InvalidIndexChangeInput(
+            "Membership security_listing does not match the leg security_listing."
+        )
+    if membership.index_id != index.pk:
+        raise InvalidIndexChangeInput("Membership index does not match the leg index.")
+
+
+def _resolve_canonical_event(
+    *,
+    company: Company,
+    effective_date: date,
+) -> tuple[IndexChangeEvent, bool]:
+    """Find or create the ACTIVE canonical event for (company, effective_date).
+
+    Event.source_evidence is NOT auto-populated from leg calls.
+    Each leg carries its own source_evidence for atomic provenance.
+    Event-level evidence remains NULL unless set independently.
+    """
+    event, created = IndexChangeEvent.objects.get_or_create(
+        company=company,
+        effective_date=effective_date,
+        status=IndexChangeEvent.Status.ACTIVE,
+        defaults={},
+    )
+    return event, created
+
+
+def _validate_leg_company_consistency(
+    event: IndexChangeEvent,  # noqa: F821
+    security_listing: SecurityListing,
+    Company: type,
+) -> None:
+    if security_listing.company_id != event.company_id:
+        raise InvalidIndexChangeInput(
+            f"security_listing company {security_listing.company_id} "
+            f"does not match event company {event.company_id}."
+        )
+
+
+def _validate_leg_date_consistency(
+    event: IndexChangeEvent,  # noqa: F821
+    effective_date: date,
+) -> None:
+    if effective_date != event.effective_date:
+        raise InvalidIndexChangeInput(
+            f"leg effective_date {effective_date} does not match "
+            f"event effective_date {event.effective_date}."
+        )
+
+
+def _resolve_canonical_leg(
+    *,
+    event: IndexChangeEvent,
+    index: MarketIndex,
+    security_listing: SecurityListing,
+    action: str,
+    effective_date: date,
+    announcement_date: date | None,
+    detected_at: datetime,
+    membership: IndexMembership | None,
+    source_evidence: SourceEvidence | None,
+) -> tuple[IndexChangeLeg, bool]:
+    leg, created = IndexChangeLeg.objects.get_or_create(
+        event=event,
+        index=index,
+        security_listing=security_listing,
+        action=action,
+        defaults={
+            "effective_date": effective_date,
+            "announcement_date": announcement_date,
+            "detected_at": detected_at,
+            "membership": membership,
+            "source_evidence": source_evidence,
+        },
+    )
+
+    if not created:
+        _complete_leg_metadata(
+            leg,
+            announcement_date=announcement_date,
+            membership=membership,
+            source_evidence=source_evidence,
+        )
+
+    return leg, created
+
+
+def _complete_leg_metadata(
+    leg: IndexChangeLeg,
+    *,
+    announcement_date: date | None,
+    membership: IndexMembership | None,
+    source_evidence: SourceEvidence | None,
+) -> None:
+    updates: dict[str, object] = {}
+
+    if announcement_date is not None and leg.announcement_date is None:
+        updates["announcement_date"] = announcement_date
+    elif announcement_date is not None and leg.announcement_date != announcement_date:
+        raise IndexChangeIntegrityError(
+            f"Existing leg {leg.pk} has announcement_date "
+            f"{leg.announcement_date}; cannot replay with {announcement_date}."
+        )
+
+    if membership is not None and leg.membership is None:
+        updates["membership"] = membership
+    elif membership is not None and leg.membership_id != membership.pk:
+        raise IndexChangeIntegrityError(
+            f"Existing leg {leg.pk} has different membership; "
+            "cannot replay with conflicting membership."
+        )
+
+    if source_evidence is not None and leg.source_evidence is None:
+        updates["source_evidence"] = source_evidence
+    elif source_evidence is not None and leg.source_evidence_id != source_evidence.pk:
+        raise IndexChangeIntegrityError(
+            f"Existing leg {leg.pk} has different source_evidence; "
+            "cannot replay with conflicting provenance."
+        )
+
+    if updates:
+        for field, value in updates.items():
+            setattr(leg, field, value)
+        leg.save(update_fields=list(updates.keys()))
+
+
+# ---------------------------------------------------------------------------
+#  Stage 3.3 Step 3 — Cross-Date Correlation Candidate Service
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelationCandidatesResult:
+    candidates: tuple[IndexChangeCorrelation, ...]
+    created_count: int
+    existing_count: int
+
+
+def generate_index_change_correlation_candidates(
+    event: IndexChangeEvent,
+) -> CorrelationCandidatesResult:
+    """Find ACTIVE events within ±7 days for the same company and create PENDING correlations.
+
+    Only processes ACTIVE events. CANCELLED / CORRECTED events are rejected.
+    Matches are filtered to other ACTIVE events of the same company with
+    effective_date differing by 1–7 days inclusive.
+
+    Idempotent: existing correlations (any status) are not reset.
+    """
+    from datetime import timedelta
+
+    if event.status != IndexChangeEvent.Status.ACTIVE:
+        return CorrelationCandidatesResult(
+            candidates=(),
+            created_count=0,
+            existing_count=0,
+        )
+
+    window_start = event.effective_date - timedelta(days=7)
+    window_end = event.effective_date + timedelta(days=7)
+
+    others = (
+        IndexChangeEvent.objects.filter(
+            company_id=event.company_id,
+            status=IndexChangeEvent.Status.ACTIVE,
+            effective_date__gte=window_start,
+            effective_date__lte=window_end,
+        )
+        .exclude(pk=event.pk)
+        .exclude(effective_date=event.effective_date)
+    )
+
+    candidates: list[IndexChangeCorrelation] = []
+    created_count = 0
+    existing_count = 0
+
+    for other in others:
+        gap = abs((event.effective_date - other.effective_date).days)
+        if gap < 1 or gap > 7:
+            continue
+
+        earlier, later = _normalize_pair(event, other)
+        correlation, created = IndexChangeCorrelation.objects.get_or_create(
+            earlier_event=earlier,
+            later_event=later,
+            defaults={"status": IndexChangeCorrelation.Status.PENDING},
+        )
+        candidates.append(correlation)
+        if created:
+            created_count += 1
+        else:
+            existing_count += 1
+
+    return CorrelationCandidatesResult(
+        candidates=tuple(candidates),
+        created_count=created_count,
+        existing_count=existing_count,
+    )
+
+
+def _normalize_pair(
+    a: IndexChangeEvent,
+    b: IndexChangeEvent,
+) -> tuple[IndexChangeEvent, IndexChangeEvent]:
+    """Return (earlier, later) ordered by effective_date."""
+    if a.effective_date <= b.effective_date:
+        return a, b
+    return b, a
+
+
+# ---------------------------------------------------------------------------
+#  Stage 3.3 Step 4 — Classification Service
+# ---------------------------------------------------------------------------
+
+LARGE_INDEX_CODES = frozenset({"SP500", "NASDAQ100", "DJIA"})
+RUSSELL_CODE = "RUSSELL2000"
+ALL_BASE_CODES = frozenset({"SP500", "NASDAQ100", "DJIA", "RUSSELL2000"})
+
+
+@dataclass(frozen=True, slots=True)
+class EventClassificationResult:
+    event: IndexChangeEvent
+    displacement: str
+    monitoring_impact: str
+    displacement_changed: bool
+    monitoring_impact_changed: bool
+
+
+def classify_index_change_event(
+    event: IndexChangeEvent,
+) -> EventClassificationResult:
+    """Classify the displacement and monitoring impact of an ACTIVE event.
+
+    Reads the event's legs and the company's membership history to
+    determine displacement direction and monitoring impact.
+
+    Idempotent: same result on repeated calls.
+    Raises IndexChangeIntegrityError if existing classification differs.
+    """
+    if event.status != IndexChangeEvent.Status.ACTIVE:
+        raise InvalidIndexChangeInput(
+            f"Only ACTIVE events can be classified, got status={event.status}."
+        )
+
+    displacement = _compute_displacement(event)
+    impact = _compute_monitoring_impact(event)
+
+    disp_changed = event.displacement != displacement
+    impact_changed = event.monitoring_impact != impact
+
+    if not disp_changed and not impact_changed:
+        return EventClassificationResult(
+            event=event,
+            displacement=displacement,
+            monitoring_impact=impact,
+            displacement_changed=False,
+            monitoring_impact_changed=False,
+        )
+
+    if disp_changed and event.displacement != IndexChangeEvent.Displacement.NONE:
+        _raise_if_conflict(event, "displacement", event.displacement, displacement)
+    if impact_changed and event.monitoring_impact != IndexChangeEvent.MonitoringImpact.CONTINUES:
+        _raise_if_conflict(event, "monitoring_impact", event.monitoring_impact, impact)
+
+    if disp_changed:
+        event.displacement = displacement
+    if impact_changed:
+        event.monitoring_impact = impact
+    event.save(update_fields=["displacement", "monitoring_impact"])
+
+    return EventClassificationResult(
+        event=event,
+        displacement=displacement,
+        monitoring_impact=impact,
+        displacement_changed=disp_changed,
+        monitoring_impact_changed=impact_changed,
+    )
+
+
+def _raise_if_conflict(
+    event: IndexChangeEvent,
+    field: str,
+    existing: str,
+    computed: str,
+) -> None:
+    raise IndexChangeIntegrityError(
+        f"Event {event.pk} already has {field}={existing}; cannot reclassify as {computed}."
+    )
+
+
+# ---- Displacement ----
+
+
+def _compute_displacement(event: IndexChangeEvent) -> str:
+    legs = list(event.legs.all())
+    added = {leg.index.code for leg in legs if leg.action == IndexChangeLeg.Action.ADDED}
+    removed = {leg.index.code for leg in legs if leg.action == IndexChangeLeg.Action.REMOVED}
+
+    added_large = added & LARGE_INDEX_CODES
+    removed_large = removed & LARGE_INDEX_CODES
+    added_russell = RUSSELL_CODE in added
+    removed_russell = RUSSELL_CODE in removed
+
+    if removed_russell and added_large:
+        return IndexChangeEvent.Displacement.UPGRADE
+    if removed_large and added_russell:
+        return IndexChangeEvent.Displacement.DOWNGRADE
+    if removed_large and added_large:
+        return IndexChangeEvent.Displacement.CROSS_INDEX
+
+    return IndexChangeEvent.Displacement.NONE
+
+
+# ---- Monitoring Impact ----
+
+
+def _compute_monitoring_impact(event: IndexChangeEvent) -> str:
+    legs = list(event.legs.all())
+    added_codes = {leg.index.code for leg in legs if leg.action == IndexChangeLeg.Action.ADDED}
+    removed_codes = {leg.index.code for leg in legs if leg.action == IndexChangeLeg.Action.REMOVED}
+
+    before = _memberships_before(event.company_id, event.effective_date)
+
+    after = (before | added_codes) - removed_codes
+
+    in_pool_before = bool(before & ALL_BASE_CODES)
+    in_pool_after = bool(after & ALL_BASE_CODES)
+
+    if not in_pool_before and in_pool_after:
+        ever_had = _ever_had_base_membership(event.company_id, event.effective_date)
+        if ever_had:
+            return IndexChangeEvent.MonitoringImpact.REENTERS_BASE_POOL
+        return IndexChangeEvent.MonitoringImpact.ENTERS_BASE_POOL
+
+    if in_pool_before and not in_pool_after:
+        return IndexChangeEvent.MonitoringImpact.EXITS_BASE_POOL
+
+    return IndexChangeEvent.MonitoringImpact.CONTINUES
+
+
+def _memberships_before(company_id: uuid.UUID, effective_date: date) -> set[str]:
+    """Return base-index codes for which the company held active membership
+    at *effective_date*, excluding the current event's effects."""
+    from django.db.models import Q
+
+    memberships = (
+        IndexMembership.objects.filter(
+            security_listing__company_id=company_id,
+            status__in=("announced", "active"),
+            effective_from__lte=effective_date,
+        )
+        .filter(
+            Q(effective_to__isnull=True) | Q(effective_to__gte=effective_date),
+        )
+        .select_related("index")
+    )
+
+    return {m.index.code for m in memberships if m.index.code in ALL_BASE_CODES}
+
+
+def _ever_had_base_membership(company_id: uuid.UUID, before_date: date) -> bool:
+    """Has the company ever had base-index membership before *before_date*?"""
+    return IndexMembership.objects.filter(
+        security_listing__company_id=company_id,
+        index__code__in=ALL_BASE_CODES,
+        effective_from__lt=before_date,
+    ).exists()
+
+
+# ---- Cross-Date Correlation Classification ----
+
+
+@dataclass(frozen=True, slots=True)
+class CorrelationClassificationResult:
+    correlation: IndexChangeCorrelation
+    displacement: str
+    monitoring_impact: str
+    changed: bool
+
+
+def classify_index_change_correlation(
+    correlation: IndexChangeCorrelation,
+) -> CorrelationClassificationResult:
+    """Classify a CONFIRMED cross-date correlation.
+
+    PENDING and REJECTED correlations cannot be classified.
+    """
+    if correlation.status != IndexChangeCorrelation.Status.CONFIRMED:
+        raise InvalidIndexChangeInput(
+            f"Only CONFIRMED correlations can be classified, got status={correlation.status}."
+        )
+
+    combined_added: set[str] = set()
+    combined_removed: set[str] = set()
+    company_id = None
+
+    for event in (correlation.earlier_event, correlation.later_event):
+        for leg in event.legs.all():
+            if company_id is None:
+                company_id = event.company_id
+            if leg.action == IndexChangeLeg.Action.ADDED:
+                combined_added.add(leg.index.code)
+            else:
+                combined_removed.add(leg.index.code)
+
+    displacement = _compute_combined_displacement(combined_added, combined_removed)
+    impact = _compute_correlation_monitoring(
+        company_id, correlation, combined_added, combined_removed
+    )
+
+    changed = correlation.displacement != displacement or correlation.monitoring_impact != impact
+
+    if changed:
+        if correlation.displacement and correlation.displacement != displacement:
+            raise IndexChangeIntegrityError(
+                f"Correlation {correlation.pk} already has displacement={correlation.displacement}."
+            )
+        if correlation.monitoring_impact and correlation.monitoring_impact != impact:
+            raise IndexChangeIntegrityError(
+                f"Correlation {correlation.pk} already has "
+                f"monitoring_impact={correlation.monitoring_impact}."
+            )
+        correlation.displacement = displacement
+        correlation.monitoring_impact = impact
+        correlation.save(update_fields=["displacement", "monitoring_impact"])
+
+    return CorrelationClassificationResult(
+        correlation=correlation,
+        displacement=displacement,
+        monitoring_impact=impact,
+        changed=changed,
+    )
+
+
+def _compute_combined_displacement(
+    added: set[str],
+    removed: set[str],
+) -> str:
+    added_large = added & LARGE_INDEX_CODES
+    removed_large = removed & LARGE_INDEX_CODES
+    added_russell = RUSSELL_CODE in added
+    removed_russell = RUSSELL_CODE in removed
+
+    if removed_russell and added_large:
+        return "upgrade"
+    if removed_large and added_russell:
+        return "downgrade"
+    if removed_large and added_large:
+        return "cross_index"
+    return "none"
+
+
+def _compute_correlation_monitoring(
+    company_id: uuid.UUID | None,
+    correlation: IndexChangeCorrelation,
+    combined_added: set[str],
+    combined_removed: set[str],
+) -> str:
+    cid = company_id if company_id is not None else correlation.earlier_event.company_id
+    anchor_date = correlation.later_event.effective_date
+
+    before = _memberships_before(cid, anchor_date)
+    after = (before | combined_added) - combined_removed
+
+    in_pool_before = bool(before & ALL_BASE_CODES)
+    in_pool_after = bool(after & ALL_BASE_CODES)
+
+    if not in_pool_before and in_pool_after:
+        ever_had = _ever_had_base_membership(cid, anchor_date)
+        if ever_had:
+            return "reenters_base_pool"
+        return "enters_base_pool"
+
+    if in_pool_before and not in_pool_after:
+        return "exits_base_pool"
+
+    return "continues"
+
+
+# ---------------------------------------------------------------------------
+#  Stage 3.3 Step 5 — Correction / Cancellation Service
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EventCancellationResult:
+    event: IndexChangeEvent
+    status_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EventCorrectionLegSpec:
+    security_listing: SecurityListing
+    index: MarketIndex
+    action: str  # "added" or "removed"
+    announcement_date: date | None = None
+    membership: IndexMembership | None = None
+    source_evidence: SourceEvidence | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EventCorrectionResult:
+    old_event: IndexChangeEvent
+    new_event: IndexChangeEvent
+    new_legs: tuple[IndexChangeLeg, ...]
+
+
+def cancel_index_change_event(
+    event: IndexChangeEvent,
+) -> EventCancellationResult:
+    """Cancel an ACTIVE IndexChangeEvent.
+
+    Preserves all legs, provenance, classification, and correlations.
+    CANCELLED events cannot be re-cancelled (idempotent no-op).
+    CORRECTED events cannot be cancelled.
+    """
+    if event.status == IndexChangeEvent.Status.CANCELLED:
+        return EventCancellationResult(event=event, status_changed=False)
+
+    if event.status == IndexChangeEvent.Status.CORRECTED:
+        raise InvalidIndexChangeInput(f"Cannot cancel a CORRECTED event {event.pk}.")
+
+    if event.status != IndexChangeEvent.Status.ACTIVE:
+        raise InvalidIndexChangeInput(
+            f"Only ACTIVE events can be cancelled, got status={event.status}."
+        )
+
+    event.status = IndexChangeEvent.Status.CANCELLED
+    event.save(update_fields=["status"])
+    return EventCancellationResult(event=event, status_changed=True)
+
+
+def correct_index_change_event(
+    old_event: IndexChangeEvent,
+    *,
+    corrected_legs: list[EventCorrectionLegSpec],
+) -> EventCorrectionResult:
+    """Correct an ACTIVE IndexChangeEvent by creating a superseding replacement.
+
+    The old event is marked CORRECTED (preserving all original legs,
+    classification, and provenance).  A new ACTIVE event is created
+    with the same company and effective_date, linked via supersedes.
+    New corrected legs are created on the new event.
+
+    The entire operation runs in a single transaction: if leg creation
+    fails, the old event remains ACTIVE.
+
+    Only the current ACTIVE event can be corrected.  Already-CORRECTED
+    events cannot be re-corrected (correct the current ACTIVE event
+    instead to extend the revision chain).
+    """
+    if old_event.status == IndexChangeEvent.Status.CORRECTED:
+        raise InvalidIndexChangeInput(
+            f"Event {old_event.pk} is already CORRECTED.  "
+            "Correct the current ACTIVE superseding event instead."
+        )
+    if old_event.status == IndexChangeEvent.Status.CANCELLED:
+        raise InvalidIndexChangeInput(f"Cannot correct a CANCELLED event {old_event.pk}.")
+    if old_event.status != IndexChangeEvent.Status.ACTIVE:
+        raise InvalidIndexChangeInput(
+            f"Only ACTIVE events can be corrected, got status={old_event.status}."
+        )
+
+    for spec in corrected_legs:
+        if spec.action not in ("added", "removed"):
+            raise InvalidIndexChangeInput("action must be 'added' or 'removed'.")
+
+    with transaction.atomic():
+        locked = IndexChangeEvent.objects.select_for_update().get(pk=old_event.pk)
+        if locked.status != IndexChangeEvent.Status.ACTIVE:
+            raise InvalidIndexChangeInput(f"Event {old_event.pk} status changed concurrently.")
+
+        locked.status = IndexChangeEvent.Status.CORRECTED
+        locked.save(update_fields=["status"])
+
+        new_event = IndexChangeEvent.objects.create(
+            company=old_event.company,
+            effective_date=old_event.effective_date,
+            supersedes=old_event,
+            status=IndexChangeEvent.Status.ACTIVE,
+            displacement=IndexChangeEvent.Displacement.NONE,
+            monitoring_impact=IndexChangeEvent.MonitoringImpact.CONTINUES,
+        )
+
+        new_legs: list[IndexChangeLeg] = []
+        for spec in corrected_legs:
+            leg = IndexChangeLeg.objects.create(
+                event=new_event,
+                index=spec.index,
+                security_listing=spec.security_listing,
+                action=spec.action,
+                effective_date=new_event.effective_date,
+                announcement_date=spec.announcement_date,
+                membership=spec.membership,
+                source_evidence=spec.source_evidence,
+            )
+            new_legs.append(leg)
+
+        return EventCorrectionResult(
+            old_event=locked,
+            new_event=new_event,
+            new_legs=tuple(new_legs),
+        )
