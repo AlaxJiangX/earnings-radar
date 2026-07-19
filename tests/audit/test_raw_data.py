@@ -1,4 +1,5 @@
 import hashlib
+import uuid
 from datetime import UTC, datetime
 from urllib.parse import unquote
 
@@ -8,17 +9,21 @@ from django.test import override_settings
 from django.utils import timezone
 
 from audit.constants import RAW_DATA_PAYLOAD_DB_LIMIT_BYTES
-from audit.models import DataSource, RawDataObservation, RawDataRecord, SyncRun
+from audit.models import DataSource, RawDataObservation, RawDataParseAttempt, RawDataRecord, SyncRun
 from audit.services import (
     InvalidRawDataRequest,
     InvalidRawDataTimestamp,
     PayloadTooLarge,
+    RawDataIntegrityError,
+    RawDataParseIntegrityError,
     build_request_fingerprint,
     mark_raw_data_parse_failed,
     mark_raw_data_parsed,
+    mark_raw_data_system_error,
     mark_raw_data_unsupported,
     mark_sync_run_succeeded,
     record_raw_data_observation,
+    record_raw_data_parse_attempt,
     start_sync_run,
 )
 
@@ -404,3 +409,325 @@ def test_explicit_utc_timestamps_are_preserved(sync_run: SyncRun) -> None:
 
     assert result.record.fetched_at == timestamp
     assert result.observation.observed_at == timestamp
+
+
+# ---------------------------------------------------------------------------
+# 3.2B-3 Step 2 — RawDataParseAttempt recording service tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestRecordRawDataParseAttempt:
+    """Low-level attempt recording."""
+
+    def test_creates_canonical_attempt(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        now = timezone.now()
+        result = record_raw_data_parse_attempt(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+            status=RawDataParseAttempt.Status.SUCCEEDED,
+            error_summary="",
+            started_at=now,
+            finished_at=now,
+        )
+        assert result.created is True
+        assert result.attempt.status == RawDataParseAttempt.Status.SUCCEEDED
+        assert result.attempt.parser_version == "parser-v1"
+        assert result.attempt.observation == raw_data_observation
+
+    def test_idempotent_replay_same_status(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        now = timezone.now()
+        first = record_raw_data_parse_attempt(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+            status=RawDataParseAttempt.Status.SUCCEEDED,
+            error_summary="",
+            started_at=now,
+            finished_at=now,
+        )
+        second = record_raw_data_parse_attempt(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+            status=RawDataParseAttempt.Status.SUCCEEDED,
+            error_summary="",
+            started_at=now,
+            finished_at=now,
+        )
+        assert second.created is False
+        assert second.attempt.pk == first.attempt.pk
+        # Only one canonical row
+        assert (
+            RawDataParseAttempt.objects.filter(
+                observation=raw_data_observation,
+                parser_version="parser-v1",
+            ).count()
+            == 1
+        )
+
+    def test_conflicting_status_raises_integrity_error(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        now = timezone.now()
+        record_raw_data_parse_attempt(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+            status=RawDataParseAttempt.Status.SUCCEEDED,
+            error_summary="",
+            started_at=now,
+            finished_at=now,
+        )
+        with pytest.raises(RawDataParseIntegrityError) as excinfo:
+            record_raw_data_parse_attempt(
+                observation=raw_data_observation,
+                parser_version="parser-v1",
+                status=RawDataParseAttempt.Status.DATA_ERROR,
+                error_summary="Parse error",
+                started_at=now,
+                finished_at=now,
+            )
+        assert "Conflicting parse attempt" in str(excinfo.value)
+
+    def test_error_summary_required_for_non_succeeded(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        now = timezone.now()
+        with pytest.raises(IntegrityError):
+            record_raw_data_parse_attempt(
+                observation=raw_data_observation,
+                parser_version="parser-v1",
+                status=RawDataParseAttempt.Status.DATA_ERROR,
+                error_summary="",  # empty → violates audit_raw_parse_error_consistent
+                started_at=now,
+                finished_at=now,
+            )
+
+
+@pytest.mark.django_db
+class TestMarkRawDataParsed:
+    """Success path with attempt recording."""
+
+    def test_creates_attempt_and_updates_cache(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        parsed = mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v1")
+        assert parsed.parser_status == RawDataRecord.ParserStatus.PARSED
+        assert parsed.parser_version == "parser-v1"
+        assert parsed.parse_error == ""
+        # Canonical attempt exists
+        attempt = RawDataParseAttempt.objects.get(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+        )
+        assert attempt.status == RawDataParseAttempt.Status.SUCCEEDED
+
+    def test_idempotent_does_not_overwrite_cache_with_old_observation(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        # First parse with parser-v1
+        mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v1")
+        # Second parse with parser-v2 pushes cache forward
+        mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v2")
+        # Idempotent replay of parser-v1: should NOT overwrite cache to v1
+        mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v1")
+        record = RawDataRecord.objects.get(pk=raw_data_record.pk)
+        assert record.parser_version == "parser-v2"
+
+
+@pytest.mark.django_db
+class TestMarkRawDataParseFailed:
+    """Data-error path."""
+
+    def test_creates_attempt_with_data_error_status(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        failed = mark_raw_data_parse_failed(
+            raw_data_record.pk,
+            parser_version="parser-v1",
+            parse_error="Malformed JSON payload",
+        )
+        assert failed.parser_status == RawDataRecord.ParserStatus.FAILED
+        attempt = RawDataParseAttempt.objects.get(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+        )
+        assert attempt.status == RawDataParseAttempt.Status.DATA_ERROR
+        assert "Malformed JSON payload" in attempt.error_summary
+
+    def test_sanitizes_credentials_in_error(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        mark_raw_data_parse_failed(
+            raw_data_record.pk,
+            parser_version="parser-v1",
+            parse_error="password=secret-token fixture",
+        )
+        attempt = RawDataParseAttempt.objects.get(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+        )
+        assert "secret-token" not in attempt.error_summary
+
+    def test_rejects_empty_error_summary(self) -> None:
+        with pytest.raises(ValueError, match="non-empty error summary"):
+            mark_raw_data_parse_failed(
+                uuid.uuid4(),
+                parser_version="parser-v1",
+                parse_error="   ",
+            )
+
+
+@pytest.mark.django_db
+class TestMarkRawDataUnsupported:
+    def test_creates_attempt_with_unsupported_status(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        unsupported = mark_raw_data_unsupported(raw_data_record.pk, parser_version="parser-v1")
+        assert unsupported.parser_status == RawDataRecord.ParserStatus.UNSUPPORTED
+        attempt = RawDataParseAttempt.objects.get(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+        )
+        assert attempt.status == RawDataParseAttempt.Status.UNSUPPORTED
+        assert attempt.error_summary != ""  # check constraint enforces non-empty
+
+
+@pytest.mark.django_db
+class TestMarkRawDataSystemError:
+    def test_creates_attempt_with_system_error_and_failed_cache(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        failed = mark_raw_data_system_error(
+            raw_data_record.pk,
+            parser_version="parser-v1",
+            parse_error="OOM killed by kernel",
+        )
+        # Cache: RawDataRecord has no SYSTEM_ERROR, so maps to FAILED
+        assert failed.parser_status == RawDataRecord.ParserStatus.FAILED
+        assert "OOM killed" in failed.parse_error
+        # Canonical attempt
+        attempt = RawDataParseAttempt.objects.get(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+        )
+        assert attempt.status == RawDataParseAttempt.Status.SYSTEM_ERROR
+
+    def test_rejects_empty_error_summary(self) -> None:
+        with pytest.raises(ValueError, match="non-empty error summary"):
+            mark_raw_data_system_error(
+                uuid.uuid4(),
+                parser_version="parser-v1",
+                parse_error="",
+            )
+
+
+@pytest.mark.django_db
+class TestParseAttemptTransactionBoundaries:
+    """Atomicity and edge cases."""
+
+    def test_attempt_and_cache_are_atomic(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        """If cache update fails mid-way, attempt must not be committed alone."""
+        mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v1")
+        # Both should be visible together
+        record = RawDataRecord.objects.get(pk=raw_data_record.pk)
+        assert record.parser_status == RawDataRecord.ParserStatus.PARSED
+        assert RawDataParseAttempt.objects.filter(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+        ).exists()
+
+    def test_conflicting_insert_from_low_level_is_caught(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        now = timezone.now()
+        # First insert via low-level
+        record_raw_data_parse_attempt(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+            status=RawDataParseAttempt.Status.DATA_ERROR,
+            error_summary="first error",
+            started_at=now,
+            finished_at=now,
+        )
+        # mark_raw_data_parsed for same parser_version → conflict
+        with pytest.raises(RawDataParseIntegrityError):
+            mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v1")
+
+    def test_no_observation_raises(
+        self,
+        sync_run: SyncRun,
+    ) -> None:
+        """A record with zero observations cannot have a parse attempt recorded."""
+        payload = b"no-obs"
+        record = RawDataRecord.objects.create(
+            source=sync_run.source,
+            first_sync_run=sync_run,
+            source_url="https://example.test/no-obs",
+            request_fingerprint=hashlib.sha256(b"no-obs-req").hexdigest(),
+            fetched_at=sync_run.started_at,
+            http_status=200,
+            content_type="text/plain",
+            encoding="utf-8",
+            content_hash=hashlib.sha256(payload).hexdigest(),
+            payload=payload,
+            payload_size_bytes=len(payload),
+        )
+        with pytest.raises(RawDataIntegrityError, match="no observations"):
+            mark_raw_data_parsed(record.pk, parser_version="parser-v1")
+
+    def test_cache_not_updated_on_idempotent_replay(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        """Idempotent replay with same parser_version must not re-set cache."""
+        # First parse: cache = parser-v1
+        mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v1")
+        # Second parse: cache advanced to parser-v2
+        mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v2")
+        # Idempotent replay of parser-v1
+        mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v1")
+        record = RawDataRecord.objects.get(pk=raw_data_record.pk)
+        assert record.parser_version == "parser-v2"

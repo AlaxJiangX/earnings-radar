@@ -56,6 +56,24 @@ class AppendOnlyRecordError(RuntimeError):
     pass
 
 
+class AppendOnlyQuerySet(models.QuerySet[Any]):
+    def update(self, **kwargs: Any) -> int:
+        del kwargs
+        raise AppendOnlyRecordError("Audit history records cannot be updated.")
+
+    def delete(self) -> tuple[int, dict[str, int]]:
+        raise AppendOnlyRecordError("Audit history records cannot be deleted.")
+
+    def bulk_update(
+        self,
+        objs: Any,
+        fields: Any,
+        batch_size: Any | None = None,
+    ) -> int:
+        del objs, fields, batch_size
+        raise AppendOnlyRecordError("Audit history records cannot be bulk updated.")
+
+
 class AppendOnlyAuditModel(models.Model):
     class Meta:
         abstract = True
@@ -311,6 +329,67 @@ class RawDataObservation(models.Model):
 
     def __str__(self) -> str:
         return f"{self.sync_run_id}: {self.raw_data_record_id}"
+
+
+class RawDataParseAttempt(AppendOnlyAuditModel):
+    class Status(models.TextChoices):
+        SUCCEEDED = "succeeded", "Succeeded"
+        DATA_ERROR = "data_error", "Data error"
+        SYSTEM_ERROR = "system_error", "System error"
+        UNSUPPORTED = "unsupported", "Unsupported"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    observation = models.ForeignKey(
+        RawDataObservation,
+        on_delete=models.PROTECT,
+        related_name="parse_attempts",
+    )
+    parser_version = models.CharField(max_length=100)
+    status = models.CharField(max_length=16, choices=Status.choices)
+    error_summary = models.CharField(max_length=2000, blank=True)
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-finished_at",)
+        indexes = [
+            models.Index(fields=("observation", "parser_version")),
+            models.Index(fields=("status", "finished_at")),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("observation", "parser_version"),
+                name="audit_raw_parse_observation_parser_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(parser_version__regex=r"[^[:space:]]"),
+                name="audit_raw_parse_parser_not_empty",
+            ),
+            models.CheckConstraint(
+                condition=Q(finished_at__gte=F("started_at")),
+                name="audit_raw_parse_finish_after_start",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=("succeeded", "data_error", "system_error", "unsupported")),
+                name="audit_raw_parse_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (Q(status="succeeded") & Q(error_summary=""))
+                    | (
+                        Q(status__in=("data_error", "system_error", "unsupported"))
+                        & Q(error_summary__regex=r"[^[:space:]]")
+                    )
+                ),
+                name="audit_raw_parse_error_consistent",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.observation_id}: {self.parser_version}: {self.status}"
 
 
 class SourceEvidence(models.Model):

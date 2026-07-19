@@ -227,6 +227,18 @@
 #### 3.2 首个指数 Provider 与同步命令
 
 当前拆分进度：
+- 3.2B-3：RawDataParseAttempt audit trail (model + migration, recording service, consumer regression gate) 已完成；
+
+  交付：RawDataParseAttempt model (audit/migrations/0007)、canonical (observation, parser_version)
+  uniqueness、idempotent replay、RawDataParseIntegrityError、record_raw_data_parse_attempt、
+  四个 high-level mark_raw_data_* helpers、RawDataRecord compatibility cache behavior、
+  audit service tests (42 passed)、indexes consumer regression verification (21 passed)。
+
+  尚未完成（明确不属于 3.2B-3）：DATA_ERROR/SYSTEM_ERROR 上游异常分类、broad except Exception 重构、
+  provider_context / SyncRun provider_context、Admin / observability read paths、
+  后续 read/rebuild 路径、indexes/constituents 独立集成。
+
+
 
 - 3.2A：`activate_due_memberships` 已完成；
 - 3.2B-1：四指数人工 fixture、canonical snapshot contract 和纯解析器已完成；
