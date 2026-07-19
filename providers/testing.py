@@ -13,6 +13,7 @@ from providers.http import (
     TransportRequest,
     TransportResponse,
 )
+from providers.index_constituent_provider import IndexConstituentProvider, require_scope_index_code
 from providers.types import ProviderCapability, ProviderRequest, ProviderResult
 
 FIXTURE_REQUEST_STARTED_AT = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
@@ -173,7 +174,7 @@ def make_fake_provider_request(
 # ---------------------------------------------------------------------------
 
 
-class FixtureIndexConstituentProvider(Provider):
+class FixtureIndexConstituentProvider(IndexConstituentProvider):
     """A test-only Provider that returns curated fixture snapshots.
 
     Fixture bytes are injected via the *fixtures* constructor parameter,
@@ -192,14 +193,13 @@ class FixtureIndexConstituentProvider(Provider):
 
     provider_key = "fixture-index-constituents"
     provider_version = "fixture-v1"
-    capabilities = frozenset({ProviderCapability.INDEX_CONSTITUENTS})
 
     def __init__(self, *, fixtures: dict[str, bytes] | None = None) -> None:
         self._fixtures = dict(fixtures or {})
 
     def _fetch(self, request: ProviderRequest) -> ProviderResult:
         """Return a curated fixture snapshot for the requested index."""
-        index_code = _require_scope_index_code(request)
+        index_code = require_scope_index_code(request)
         body = self._get_fixture_bytes(index_code)
 
         transport = FakeHttpTransport(FakeProviderScenario.SUCCESS, body=body)
@@ -238,13 +238,3 @@ class FixtureIndexConstituentProvider(Provider):
             raise ProviderValidationError(
                 f"No fixture registered for index {index_code!r}."
             ) from None
-
-
-def _require_scope_index_code(request: ProviderRequest) -> str:
-    scope = dict(request.scope)
-    code = scope.get("index_code")
-    if not isinstance(code, str) or not code.strip():
-        raise ProviderValidationError(
-            "INDEX_CONSTITUENTS request scope must include a non-empty 'index_code'."
-        )
-    return code.strip().upper()
