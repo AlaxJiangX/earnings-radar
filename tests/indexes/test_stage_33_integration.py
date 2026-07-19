@@ -270,13 +270,13 @@ class TestCrossDateCorrelation:
             action="removed",
             effective_date=date(2026, 6, 15),
         ).event
-        e2 = record_index_change_leg(
+        record_index_change_leg(
             company=company,
             security_listing=listing2,
             index=sp500,
             action="added",
             effective_date=date(2026, 6, 18),
-        ).event
+        )
         gen = generate_index_change_correlation_candidates(e1)
         assert gen.created_count == 1
         corr = gen.candidates[0]
