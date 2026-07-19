@@ -68,7 +68,7 @@ def listing2(db: object, company: Company) -> SecurityListing:
     )
 
 
-def _mk_event(company: "companies.models.Company", eff_date: date, **kw: object) -> IndexChangeEvent:
+def _mk_event(company, eff_date, **kw) -> IndexChangeEvent:
     return IndexChangeEvent.objects.create(
         company=company,
         effective_date=eff_date,

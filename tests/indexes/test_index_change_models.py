@@ -27,7 +27,7 @@ def _make_event(
     *,
     company_id: str = "0000000001",
     effective_date: date | None = None,
-    **overrides: object,
+    **overrides,
 ) -> IndexChangeEvent:
     from companies.models import Company
 
