@@ -4,9 +4,9 @@ from datetime import date
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from django.db.models import Q, QuerySet
+from django.db.models import Prefetch, Q, QuerySet
 
-from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership
+from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexChangeEvent, IndexMembership
 
 if TYPE_CHECKING:
     from indexes.models import MarketIndex
@@ -177,3 +177,92 @@ def listing_indexes_as_of(
     elif is_enabled is False:
         qs = qs.filter(is_enabled=False)
     return qs.distinct()
+
+
+# ---------------------------------------------------------------------------
+# Stage 3.4 — Index Change Event Selectors
+# ---------------------------------------------------------------------------
+
+ALLOWED_DISPLACEMENT_VALUES = frozenset({"upgrade", "downgrade", "cross_index", "none"})
+ALLOWED_ACTION_VALUES = frozenset({"added", "removed"})
+
+
+def get_change_events(
+    *,
+    displacement: str | None = None,
+    monitoring_impact: str | None = None,
+    index_code: str | None = None,
+    action: str | None = None,
+    effective_from: date | None = None,
+    effective_to: date | None = None,
+    company_id: UUID | None = None,
+    include_cancelled_corrected: bool = False,
+) -> QuerySet[IndexChangeEvent]:
+    """Return a filtered, optimized QuerySet of IndexChangeEvent for public display.
+
+    Default: only ACTIVE events, ordered by -effective_date then company.display_name.
+
+    Filters are all AND-combined.  Invalid enum values are silently ignored.
+    """
+    from indexes.models import IndexChangeCorrelation, IndexChangeEvent, IndexChangeLeg
+
+    qs = IndexChangeEvent.objects.select_related("company")
+
+    # --- Status filter ---
+    if not include_cancelled_corrected:
+        qs = qs.filter(status="active")
+
+    # --- Displacement filter ---
+    if displacement is not None and displacement in ALLOWED_DISPLACEMENT_VALUES:
+        qs = qs.filter(displacement=displacement)
+
+    # --- Monitoring impact filter ---
+    if monitoring_impact is not None:
+        qs = qs.filter(monitoring_impact=monitoring_impact)
+
+    # --- Index filter (via legs) ---
+    if index_code is not None:
+        index_code_upper = index_code.strip().upper()
+        if index_code_upper in {"SP500", "NASDAQ100", "DJIA", "RUSSELL2000"}:
+            qs = qs.filter(legs__index__code=index_code_upper)
+
+    # --- Action filter (via legs) ---
+    if action is not None and action in ALLOWED_ACTION_VALUES:
+        qs = qs.filter(legs__action=action)
+
+    # --- Date range ---
+    if effective_from is not None:
+        qs = qs.filter(effective_date__gte=effective_from)
+    if effective_to is not None:
+        qs = qs.filter(effective_date__lte=effective_to)
+
+    # --- Company filter ---
+    if company_id is not None:
+        qs = qs.filter(company_id=company_id)
+
+    # --- Deduplication (legs joins may produce duplicate rows) ---
+    qs = qs.distinct()
+
+    # --- Ordering: most recent effective_date first, secondary by company name ---
+    qs = qs.order_by("-effective_date", "company__display_name")
+
+    # --- Prefetch legs with their index and listing (avoid N+1) ---
+    leg_qs = IndexChangeLeg.objects.select_related(
+        "index",
+        "security_listing",
+    )
+    qs = qs.prefetch_related(Prefetch("legs", queryset=leg_qs))
+
+    # --- Prefetch CONFIRMED correlations only (PENDING/REJECTED are not public) ---
+    confirmed_corr_qs = IndexChangeCorrelation.objects.filter(
+        status="confirmed",
+    ).select_related(
+        "earlier_event",
+        "later_event",
+    )
+    qs = qs.prefetch_related(
+        Prefetch("correlations_as_earlier", queryset=confirmed_corr_qs),
+        Prefetch("correlations_as_later", queryset=confirmed_corr_qs),
+    )
+
+    return qs
