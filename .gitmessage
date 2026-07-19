@@ -1,0 +1,21 @@
+# Replace the placeholder lines below with your actual commit message.
+# Delete any sections that are not applicable.
+# Do not leave literal `<...>` placeholder text in the final message.
+
+<type>(<scope>): <short summary>
+
+Why:
+
+- <why this change is needed / what problem it solves>
+
+Decision:
+
+- <important implementation or design decision, when applicable>
+
+Alternatives considered:
+
+- <alternative and why it was rejected, only when real alternatives were considered>
+
+Refs:
+
+- <issue / PR / ADR reference, when applicable>
