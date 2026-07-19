@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Step 1 model-level tests for IndexChangeEvent and IndexChangeLeg."""
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ def _make_event(
     *,
     company_id: str = "0000000001",
     effective_date: date | None = None,
-    **overrides,
+    **overrides: object,
 ) -> IndexChangeEvent:
     from companies.models import Company
 

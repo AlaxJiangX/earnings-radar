@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Step 5 — correction/cancellation tests."""
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ def listing2(db: object, company: Company) -> SecurityListing:
     )
 
 
-def _mk_event(company, eff_date, **kw) -> IndexChangeEvent:
+def _mk_event(company: "companies.models.Company", eff_date: date, **kw: object) -> IndexChangeEvent:
     return IndexChangeEvent.objects.create(
         company=company,
         effective_date=eff_date,

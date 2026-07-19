@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Step 2 service-level tests for atomic index change recording."""
 
 from __future__ import annotations

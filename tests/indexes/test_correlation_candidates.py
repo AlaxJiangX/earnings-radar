@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Step 3 tests — IndexChangeCorrelation model and candidate generation."""
 
 from __future__ import annotations

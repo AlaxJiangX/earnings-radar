@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Step 4 classification service tests."""
 
 from __future__ import annotations

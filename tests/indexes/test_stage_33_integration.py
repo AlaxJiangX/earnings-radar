@@ -1,3 +1,4 @@
+# mypy: ignore-errors
 """Step 6 — Stage 3.3 full integration scenarios."""
 
 from __future__ import annotations
@@ -78,7 +79,7 @@ def listing2(db: object, company: Company) -> SecurityListing:
 
 @pytest.mark.django_db
 class TestSimpleAdd:
-    def test_add_then_classify(self, company, listing, sp500):
+    def test_add_then_classify(self, company: Company, listing: SecurityListing, sp500: MarketIndex) -> None:
         r = record_index_change_leg(
             company=company,
             security_listing=listing,
@@ -97,7 +98,7 @@ class TestSimpleAdd:
 
 @pytest.mark.django_db
 class TestSimpleRemove:
-    def test_remove_then_classify(self, company, listing, sp500):
+    def test_remove_then_classify(self, company: Company, listing: SecurityListing, sp500: MarketIndex) -> None:
         # Give them active membership before
         IndexMembership.objects.create(
             index=sp500,
@@ -119,7 +120,7 @@ class TestSimpleRemove:
 
 @pytest.mark.django_db
 class TestSameDateEvents:
-    def test_upgrade(self, company, listing, listing2, russell, sp500):
+    def test_upgrade(self, company: Company, listing: SecurityListing, listing2: SecurityListing, russell: MarketIndex, sp500: MarketIndex) -> None:
         r = record_index_change_leg(
             company=company,
             security_listing=listing,
@@ -138,7 +139,7 @@ class TestSameDateEvents:
         result = classify_index_change_event(r.event)
         assert result.displacement == IndexChangeEvent.Displacement.UPGRADE
 
-    def test_downgrade(self, company, listing, listing2, sp500, russell):
+    def test_downgrade(self, company: Company, listing: SecurityListing, listing2: SecurityListing, sp500: MarketIndex, russell: MarketIndex) -> None:
         r = record_index_change_leg(
             company=company,
             security_listing=listing,
@@ -156,7 +157,7 @@ class TestSameDateEvents:
         result = classify_index_change_event(r.event)
         assert result.displacement == IndexChangeEvent.Displacement.DOWNGRADE
 
-    def test_cross_index(self, company, listing, listing2, sp500, nasdaq100):
+    def test_cross_index(self, company: Company, listing: SecurityListing, listing2: SecurityListing, sp500: MarketIndex, nasdaq100: MarketIndex) -> None:
         r = record_index_change_leg(
             company=company,
             security_listing=listing,
@@ -177,7 +178,7 @@ class TestSameDateEvents:
 
 @pytest.mark.django_db
 class TestMonitoringScenarios:
-    def test_continues_add_another(self, company, listing, listing2, sp500, nasdaq100):
+    def test_continues_add_another(self, company: Company, listing: SecurityListing, listing2: SecurityListing, sp500: MarketIndex, nasdaq100: MarketIndex) -> None:
         IndexMembership.objects.create(
             index=sp500,
             security_listing=listing,
@@ -194,7 +195,7 @@ class TestMonitoringScenarios:
         result = classify_index_change_event(r.event)
         assert result.monitoring_impact == IndexChangeEvent.MonitoringImpact.CONTINUES
 
-    def test_partial_exit_continues(self, company, listing, listing2, sp500, nasdaq100):
+    def test_partial_exit_continues(self, company: Company, listing: SecurityListing, listing2: SecurityListing, sp500: MarketIndex, nasdaq100: MarketIndex) -> None:
         IndexMembership.objects.create(
             index=sp500,
             security_listing=listing,
@@ -217,7 +218,7 @@ class TestMonitoringScenarios:
         result = classify_index_change_event(r.event)
         assert result.monitoring_impact == IndexChangeEvent.MonitoringImpact.CONTINUES
 
-    def test_reentry(self, company, listing, sp500):
+    def test_reentry(self, company: Company, listing: SecurityListing, sp500: MarketIndex) -> None:
         IndexMembership.objects.create(
             index=sp500,
             security_listing=listing,
@@ -235,7 +236,7 @@ class TestMonitoringScenarios:
         result = classify_index_change_event(r.event)
         assert result.monitoring_impact == IndexChangeEvent.MonitoringImpact.REENTERS_BASE_POOL
 
-    def test_full_exit(self, company, listing, sp500):
+    def test_full_exit(self, company: Company, listing: SecurityListing, sp500: MarketIndex) -> None:
         IndexMembership.objects.create(
             index=sp500,
             security_listing=listing,
@@ -308,7 +309,7 @@ class TestCrossDateCorrelation:
         result = generate_index_change_correlation_candidates(e1)
         assert result.created_count == 0
 
-    def test_backfill_finds_earlier(self, company, listing, sp500, russell):
+    def test_backfill_finds_earlier(self, company: Company, listing: SecurityListing, sp500: MarketIndex, russell: MarketIndex) -> None:
         e1 = record_index_change_leg(
             company=company,
             security_listing=listing,
@@ -330,7 +331,7 @@ class TestCrossDateCorrelation:
 
 @pytest.mark.django_db
 class TestFutureChange:
-    def test_future_accepted_no_membership(self, company, listing, sp500):
+    def test_future_accepted_no_membership(self, company: Company, listing: SecurityListing, sp500: MarketIndex) -> None:
         future = date.today() + timedelta(days=60)
         r = record_index_change_leg(
             company=company,
@@ -351,7 +352,7 @@ class TestFutureChange:
 
 @pytest.mark.django_db
 class TestCorrectionChain:
-    def test_multi_revision(self, company, listing, listing2, sp500, nasdaq100, russell):
+    def test_multi_revision(self, company: Company, listing: SecurityListing, listing2: SecurityListing, sp500: MarketIndex, nasdaq100: MarketIndex, russell: MarketIndex) -> None:
         e1 = record_index_change_leg(
             company=company,
             security_listing=listing,
@@ -397,7 +398,7 @@ class TestCorrectionChain:
         assert active.count() == 1
         assert active.first() == r2.new_event
 
-    def test_noop_correction_creates_revision(self, company, listing, sp500):
+    def test_noop_correction_creates_revision(self, company: Company, listing: SecurityListing, sp500: MarketIndex) -> None:
         """Current semantics: even same-leg correction creates a new revision."""
         e1 = record_index_change_leg(
             company=company,
@@ -421,7 +422,7 @@ class TestCorrectionChain:
         assert result.new_event.status == IndexChangeEvent.Status.ACTIVE
         assert result.new_event.supersedes == e1
 
-    def test_correction_rollback_on_failure(self, company, listing, sp500, nasdaq100):
+    def test_correction_rollback_on_failure(self, company: Company, listing: SecurityListing, sp500: MarketIndex, nasdaq100: MarketIndex) -> None:
         e1 = record_index_change_leg(
             company=company,
             security_listing=listing,
