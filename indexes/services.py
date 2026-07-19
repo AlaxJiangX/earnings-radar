@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import datetime
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, cast
 from uuid import UUID as uuid_UUID
 from uuid import uuid4
