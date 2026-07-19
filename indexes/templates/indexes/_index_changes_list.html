@@ -1,0 +1,101 @@
+{% load static %}
+<div id="change-list">
+  {% if not has_results %}
+    <div class="empty-state">
+      {% if not filters.include_cancelled_corrected and not filters.displacement and not filters.index and not filters.action and not filters.from_date and not filters.to_date %}
+        <p>No index changes recorded yet.</p>
+      {% else %}
+        <p>No changes match your filters.</p>
+      {% endif %}
+    </div>
+  {% else %}
+    <table class="change-table">
+      <thead>
+        <tr>
+          <th>Effective</th>
+          <th>Announced</th>
+          <th>Company</th>
+          <th>Changes</th>
+          <th>Displacement</th>
+          <th>Impact</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in events %}
+          <tr class="event-row">
+            <td data-label="Effective">
+              {{ event.effective_date|date:"Y-m-d" }}
+              {% if event.effective_date > today %}
+                <span class="badge upcoming">Upcoming</span>
+              {% endif %}
+            </td>
+            <td data-label="Announced">
+              {% for leg in event.legs.all %}
+                {% if leg.announcement_date %}
+                  {{ leg.index.code }}: {{ leg.announcement_date|date:"Y-m-d" }}{% if not forloop.last %}<br>{% endif %}
+                {% endif %}
+              {% empty %}
+                &mdash;
+              {% endfor %}
+            </td>
+            <td data-label="Company">{{ event.company.display_name }}</td>
+            <td data-label="Changes">
+              {% for leg in event.legs.all %}
+                <span class="leg-entry">
+                  {{ leg.index.code }}:
+                  <span class="badge {% if leg.action == 'added' %}added{% else %}removed{% endif %}">
+                    {{ leg.get_action_display }}
+                  </span>
+                </span>
+                {% if not forloop.last %}<br>{% endif %}
+              {% endfor %}
+            </td>
+            <td data-label="Displacement">
+              {% if event.displacement != 'none' %}
+                <span class="badge displacement {{ event.displacement }}">{{ event.get_displacement_display }}</span>
+              {% else %}
+                &mdash;
+              {% endif %}
+            </td>
+            <td data-label="Impact">
+              {% if event.monitoring_impact != 'continues' %}
+                <span class="badge impact {{ event.monitoring_impact }}">{{ event.get_monitoring_impact_display }}</span>
+              {% else %}
+                &mdash;
+              {% endif %}
+            </td>
+            <td data-label="Status">
+              {% if event.status == 'cancelled' %}
+                <span class="badge cancelled">Cancelled</span>
+              {% elif event.status == 'corrected' %}
+                <span class="badge corrected">Corrected</span>
+              {% endif %}
+              {% if event.correlations_as_earlier.all or event.correlations_as_later.all %}
+                <div class="correlation-info">
+                  {% for corr in event.correlations_as_earlier.all %}
+                    {% if corr.status == 'confirmed' %}
+                      <span class="correlation-note">
+                        Related: {{ corr.later_event.effective_date|date:"Y-m-d" }}
+                        {% if corr.displacement %} &mdash; {{ corr.get_displacement_display }}{% endif %}
+                      </span>
+                    {% endif %}
+                  {% endfor %}
+                  {% for corr in event.correlations_as_later.all %}
+                    {% if corr.status == 'confirmed' %}
+                      <span class="correlation-note">
+                        Related: {{ corr.earlier_event.effective_date|date:"Y-m-d" }}
+                        {% if corr.displacement %} &mdash; {{ corr.get_displacement_display }}{% endif %}
+                      </span>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% include "indexes/includes/_pagination.html" %}
+  {% endif %}
+</div>
