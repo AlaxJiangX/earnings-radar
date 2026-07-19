@@ -313,14 +313,12 @@ class IndexChangeCorrelation(models.Model):
     displacement = models.CharField(
         max_length=16,
         choices=IndexChangeEvent.Displacement.choices,
-        null=True,
         blank=True,
     )
 
     monitoring_impact = models.CharField(
         max_length=20,
         choices=IndexChangeEvent.MonitoringImpact.choices,
-        null=True,
         blank=True,
     )
 
