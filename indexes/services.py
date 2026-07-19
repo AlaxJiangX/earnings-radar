@@ -21,8 +21,14 @@ from audit.services import (
 from audit.services.source_evidence import (
     resolve_source_evidence_reference,
 )
-from companies.models import SecurityListing
-from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership, MarketIndex
+from companies.models import Company, SecurityListing
+from indexes.models import (
+    NORMATIVE_MEMBERSHIP_STATUSES,
+    IndexChangeEvent,
+    IndexChangeLeg,
+    IndexMembership,
+    MarketIndex,
+)
 
 if TYPE_CHECKING:
     from accounts.models import User
@@ -1662,3 +1668,228 @@ def activate_due_memberships(
         data_changes=tuple(data_changes),
         audit_records=tuple(audit_records),
     )
+
+
+# ---------------------------------------------------------------------------
+#  Stage 3.3 Step 2 — Atomic Index Change Recording Service
+# ---------------------------------------------------------------------------
+
+
+class IndexChangeIntegrityError(RuntimeError):
+    """Raised when a canonical event identity or metadata conflict is detected."""
+
+
+class InvalidIndexChangeInput(ValueError):
+    """Raised when service-level validation fails before persistence."""
+
+
+@dataclass(frozen=True, slots=True)
+class IndexChangeWriteResult:
+    event: IndexChangeEvent  # noqa: F821
+    leg: IndexChangeLeg  # noqa: F821
+    event_created: bool
+    leg_created: bool
+
+
+def record_index_change_leg(
+    *,
+    company: Company,  # noqa: F821
+    security_listing: SecurityListing,
+    index: MarketIndex,
+    action: str,
+    effective_date: date,
+    announcement_date: date | None = None,
+    detected_at: datetime | None = None,
+    membership: IndexMembership | None = None,
+    source_evidence: SourceEvidence | None = None,
+) -> IndexChangeWriteResult:
+    """Record an atomic ADDED or REMOVED index change leg.
+
+    The canonical event is found or created by (company, effective_date).
+    If an event already exists for the same company and effective_date,
+    the leg is added to the existing event.
+
+    Idempotency:  same (event, index, security_listing, action) does not
+    create a duplicate leg; same event metadata does not error.
+    Conflicting event metadata raises IndexChangeIntegrityError.
+    """
+    from companies.models import Company
+
+    _validate_action(action)
+    _validate_effective_date(effective_date)
+    _validate_leg_inputs(security_listing, index, Company)
+
+    if membership is not None:
+        _validate_membership_consistency(membership, security_listing, index)
+
+    resolved_detected_at = detected_at or timezone.now()
+
+    with transaction.atomic():
+        event, event_created = _resolve_canonical_event(
+            company=company,
+            effective_date=effective_date,
+            announcement_date=announcement_date,
+            source_evidence=source_evidence,
+        )
+
+        _validate_leg_company_consistency(event, security_listing, Company)
+        _validate_leg_date_consistency(event, effective_date)
+
+        leg, leg_created = _resolve_canonical_leg(
+            event=event,
+            index=index,
+            security_listing=security_listing,
+            action=action,
+            effective_date=effective_date,
+            detected_at=resolved_detected_at,
+            membership=membership,
+            source_evidence=source_evidence,
+        )
+
+        return IndexChangeWriteResult(
+            event=event,
+            leg=leg,
+            event_created=event_created,
+            leg_created=leg_created,
+        )
+
+
+# ---------------------------------------------------------------------------
+#  Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_action(action: str) -> None:
+    if action not in ("added", "removed"):
+        raise InvalidIndexChangeInput(f"action must be 'added' or 'removed', got {action!r}.")
+
+
+def _validate_effective_date(effective_date: date) -> None:
+    if effective_date > date.today():
+        raise InvalidIndexChangeInput(f"effective_date {effective_date} is in the future.")
+
+
+def _validate_leg_inputs(
+    security_listing: SecurityListing,
+    index: MarketIndex,
+    Company: type,
+) -> None:
+    if not isinstance(security_listing, SecurityListing):
+        raise InvalidIndexChangeInput("security_listing must be a SecurityListing instance.")
+    if not isinstance(index, MarketIndex):
+        raise InvalidIndexChangeInput("index must be a MarketIndex instance.")
+
+
+def _validate_membership_consistency(
+    membership: IndexMembership,
+    security_listing: SecurityListing,
+    index: MarketIndex,
+) -> None:
+    if membership.security_listing_id != security_listing.pk:
+        raise InvalidIndexChangeInput(
+            "Membership security_listing does not match the leg security_listing."
+        )
+    if membership.index_id != index.pk:
+        raise InvalidIndexChangeInput("Membership index does not match the leg index.")
+
+
+def _resolve_canonical_event(
+    *,
+    company: Company,  # noqa: F821
+    effective_date: date,
+    announcement_date: date | None,
+    source_evidence: SourceEvidence | None,
+) -> tuple[IndexChangeEvent, bool]:  # noqa: F821
+    from indexes.models import IndexChangeEvent
+
+    if announcement_date is not None and announcement_date > effective_date:
+        raise InvalidIndexChangeInput(
+            f"announcement_date {announcement_date} is after "
+            f"effective_date {effective_date} for a normal (non-correction) event."
+        )
+
+    event, created = IndexChangeEvent.objects.get_or_create(
+        company=company,
+        effective_date=effective_date,
+        defaults={
+            "announcement_date": announcement_date,
+            "source_evidence": source_evidence,
+        },
+    )
+
+    if not created:
+        _check_event_metadata(event, announcement_date, source_evidence)
+
+    return event, created
+
+
+def _check_event_metadata(
+    event: IndexChangeEvent,  # noqa: F821
+    announcement_date: date | None,
+    source_evidence: SourceEvidence | None,
+) -> None:
+    if announcement_date is not None and event.announcement_date is not None:
+        if announcement_date != event.announcement_date:
+            raise IndexChangeIntegrityError(
+                f"Existing event {event.pk} has announcement_date "
+                f"{event.announcement_date}; cannot replay with "
+                f"{announcement_date}."
+            )
+    if source_evidence is not None and event.source_evidence is not None:
+        if source_evidence.pk != event.source_evidence_id:
+            raise IndexChangeIntegrityError(
+                f"Existing event {event.pk} has different source_evidence; "
+                "cannot replay with conflicting provenance."
+            )
+
+
+def _validate_leg_company_consistency(
+    event: IndexChangeEvent,  # noqa: F821
+    security_listing: SecurityListing,
+    Company: type,
+) -> None:
+    if security_listing.company_id != event.company_id:
+        raise InvalidIndexChangeInput(
+            f"security_listing company {security_listing.company_id} "
+            f"does not match event company {event.company_id}."
+        )
+
+
+def _validate_leg_date_consistency(
+    event: IndexChangeEvent,  # noqa: F821
+    effective_date: date,
+) -> None:
+    if effective_date != event.effective_date:
+        raise InvalidIndexChangeInput(
+            f"leg effective_date {effective_date} does not match "
+            f"event effective_date {event.effective_date}."
+        )
+
+
+def _resolve_canonical_leg(
+    *,
+    event: IndexChangeEvent,  # noqa: F821
+    index: MarketIndex,
+    security_listing: SecurityListing,
+    action: str,
+    effective_date: date,
+    detected_at: datetime,
+    membership: IndexMembership | None,
+    source_evidence: SourceEvidence | None,
+) -> tuple[IndexChangeLeg, bool]:  # noqa: F821
+    from indexes.models import IndexChangeLeg
+
+    leg, created = IndexChangeLeg.objects.get_or_create(
+        event=event,
+        index=index,
+        security_listing=security_listing,
+        action=action,
+        defaults={
+            "effective_date": effective_date,
+            "detected_at": detected_at,
+            "membership": membership,
+            "source_evidence": source_evidence,
+        },
+    )
+
+    return leg, created
