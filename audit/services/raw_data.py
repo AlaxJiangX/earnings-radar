@@ -11,6 +11,7 @@ from django.utils import timezone
 from audit.models import RawDataObservation, RawDataRecord, SyncRun
 from audit.security import (
     AuditSecurityError,
+    ProviderRequestContextDescriptor,
     build_safe_request_descriptor,
     ensure_payload_has_no_credentials,
     sanitize_error_summary,
@@ -71,6 +72,7 @@ def record_raw_data_observation(
     http_status: int | None = None,
     content_type: str = "",
     encoding: str = "",
+    request_descriptor: ProviderRequestContextDescriptor | None = None,
 ) -> RawDataIngestResult:
     if not isinstance(payload, bytes):
         raise TypeError("Raw payload must be bytes.")
@@ -90,11 +92,22 @@ def record_raw_data_observation(
         ensure_payload_has_no_credentials(payload)
     except AuditSecurityError as error:
         raise InvalidRawDataRequest(str(error)) from None
-    request_fingerprint = build_request_fingerprint(
-        method=request_method,
-        source_url=source_url,
-        request_identity=request_identity,
-    )
+    if request_descriptor is None:
+        request_fingerprint = build_request_fingerprint(
+            method=request_method,
+            source_url=source_url,
+            request_identity=request_identity,
+        )
+    else:
+        if stored_url != request_descriptor.source_url.stored:
+            raise InvalidRawDataRequest(
+                "Raw data source URL does not match the trusted request descriptor."
+            )
+        if request_method.strip().upper() != request_descriptor.method:
+            raise InvalidRawDataRequest(
+                "Raw data method does not match the trusted request descriptor."
+            )
+        request_fingerprint = request_descriptor.fingerprint
     content_hash = hashlib.sha256(payload).hexdigest()
 
     with transaction.atomic():

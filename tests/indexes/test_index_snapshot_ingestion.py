@@ -66,13 +66,17 @@ def index_source(db: object) -> DataSource:
 def _request(
     *,
     capability: ProviderCapability = ProviderCapability.INDEX_CONSTITUENTS,
+    method: str = "GET",
+    source_url: str = "https://fixture-index.test/SP500/constituents?date=2026-07-15",
+    request_identity: dict[str, object] | None = None,
 ) -> ProviderRequest:
     return ProviderRequest(
         capability=capability,
         scope={"index_code": "SP500"},
         request_started_at=FIXTURE_REQUEST_STARTED_AT,
-        source_url="https://fixture-index.test/SP500/constituents?date=2026-07-15",
-        request_identity={"index_code": "SP500"},
+        source_url=source_url,
+        method=method,
+        request_identity=request_identity or {"index_code": "SP500"},
     )
 
 
@@ -156,6 +160,45 @@ def test_same_idempotency_key_replays_without_fetching_or_duplicate_history(
     assert SyncRun.objects.count() == 1
     assert RawDataRecord.objects.count() == 1
     assert RawDataObservation.objects.count() == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "changed_request",
+    (
+        _request(source_url="https://fixture-index.test/SP500/other?date=2026-07-15"),
+        _request(method="POST"),
+        _request(request_identity={"index_code": "SP500", "format": "csv"}),
+    ),
+)
+def test_same_idempotency_key_rejects_changed_request_context_before_fetch(
+    index_source: DataSource,
+    changed_request: ProviderRequest,
+) -> None:
+    provider = _provider()
+    ingest_index_constituent_snapshot(
+        source=index_source,
+        provider=provider,
+        request=_request(),
+        parser=parse_index_constituent_snapshot,
+        idempotency_key="SP500:request-context",
+        parser_version=PARSER_VERSION,
+        code_version="test-v1",
+    )
+
+    with pytest.raises(IndexSnapshotIngestionIntegrityError, match="request context"):
+        ingest_index_constituent_snapshot(
+            source=index_source,
+            provider=provider,
+            request=changed_request,
+            parser=parse_index_constituent_snapshot,
+            idempotency_key="SP500:request-context",
+            parser_version=PARSER_VERSION,
+            code_version="test-v1",
+        )
+
+    assert provider.fetch_count == 1
+    assert SyncRun.objects.count() == 1
 
 
 @pytest.mark.django_db

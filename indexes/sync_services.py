@@ -7,6 +7,7 @@ from typing import Protocol
 from django.db import transaction
 
 from audit.models import DataSource, RawDataObservation, RawDataRecord, SyncRun
+from audit.security import ProviderRequestContextDescriptor
 from audit.services import (
     mark_raw_data_parse_failed,
     mark_raw_data_parsed,
@@ -107,6 +108,7 @@ def ingest_index_constituent_snapshot(
             "Index snapshot ingestion requires the index_constituents capability."
         )
     index_code = _request_index_code(request)
+    request_descriptor = provider.describe_request(request)
 
     start_result = start_sync_run_with_result(
         job_type=INDEX_SNAPSHOT_JOB_TYPE,
@@ -126,6 +128,7 @@ def ingest_index_constituent_snapshot(
             parser_version=normalized_parser_version,
             code_version=normalized_code_version,
             index_code=index_code,
+            request_descriptor=request_descriptor,
         )
 
     try:
@@ -133,22 +136,23 @@ def ingest_index_constituent_snapshot(
         with transaction.atomic():
             ingest_result = record_raw_data_observation(
                 sync_run=sync_run,
-                source_url=provider_result.source_url,
+                source_url=request_descriptor.source_url.stored,
                 payload=provider_result.raw_content,
-                request_method=provider_result.request_method,
-                request_identity=provider_result.request_identity,
+                request_method=request_descriptor.method,
+                request_identity=request_descriptor.identity,
                 fetched_at=provider_result.fetched_at,
                 observed_at=provider_result.fetched_at,
                 http_status=provider_result.http_status,
                 content_type=provider_result.content_type,
                 encoding="",
+                request_descriptor=request_descriptor,
             )
             raw_data_record = ingest_result.record
             update_sync_run_counts(sync_run.pk, fetched_delta=1)
 
-        if raw_data_record.request_fingerprint != provider_result.request_fingerprint:
+        if raw_data_record.request_fingerprint != request_descriptor.fingerprint:
             raise IndexSnapshotIngestionIntegrityError(
-                "Persisted request fingerprint does not match the Provider result."
+                "Persisted request fingerprint does not match the trusted request descriptor."
             )
 
         try:
@@ -249,6 +253,7 @@ def _replay_completed_run(
     parser_version: str,
     code_version: str,
     index_code: str,
+    request_descriptor: ProviderRequestContextDescriptor,
 ) -> IndexSnapshotIngestionResult:
     if sync_run.status == SyncRun.Status.RUNNING:
         raise IndexSnapshotSyncAlreadyRunning(
@@ -275,6 +280,10 @@ def _replay_completed_run(
             "A completed index snapshot SyncRun must have exactly one raw observation."
         )
     raw_data_record = observations[0].raw_data_record
+    if raw_data_record.request_fingerprint != request_descriptor.fingerprint:
+        raise IndexSnapshotIngestionIntegrityError(
+            "The existing SyncRun request context does not match this replay."
+        )
     if hashlib.sha256(bytes(raw_data_record.payload)).hexdigest() != raw_data_record.content_hash:
         raise IndexSnapshotIngestionIntegrityError(
             "The completed SyncRun raw record has an inconsistent content hash."

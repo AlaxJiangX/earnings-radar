@@ -11,6 +11,8 @@ from urllib.parse import SplitResult, parse_qsl, unquote, urlencode, urlsplit, u
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 
+from audit.constants import PROVIDER_CAPABILITY_VALUES, PROVIDER_REQUEST_DESCRIPTOR_VERSION
+
 REDACTED_VALUE = "[REDACTED]"
 
 _URL_VALIDATOR = URLValidator(schemes=("http", "https"))
@@ -100,6 +102,19 @@ class SafeRequestDescriptor:
     method: str
     source_url: SanitizedUrl
     identity: object
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderRequestContextDescriptor:
+    """Credential-free, canonical identity for one Provider request context."""
+
+    descriptor_version: str
+    capability: str
+    scope: dict[str, object]
+    method: str
+    source_url: SanitizedUrl
+    identity: dict[str, object]
     fingerprint: str
 
 
@@ -239,6 +254,71 @@ def build_safe_request_descriptor(
     except (TypeError, ValueError, OverflowError) as error:
         raise InvalidAuditValue("Request identity must contain JSON-compatible data.") from error
     return SafeRequestDescriptor(
+        method=normalized_method,
+        source_url=sanitized_url,
+        identity=normalized_identity,
+        fingerprint=hashlib.sha256(serialized).hexdigest(),
+    )
+
+
+def build_provider_request_context_descriptor(
+    *,
+    capability: str,
+    scope: Mapping[str, object],
+    method: str,
+    source_url: str,
+    request_identity: Mapping[str, object] | None = None,
+) -> ProviderRequestContextDescriptor:
+    """Build the only persisted identity for a Provider request.
+
+    ``source_url`` may contain transport-only credential query values in
+    memory.  Their values are replaced before the canonical descriptor is
+    serialized.  ``request_identity`` is stricter: credential-like keys or
+    values are rejected because transport authentication is never business
+    request identity.
+    """
+
+    normalized_capability = capability.strip()
+    if normalized_capability not in PROVIDER_CAPABILITY_VALUES:
+        raise InvalidAuditValue("Provider capability must use a supported value.")
+    normalized_method = method.strip().upper()
+    if not normalized_method:
+        raise InvalidAuditValue("Request method must not be empty.")
+    sanitized_url = sanitize_url(source_url)
+    normalized_scope = normalize_json_without_credentials(
+        dict(scope),
+        value_name="Provider scope",
+    )
+    normalized_identity = normalize_json_without_credentials(
+        dict(request_identity or {}),
+        value_name="Provider request identity",
+    )
+    if not isinstance(normalized_scope, dict) or not isinstance(normalized_identity, dict):
+        raise InvalidAuditValue("Provider scope and request identity must be JSON objects.")
+    descriptor = {
+        "capability": normalized_capability,
+        "descriptor_version": PROVIDER_REQUEST_DESCRIPTOR_VERSION,
+        "identity": normalized_identity,
+        "method": normalized_method,
+        "scope": normalized_scope,
+        "url": sanitized_url.canonical,
+    }
+    try:
+        serialized = json.dumps(
+            descriptor,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    except (TypeError, ValueError, OverflowError) as error:
+        raise InvalidAuditValue(
+            "Provider request context must contain JSON-compatible data."
+        ) from error
+    return ProviderRequestContextDescriptor(
+        descriptor_version=PROVIDER_REQUEST_DESCRIPTOR_VERSION,
+        capability=normalized_capability,
+        scope=normalized_scope,
         method=normalized_method,
         source_url=sanitized_url,
         identity=normalized_identity,

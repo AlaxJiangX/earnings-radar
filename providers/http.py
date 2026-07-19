@@ -10,7 +10,7 @@ from typing import Protocol, cast
 from audit.constants import RAW_DATA_PAYLOAD_DB_LIMIT_BYTES
 from audit.security import (
     AuditSecurityError,
-    build_safe_request_descriptor,
+    build_provider_request_context_descriptor,
     ensure_payload_has_no_credentials,
     normalize_json_without_credentials,
 )
@@ -171,13 +171,12 @@ class ProviderHttpClient:
         }
         transport_headers = {**supplied_headers, "User-Agent": self.config.user_agent}
         try:
-            descriptor = build_safe_request_descriptor(
+            descriptor = build_provider_request_context_descriptor(
+                capability=request.capability.value,
+                scope=request.scope,
                 method=request.method,
                 source_url=request.source_url,
-                request_identity={
-                    "headers": supplied_headers,
-                    "request": dict(request.request_identity),
-                },
+                request_identity=request.request_identity,
             )
             normalized_metadata = normalize_json_without_credentials(
                 dict(metadata or {}),
@@ -185,8 +184,8 @@ class ProviderHttpClient:
             )
         except AuditSecurityError as error:
             raise ProviderValidationError(str(error)) from None
-        if not isinstance(descriptor.identity, dict) or not isinstance(normalized_metadata, dict):
-            raise ProviderValidationError("Provider request identity and metadata must be objects.")
+        if not isinstance(normalized_metadata, dict):
+            raise ProviderValidationError("Provider metadata must be an object.")
 
         transport_request = TransportRequest(
             method=descriptor.method,
@@ -195,7 +194,7 @@ class ProviderHttpClient:
             timeouts=self.config.timeouts,
             max_response_bytes=self.config.max_response_bytes,
         )
-        safe_identity = cast(dict[str, object], descriptor.identity)
+        safe_identity = descriptor.identity
         safe_metadata = cast(dict[str, object], normalized_metadata)
 
         for attempt_number in range(1, self.config.retry_policy.max_attempts + 1):
