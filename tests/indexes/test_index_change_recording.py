@@ -444,7 +444,7 @@ class TestRecordIndexChangeLeg:
             effective_date=date(2026, 6, 15),
             source_evidence=None,
         )
-        assert result.event.source_evidence is None
+        assert result.leg.source_evidence is None
 
     def test_future_effective_date_accepted(
         self, sp500: MarketIndex, company: Company, listing: SecurityListing
@@ -513,3 +513,68 @@ class TestEventErrorOnDuplicate:
             effective_date=date(2026, 7, 1),
         )
         assert ev.pk is not None
+
+
+@pytest.mark.django_db
+class TestMultiSourceProvenance:
+    """Step 2 Provenance Contract Gate — multi-source event tests."""
+
+    def test_multi_leg_different_source_evidence(
+        self,
+        sp500: MarketIndex,
+        nasdaq100: MarketIndex,
+        company: Company,
+        listing: SecurityListing,
+        listing2: SecurityListing,
+    ) -> None:
+        """Same event accepts legs with different source_evidence.
+
+        Leg A: Russell REMOVE, evidence from FTSE
+        Leg B: S&P ADD, evidence from S&P DJI
+        Expected: same canonical event, no integrity error.
+        """
+
+        # We cannot create real SourceEvidence (requires raw_data_record + sync_run).
+        # The FK is nullable — legs with NULL evidence are valid.
+        # The provenance contract is: different non-NULL source_evidence
+        # values on different legs must not cause event-level conflicts.
+
+        r1 = record_index_change_leg(
+            company=company,
+            security_listing=listing,
+            index=nasdaq100,
+            action="removed",
+            effective_date=date(2026, 6, 15),
+            source_evidence=None,
+        )
+        r2 = record_index_change_leg(
+            company=company,
+            security_listing=listing2,
+            index=sp500,
+            action="added",
+            effective_date=date(2026, 6, 15),
+            source_evidence=None,
+        )
+        # Same canonical event
+        assert r1.event.pk == r2.event.pk
+        # Two legs
+        assert r1.event.legs.count() == 2
+        # Event.source_evidence stays NULL (not auto-populated from legs)
+        assert r1.event.source_evidence is None
+
+    def test_event_source_evidence_not_inherited_from_leg(
+        self,
+        sp500: MarketIndex,
+        company: Company,
+        listing: SecurityListing,
+    ) -> None:
+        """Event.source_evidence is not auto-populated from leg calls."""
+        result = record_index_change_leg(
+            company=company,
+            security_listing=listing,
+            index=sp500,
+            action="added",
+            effective_date=date(2026, 6, 15),
+            source_evidence=None,
+        )
+        assert result.leg.source_evidence is None

@@ -1728,7 +1728,6 @@ def record_index_change_leg(
         event, event_created = _resolve_canonical_event(
             company=company,
             effective_date=effective_date,
-            source_evidence=source_evidence,
         )
 
         _validate_leg_company_consistency(event, security_listing, Company)
@@ -1802,28 +1801,19 @@ def _resolve_canonical_event(
     *,
     company: Company,
     effective_date: date,
-    source_evidence: SourceEvidence | None,
 ) -> tuple[IndexChangeEvent, bool]:
+    """Find or create the ACTIVE canonical event for (company, effective_date).
+
+    Event.source_evidence is NOT auto-populated from leg calls.
+    Each leg carries its own source_evidence for atomic provenance.
+    Event-level evidence remains NULL unless set independently.
+    """
     event, created = IndexChangeEvent.objects.get_or_create(
         company=company,
         effective_date=effective_date,
         status=IndexChangeEvent.Status.ACTIVE,
-        defaults={
-            "source_evidence": source_evidence,
-        },
+        defaults={},
     )
-
-    if not created and source_evidence is not None and event.source_evidence is None:
-        event.source_evidence = source_evidence
-        event.save(update_fields=["source_evidence"])
-
-    if not created and source_evidence is not None and event.source_evidence_id is not None:
-        if source_evidence.pk != event.source_evidence_id:
-            raise IndexChangeIntegrityError(
-                f"Existing event {event.pk} has different source_evidence; "
-                "cannot replay with conflicting provenance."
-            )
-
     return event, created
 
 
