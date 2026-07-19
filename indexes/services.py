@@ -2269,3 +2269,129 @@ def _compute_correlation_monitoring(
         return "exits_base_pool"
 
     return "continues"
+
+
+# ---------------------------------------------------------------------------
+#  Stage 3.3 Step 5 — Correction / Cancellation Service
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EventCancellationResult:
+    event: IndexChangeEvent
+    status_changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EventCorrectionLegSpec:
+    security_listing: SecurityListing
+    index: MarketIndex
+    action: str  # "added" or "removed"
+    announcement_date: date | None = None
+    membership: IndexMembership | None = None
+    source_evidence: SourceEvidence | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EventCorrectionResult:
+    old_event: IndexChangeEvent
+    new_event: IndexChangeEvent
+    new_legs: tuple[IndexChangeLeg, ...]
+
+
+def cancel_index_change_event(
+    event: IndexChangeEvent,
+) -> EventCancellationResult:
+    """Cancel an ACTIVE IndexChangeEvent.
+
+    Preserves all legs, provenance, classification, and correlations.
+    CANCELLED events cannot be re-cancelled (idempotent no-op).
+    CORRECTED events cannot be cancelled.
+    """
+    if event.status == IndexChangeEvent.Status.CANCELLED:
+        return EventCancellationResult(event=event, status_changed=False)
+
+    if event.status == IndexChangeEvent.Status.CORRECTED:
+        raise InvalidIndexChangeInput(f"Cannot cancel a CORRECTED event {event.pk}.")
+
+    if event.status != IndexChangeEvent.Status.ACTIVE:
+        raise InvalidIndexChangeInput(
+            f"Only ACTIVE events can be cancelled, got status={event.status}."
+        )
+
+    event.status = IndexChangeEvent.Status.CANCELLED
+    event.save(update_fields=["status"])
+    return EventCancellationResult(event=event, status_changed=True)
+
+
+def correct_index_change_event(
+    old_event: IndexChangeEvent,
+    *,
+    corrected_legs: list[EventCorrectionLegSpec],
+) -> EventCorrectionResult:
+    """Correct an ACTIVE IndexChangeEvent by creating a superseding replacement.
+
+    The old event is marked CORRECTED (preserving all original legs,
+    classification, and provenance).  A new ACTIVE event is created
+    with the same company and effective_date, linked via supersedes.
+    New corrected legs are created on the new event.
+
+    The entire operation runs in a single transaction: if leg creation
+    fails, the old event remains ACTIVE.
+
+    Only the current ACTIVE event can be corrected.  Already-CORRECTED
+    events cannot be re-corrected (correct the current ACTIVE event
+    instead to extend the revision chain).
+    """
+    if old_event.status == IndexChangeEvent.Status.CORRECTED:
+        raise InvalidIndexChangeInput(
+            f"Event {old_event.pk} is already CORRECTED.  "
+            "Correct the current ACTIVE superseding event instead."
+        )
+    if old_event.status == IndexChangeEvent.Status.CANCELLED:
+        raise InvalidIndexChangeInput(f"Cannot correct a CANCELLED event {old_event.pk}.")
+    if old_event.status != IndexChangeEvent.Status.ACTIVE:
+        raise InvalidIndexChangeInput(
+            f"Only ACTIVE events can be corrected, got status={old_event.status}."
+        )
+
+    for spec in corrected_legs:
+        if spec.action not in ("added", "removed"):
+            raise InvalidIndexChangeInput("action must be 'added' or 'removed'.")
+
+    with transaction.atomic():
+        locked = IndexChangeEvent.objects.select_for_update().get(pk=old_event.pk)
+        if locked.status != IndexChangeEvent.Status.ACTIVE:
+            raise InvalidIndexChangeInput(f"Event {old_event.pk} status changed concurrently.")
+
+        locked.status = IndexChangeEvent.Status.CORRECTED
+        locked.save(update_fields=["status"])
+
+        new_event = IndexChangeEvent.objects.create(
+            company=old_event.company,
+            effective_date=old_event.effective_date,
+            supersedes=old_event,
+            status=IndexChangeEvent.Status.ACTIVE,
+            displacement=IndexChangeEvent.Displacement.NONE,
+            monitoring_impact=IndexChangeEvent.MonitoringImpact.CONTINUES,
+        )
+
+        new_legs: list[IndexChangeLeg] = []
+        for spec in corrected_legs:
+            leg = IndexChangeLeg.objects.create(
+                event=new_event,
+                index=spec.index,
+                security_listing=spec.security_listing,
+                action=spec.action,
+                effective_date=new_event.effective_date,
+                announcement_date=spec.announcement_date,
+                membership=spec.membership,
+                source_evidence=spec.source_evidence,
+            )
+            new_legs.append(leg)
+
+        return EventCorrectionResult(
+            old_event=locked,
+            new_event=new_event,
+            new_legs=tuple(new_legs),
+        )
