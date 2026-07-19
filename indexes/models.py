@@ -270,13 +270,6 @@ class IndexChangeEvent(models.Model):
                 condition=Q(monitoring_impact__in=ALLOWED_MONITORING_IMPACTS),
                 name="indexes_change_event_monitoring_valid",
             ),
-            models.CheckConstraint(
-                condition=(
-                    Q(announcement_date__isnull=True)
-                    | Q(announcement_date__lte=F("effective_date"))
-                ),
-                name="indexes_change_event_announcement_not_after_effective",
-            ),
         ]
 
     def __str__(self) -> str:

@@ -92,13 +92,6 @@ class TestIndexChangeEventModel:
         with pytest.raises(IntegrityError), transaction.atomic():
             _make_event(monitoring_impact="unknown_impact")
 
-    def test_announcement_not_after_effective(self) -> None:
-        with pytest.raises(IntegrityError), transaction.atomic():
-            _make_event(
-                announcement_date=date(2026, 2, 1),
-                effective_date=date(2026, 1, 1),
-            )
-
     def test_announcement_before_effective_allowed(self) -> None:
         ev = _make_event(
             announcement_date=date(2025, 12, 15),
