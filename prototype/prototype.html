@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Earnings Radar – 原型</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  body { font-family: 'Inter', -apple-system, sans-serif; background: #f8f9fb; color: #1a1d23; }
+  .tab-btn { padding: 6px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; color: #6b7280; transition: all 0.15s; }
+  .tab-btn:hover { background: #f3f4f6; color: #374151; }
+  .tab-btn.active { background: #1a1d23; color: #fff; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 600; }
+  .status-estimated { background: #fef3c7; color: #92400e; }
+  .status-confirmed { background: #dbeafe; color: #1e40af; }
+  .status-released { background: #d1fae5; color: #065f46; }
+  .status-filed { background: #e0e7ff; color: #3730a3; }
+  .priority-s { background: #fce7f3; color: #9d174d; font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 700; }
+  .priority-a { background: #fef3c7; color: #92400e; font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 700; }
+  .change-add { color: #059669; }
+  .change-remove { color: #dc2626; }
+  .change-offset { color: #7c3aed; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 12px; border-bottom: 1px solid #e5e7eb; }
+  td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid #f3f4f6; }
+  tr:hover td { background: #f9fafb; }
+</style>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        brand: { 50:'#f0f4ff',100:'#dbe4ff',200:'#bac8ff',300:'#91a7ff',400:'#748ffc',500:'#5c7cfa',600:'#4c6ef5',700:'#4263eb',800:'#3b5bdb',900:'#364fc7' }
+      }
+    }
+  }
+}
+</script>
+</head>
+<body>
+
+<header style="background:#1a1d23; border-bottom:1px solid #2d3139;">
+  <div style="max-width:1280px; margin:0 auto; padding:0 24px; display:flex; align-items:center; height:52px; gap:32px;">
+    <div style="color:#fff; font-weight:700; font-size:15px; letter-spacing:-0.01em;">Earnings Radar</div>
+    <nav style="display:flex; gap:4px;" id="nav-tabs">
+      <button class="tab-btn active" data-page="home">首页</button>
+      <button class="tab-btn" data-page="calendar">财报日历</button>
+      <button class="tab-btn" data-page="index-changes">指数调整</button>
+      <button class="tab-btn" data-page="company">公司详情</button>
+      <button class="tab-btn" data-page="dashboard">仪表盘</button>
+      <button class="tab-btn" data-page="watchlist">自选股</button>
+    </nav>
+    <div style="margin-left:auto; display:flex; gap:12px; align-items:center;">
+      <input type="text" placeholder="搜索股票代码或公司名…" style="width:220px; padding:5px 12px; border-radius:6px; border:1px solid #3d4148; background:#2d3139; color:#e5e7eb; font-size:12px; outline:none;">
+      <span style="color:#9ca3af; font-size:12px;">user@example.com</span>
+    </div>
+  </div>
+</header>
+
+<!-- ===== HOME ===== -->
+<section class="page active" id="page-home" style="max-width:1280px; margin:0 auto; padding:28px 24px;">
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+    <!-- 今日财报 -->
+    <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:20px;">
+      <h2 style="font-size:14px; font-weight:700; margin-bottom:16px;">📅 今日财报 <span style="color:#9ca3af; font-weight:400; font-size:12px;">7月15日 周二</span></h2>
+      <table>
+        <thead><tr><th>公司</th><th>财季</th><th>时间</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td style="font-weight:600;">NVDA</td><td>Q2 FY2026</td><td>盘后 16:20 ET</td><td><span class="status-badge status-confirmed">已确认</span></td></tr>
+          <tr><td style="font-weight:600;">JPM</td><td>Q2 FY2026</td><td>盘前 07:00 ET</td><td><span class="status-badge status-confirmed">已确认</span></td></tr>
+          <tr><td style="font-weight:600;">TSLA</td><td>Q2 FY2026</td><td>盘后 16:30 ET</td><td><span class="status-badge status-confirmed">已确认</span></td></tr>
+          <tr><td style="font-weight:600;">AAPL</td><td>Q3 FY2026</td><td>盘后 16:30 ET</td><td><span class="status-badge status-estimated">预计</span></td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:12px; text-align:right;"><a href="#" onclick="switchTab('calendar')" style="color:#4c6ef5; font-size:12px; text-decoration:none;">查看全部 →</a></div>
+    </div>
+    <!-- 最近指数调整 -->
+    <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:20px;">
+      <h2 style="font-size:14px; font-weight:700; margin-bottom:16px;">🔄 最近指数调整</h2>
+      <table>
+        <thead><tr><th>公司</th><th>变动</th><th>生效日</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr>
+            <td style="font-weight:600;">PLTR</td>
+            <td><span class="change-offset">Russell 2000 → S&P 500</span></td>
+            <td>7月21日</td>
+            <td><span class="status-badge status-estimated">待生效</span></td>
+          </tr>
+          <tr>
+            <td style="font-weight:600;">WBA</td>
+            <td><span class="change-remove">Dow 30 移除</span></td>
+            <td>7月14日</td>
+            <td><span class="status-badge status-filed">已生效</span></td>
+          </tr>
+          <tr>
+            <td style="font-weight:600;">SMCI</td>
+            <td><span class="change-add">Nasdaq 100 新增</span></td>
+            <td>7月14日</td>
+            <td><span class="status-badge status-filed">已生效</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin-top:12px; text-align:right;"><a href="#" onclick="switchTab('index-changes')" style="color:#4c6ef5; font-size:12px; text-decoration:none;">查看全部 →</a></div>
+    </div>
+    <!-- 自选股动态 -->
+    <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:20px;">
+      <h2 style="font-size:14px; font-weight:700; margin-bottom:16px;">⭐ 自选股动态</h2>
+      <table>
+        <thead><tr><th>公司</th><th>事件</th><th>时间</th><th>关注</th></tr></thead>
+        <tbody>
+          <tr>
+            <td style="font-weight:600;">NVDA</td>
+            <td>Q2 财报将于今日盘后发布</td>
+            <td>16:20 ET</td>
+            <td><span class="priority-s">S 重点</span></td>
+          </tr>
+          <tr>
+            <td style="font-weight:600;">AAPL</td>
+            <td>Q3 财报日期变更为 7月30日</td>
+            <td>7月14日</td>
+            <td><span class="priority-a">A 普通</span></td>
+          </tr>
+          <tr>
+            <td style="font-weight:600;">MSFT</td>
+            <td>10-K 年报已提交 SEC</td>
+            <td>7月13日</td>
+            <td><span class="priority-a">A 普通</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="margin-top:12px; text-align:right;"><a href="#" onclick="switchTab('dashboard')" style="color:#4c6ef5; font-size:12px; text-decoration:none;">查看仪表盘 →</a></div>
+    </div>
+    <!-- 本周预览 -->
+    <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:20px;">
+      <h2 style="font-size:14px; font-weight:700; margin-bottom:16px;">📊 本周重要财报</h2>
+      <table>
+        <thead><tr><th>公司</th><th>日期</th><th>市值</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td style="font-weight:600;">NVDA</td><td>7月15日 周二</td><td>$3.2T</td><td><span class="status-badge status-confirmed">已确认</span></td></tr>
+          <tr><td style="font-weight:600;">JPM</td><td>7月15日 周二</td><td>$680B</td><td><span class="status-badge status-confirmed">已确认</span></td></tr>
+          <tr><td style="font-weight:600;">TSLA</td><td>7月16日 周三</td><td>$820B</td><td><span class="status-badge status-confirmed">已确认</span></td></tr>
+          <tr><td style="font-weight:600;">NFLX</td><td>7月17日 周四</td><td>$320B</td><td><span class="status-badge status-estimated">预计</span></td></tr>
+          <tr><td style="font-weight:600;">ASML</td><td>7月18日 周五</td><td>$380B</td><td><span class="status-badge status-estimated">预计</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ===== CALENDAR ===== -->
+<section class="page" id="page-calendar" style="max-width:1280px; margin:0 auto; padding:28px 24px;">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+    <h2 style="font-size:18px; font-weight:700;">财报日历</h2>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <select style="padding:6px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; background:#fff;">
+        <option>全部时间</option><option>今日</option><option>本周</option><option>未来30天</option>
+      </select>
+      <select style="padding:6px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; background:#fff;">
+        <option>全部状态</option><option>预计</option><option>已确认</option><option>已发布</option>
+      </select>
+      <select style="padding:6px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; background:#fff;">
+        <option>全部指数</option><option>S&P 500</option><option>Nasdaq 100</option><option>Dow 30</option><option>Russell 2000</option>
+      </select>
+    </div>
+  </div>
+  <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; overflow:hidden;">
+    <table>
+      <thead><tr><th>公司</th><th>财季</th><th>发布日期</th><th>时间 (ET)</th><th>盘前/盘后</th><th>状态</th><th>所属指数</th><th>来源</th></tr></thead>
+      <tbody>
+        <tr>
+          <td style="font-weight:600;">NVDA <span style="color:#9ca3af; font-weight:400;">NVIDIA</span></td><td>Q2 FY2026</td><td>7月15日</td><td>16:20</td><td>盘后</td><td><span class="status-badge status-confirmed">已确认</span></td><td>S&P 500, Nasdaq 100</td><td>IR 官方</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">JPM <span style="color:#9ca3af; font-weight:400;">JPMorgan</span></td><td>Q2 FY2026</td><td>7月15日</td><td>07:00</td><td>盘前</td><td><span class="status-badge status-confirmed">已确认</span></td><td>S&P 500, Dow 30</td><td>IR 官方</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">AAPL <span style="color:#9ca3af; font-weight:400;">Apple</span></td><td>Q3 FY2026</td><td>7月30日</td><td>16:30</td><td>盘后</td><td><span class="status-badge status-estimated">预计</span></td><td>S&P 500, Nasdaq 100, Dow 30</td><td>第三方日历</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">AMZN <span style="color:#9ca3af; font-weight:400;">Amazon</span></td><td>Q2 FY2026</td><td>8月1日</td><td>16:00</td><td>盘后</td><td><span class="status-badge status-estimated">预计</span></td><td>S&P 500, Nasdaq 100</td><td>第三方日历</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">GOOGL <span style="color:#9ca3af; font-weight:400;">Alphabet</span></td><td>Q2 FY2026</td><td>7月23日</td><td>16:00</td><td>盘后</td><td><span class="status-badge status-confirmed">已确认</span></td><td>S&P 500, Nasdaq 100</td><td>IR 官方</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">TSLA <span style="color:#9ca3af; font-weight:400;">Tesla</span></td><td>Q2 FY2026</td><td>7月16日</td><td>16:30</td><td>盘后</td><td><span class="status-badge status-confirmed">已确认</span></td><td>S&P 500, Nasdaq 100</td><td>IR 官方</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ===== INDEX CHANGES ===== -->
+<section class="page" id="page-index-changes" style="max-width:1280px; margin:0 auto; padding:28px 24px;">
+  <h2 style="font-size:18px; font-weight:700; margin-bottom:20px;">指数调整中心</h2>
+  <div style="display:flex; gap:8px; margin-bottom:20px;">
+    <button class="tab-btn active">待生效</button>
+    <button class="tab-btn">最近加入</button>
+    <button class="tab-btn">最近移除</button>
+    <button class="tab-btn">指数偏移</button>
+    <button class="tab-btn">自选股变化</button>
+    <button class="tab-btn">历史记录</button>
+  </div>
+  <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; overflow:hidden;">
+    <table>
+      <thead><tr><th>公司</th><th>变动类型</th><th>原指数</th><th>新指数</th><th>公告日</th><th>生效日</th><th>状态</th><th>监控影响</th></tr></thead>
+      <tbody>
+        <tr>
+          <td style="font-weight:600;">PLTR <span style="color:#9ca3af; font-weight:400;">Palantir</span></td>
+          <td><span class="change-offset" style="font-weight:600;">⬆ 指数上移</span></td>
+          <td>Russell 2000</td><td>S&P 500</td><td>7月8日</td><td>7月21日</td><td><span class="status-badge status-estimated">待生效</span></td>
+          <td style="font-size:12px; color:#6b7280;">仍在监控池</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">WBA <span style="color:#9ca3af; font-weight:400;">Walgreens</span></td>
+          <td><span class="change-remove" style="font-weight:600;">已移除</span></td>
+          <td>Dow 30</td><td>—</td><td>7月10日</td><td>7月14日</td><td><span class="status-badge status-filed">已生效</span></td>
+          <td style="font-size:12px; color:#dc2626;">仍在 S&P 500</td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">SMCI <span style="color:#9ca3af; font-weight:400;">Super Micro</span></td>
+          <td><span class="change-add" style="font-weight:600;">已加入</span></td>
+          <td>—</td><td>Nasdaq 100</td><td>7月12日</td><td>7月14日</td><td><span class="status-badge status-filed">已生效</span></td>
+          <td style="font-size:12px; color:#059669;">新入基础池</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ===== COMPANY DETAIL ===== -->
+<section class="page" id="page-company" style="max-width:1280px; margin:0 auto; padding:28px 24px;">
+  <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:24px;">
+    <div style="display:flex; align-items:start; justify-content:space-between; margin-bottom:24px;">
+      <div>
+        <h2 style="font-size:22px; font-weight:700;">NVDA <span style="color:#9ca3af; font-weight:400; font-size:16px;">NVIDIA Corporation</span></h2>
+        <div style="color:#6b7280; font-size:13px; margin-top:4px;">CIK 0001045810 · NASDAQ · 财年截止 1月</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button style="padding:7px 16px; background:#4c6ef5; color:#fff; border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;">⭐ 添加自选股</button>
+        <span style="font-size:11px; color:#6b7280;">|</span>
+        <a href="#" style="color:#4c6ef5; font-size:12px;">IR 页面 ↗</a>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+      <!-- 当前指数归属 -->
+      <div>
+        <h3 style="font-size:13px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:10px;">当前指数归属</h3>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <span style="background:#e0e7ff; color:#3730a3; padding:4px 12px; border-radius:6px; font-size:12px; font-weight:600;">S&P 500</span>
+          <span style="background:#e0e7ff; color:#3730a3; padding:4px 12px; border-radius:6px; font-size:12px; font-weight:600;">Nasdaq 100</span>
+        </div>
+      </div>
+
+      <!-- 下一次财报 -->
+      <div>
+        <h3 style="font-size:13px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:10px;">下一次财报</h3>
+        <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:12px;">
+          <div style="font-weight:700; font-size:15px;">Q2 FY2026</div>
+          <div style="font-size:13px; color:#374151; margin-top:2px;">7月15日 周二 · 盘后 16:20 ET</div>
+          <div style="margin-top:4px;"><span class="status-badge status-confirmed">公司已确认</span></div>
+          <div style="font-size:11px; color:#9ca3af; margin-top:4px;">来源：NVIDIA IR 官方页面</div>
+        </div>
+      </div>
+
+      <!-- 近期 SEC 文件 -->
+      <div>
+        <h3 style="font-size:13px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:10px;">近期 SEC 文件</h3>
+        <table>
+          <thead><tr><th>表单</th><th>提交时间</th><th>报告期</th><th>链接</th></tr></thead>
+          <tbody>
+            <tr><td style="font-weight:600;">8-K</td><td>6月28日</td><td>—</td><td><a href="#" style="color:#4c6ef5; font-size:12px;">查看</a></td></tr>
+            <tr><td style="font-weight:600;">10-Q</td><td>5月29日</td><td>Q1 FY2026</td><td><a href="#" style="color:#4c6ef5; font-size:12px;">查看</a></td></tr>
+            <tr><td style="font-weight:600;">10-K</td><td>2月27日</td><td>FY2026</td><td><a href="#" style="color:#4c6ef5; font-size:12px;">查看</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 指数变更历史 -->
+      <div>
+        <h3 style="font-size:13px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:10px;">指数变更历史</h3>
+        <table>
+          <thead><tr><th>日期</th><th>变动</th><th>详情</th></tr></thead>
+          <tbody>
+            <tr><td>2024年11月</td><td><span class="change-add" style="font-weight:600;">加入</span></td><td>Dow 30 新增</td></tr>
+            <tr><td>2023年6月</td><td><span class="change-offset" style="font-weight:600;">偏移</span></td><td>Russell 2000 → S&P 500 (2019)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== DASHBOARD ===== -->
+<section class="page" id="page-dashboard" style="max-width:1280px; margin:0 auto; padding:28px 24px;">
+  <h2 style="font-size:18px; font-weight:700; margin-bottom:20px;">我的仪表盘</h2>
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+    <!-- 重点自选股 -->
+    <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:20px;">
+      <h3 style="font-size:13px; font-weight:700; color:#9d174d; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">🔴 重点自选股 (3)</h3>
+      <table>
+        <thead><tr><th>公司</th><th>下次财报</th><th>事件</th></tr></thead>
+        <tbody>
+          <tr>
+            <td style="font-weight:600;">NVDA</td><td>7月15日</td>
+            <td><span style="font-size:12px; color:#dc2626; font-weight:600;">今日盘后发财报</span></td>
+          </tr>
+          <tr>
+            <td style="font-weight:600;">PLTR</td><td>8月5日</td>
+            <td><span style="font-size:12px; color:#7c3aed;">指数上移待生效 (7/21)</span></td>
+          </tr>
+          <tr>
+            <td style="font-weight:600;">TSLA</td><td>7月16日</td>
+            <td><span style="font-size:12px; color:#d97706;">明日盘后发财报</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <!-- 普通自选股 -->
+    <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:20px;">
+      <h3 style="font-size:13px; font-weight:700; color:#92400e; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">🟡 普通自选股 (5)</h3>
+      <table>
+        <thead><tr><th>公司</th><th>下次财报</th><th>事件</th></tr></thead>
+        <tbody>
+          <tr><td style="font-weight:600;">AAPL</td><td>7月30日</td><td><span style="font-size:12px; color:#6b7280;">日期变更 (7/14)</span></td></tr>
+          <tr><td style="font-weight:600;">MSFT</td><td>7月22日</td><td><span style="font-size:12px; color:#6b7280;">10-K 已提交</span></td></tr>
+          <tr><td style="font-weight:600;">AMZN</td><td>8月1日</td><td><span style="font-size:12px; color:#9ca3af;">预计</span></td></tr>
+          <tr><td style="font-weight:600;">GOOGL</td><td>7月23日</td><td><span style="font-size:12px; color:#6b7280;">已确认</span></td></tr>
+          <tr><td style="font-weight:600;">META</td><td>7月23日</td><td><span style="font-size:12px; color:#9ca3af;">预计</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <!-- 通知历史 -->
+    <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:20px;">
+      <h3 style="font-size:13px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">📬 最近通知</h3>
+      <table>
+        <thead><tr><th>时间</th><th>公司</th><th>内容</th><th>渠道</th></tr></thead>
+        <tbody>
+          <tr><td style="font-size:12px;">7月14日 09:30</td><td>AAPL</td><td style="font-size:12px;">Q3 财报日期变更：7/30</td><td>📧 邮件</td></tr>
+          <tr><td style="font-size:12px;">7月13日 16:15</td><td>MSFT</td><td style="font-size:12px;">10-K 年报已提交</td><td>🔔 站内</td></tr>
+          <tr><td style="font-size:12px;">7月12日 08:00</td><td>NVDA</td><td style="font-size:12px;">提前1天：明日盘后发财报</td><td>📧 邮件</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:12px; text-align:right;"><a href="#" style="color:#4c6ef5; font-size:12px; text-decoration:none;">查看全部 →</a></div>
+    </div>
+    <!-- 通知设置 -->
+    <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; padding:20px;">
+      <h3 style="font-size:13px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px;">⚙️ 通知设置</h3>
+      <div style="display:flex; flex-direction:column; gap:10px; font-size:13px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" checked style="accent-color:#4c6ef5;"> 提前1天提醒</label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" checked style="accent-color:#4c6ef5;"> 财报日期变化</label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" checked style="accent-color:#4c6ef5;"> 财报发布提醒</label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" checked style="accent-color:#4c6ef5;"> SEC 文件提交</label>
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" checked style="accent-color:#4c6ef5;"> 指数变化</label>
+      </div>
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid #f3f4f6; font-size:12px; color:#6b7280;">
+        时区：<strong>Asia/Shanghai (UTC+8)</strong> &nbsp; <a href="#" style="color:#4c6ef5;">修改</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== WATCHLIST ===== -->
+<section class="page" id="page-watchlist" style="max-width:1280px; margin:0 auto; padding:28px 24px;">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+    <h2 style="font-size:18px; font-weight:700;">自选股管理</h2>
+    <div style="display:flex; gap:8px;">
+      <input type="text" placeholder="添加股票代码…" style="padding:6px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; width:180px;">
+      <button style="padding:6px 16px; background:#4c6ef5; color:#fff; border:none; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;">添加</button>
+    </div>
+  </div>
+  <div style="background:#fff; border-radius:8px; border:1px solid #e5e7eb; overflow:hidden;">
+    <table>
+      <thead><tr><th>公司</th><th>关注级别</th><th>下次财报</th><th>状态</th><th>提醒</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr>
+          <td style="font-weight:600;">NVDA <span style="color:#9ca3af; font-weight:400;">NVIDIA</span></td>
+          <td><span class="priority-s" style="font-size:11px;">S 重点</span></td>
+          <td>7月15日 (今日)</td>
+          <td><span class="status-badge status-confirmed">已确认</span></td>
+          <td><span style="font-size:11px; color:#059669;">已开启</span></td>
+          <td><button style="padding:4px 12px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; background:#fff; cursor:pointer;">编辑</button> <button style="padding:4px 12px; border:1px solid #fecaca; border-radius:4px; font-size:11px; background:#fff; color:#dc2626; cursor:pointer;">移除</button></td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">AAPL <span style="color:#9ca3af; font-weight:400;">Apple</span></td>
+          <td><span class="priority-a" style="font-size:11px;">A 普通</span></td>
+          <td>7月30日</td>
+          <td><span class="status-badge status-estimated">预计</span></td>
+          <td><span style="font-size:11px; color:#059669;">已开启</span></td>
+          <td><button style="padding:4px 12px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; background:#fff; cursor:pointer;">编辑</button> <button style="padding:4px 12px; border:1px solid #fecaca; border-radius:4px; font-size:11px; background:#fff; color:#dc2626; cursor:pointer;">移除</button></td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">TSLA <span style="color:#9ca3af; font-weight:400;">Tesla</span></td>
+          <td><span class="priority-s" style="font-size:11px;">S 重点</span></td>
+          <td>7月16日 (明日)</td>
+          <td><span class="status-badge status-confirmed">已确认</span></td>
+          <td><span style="font-size:11px; color:#059669;">已开启</span></td>
+          <td><button style="padding:4px 12px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; background:#fff; cursor:pointer;">编辑</button> <button style="padding:4px 12px; border:1px solid #fecaca; border-radius:4px; font-size:11px; background:#fff; color:#dc2626; cursor:pointer;">移除</button></td>
+        </tr>
+        <tr>
+          <td style="font-weight:600;">PLTR <span style="color:#9ca3af; font-weight:400;">Palantir</span></td>
+          <td><span class="priority-s" style="font-size:11px;">S 重点</span></td>
+          <td>8月5日</td>
+          <td><span class="status-badge status-estimated">预计</span></td>
+          <td><span style="font-size:11px; color:#059669;">已开启</span></td>
+          <td><button style="padding:4px 12px; border:1px solid #d1d5db; border-radius:4px; font-size:11px; background:#fff; cursor:pointer;">编辑</button> <button style="padding:4px 12px; border:1px solid #fecaca; border-radius:4px; font-size:11px; background:#fff; color:#dc2626; cursor:pointer;">移除</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelector('[data-page="'+name+'"]').classList.add('active');
+  document.getElementById('page-'+name).classList.add('active');
+}
+document.querySelectorAll('#nav-tabs .tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.page));
+});
+// Also handle small filter tabs on index changes page
+document.querySelectorAll('#page-index-changes .tab-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    this.parentElement.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+  });
+});
+</script>
+</body>
+</html>
