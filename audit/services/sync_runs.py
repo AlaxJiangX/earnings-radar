@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 
 from django.db import IntegrityError, transaction
@@ -28,6 +29,12 @@ class InvalidSyncRunTimestamp(ValueError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class SyncRunStartResult:
+    sync_run: SyncRun
+    created: bool
+
+
 def _aware_timestamp(value: datetime | None = None) -> datetime:
     result = value or timezone.now()
     if timezone.is_naive(result):
@@ -45,6 +52,34 @@ def start_sync_run(
     parser_version: str = "",
     started_at: datetime | None = None,
 ) -> SyncRun:
+    return start_sync_run_with_result(
+        job_type=job_type,
+        source=source,
+        scope=scope,
+        idempotency_key=idempotency_key,
+        code_version=code_version,
+        parser_version=parser_version,
+        started_at=started_at,
+    ).sync_run
+
+
+def start_sync_run_with_result(
+    *,
+    job_type: str,
+    source: DataSource,
+    scope: Mapping[str, object] | None,
+    idempotency_key: str,
+    code_version: str = "",
+    parser_version: str = "",
+    started_at: datetime | None = None,
+) -> SyncRunStartResult:
+    """Start a run and report whether this caller created it.
+
+    The ``created`` flag lets orchestration code distinguish ownership from a
+    concurrent/idempotent replay without weakening the database unique
+    constraint.  ``start_sync_run`` remains the compatibility wrapper for
+    callers that only need the run object.
+    """
     normalized_job_type = job_type.strip()
     normalized_key = idempotency_key.strip()
     if not normalized_job_type or not normalized_key:
@@ -63,15 +98,18 @@ def start_sync_run(
     with transaction.atomic():
         try:
             with transaction.atomic():
-                return SyncRun.objects.create(
-                    job_type=normalized_job_type,
-                    source=source,
-                    scope=normalized_scope,
-                    idempotency_key=normalized_key,
-                    started_at=timestamp,
-                    heartbeat_at=timestamp,
-                    code_version=code_version,
-                    parser_version=parser_version,
+                return SyncRunStartResult(
+                    sync_run=SyncRun.objects.create(
+                        job_type=normalized_job_type,
+                        source=source,
+                        scope=normalized_scope,
+                        idempotency_key=normalized_key,
+                        started_at=timestamp,
+                        heartbeat_at=timestamp,
+                        code_version=code_version,
+                        parser_version=parser_version,
+                    ),
+                    created=True,
                 )
         except IntegrityError:
             existing = SyncRun.objects.filter(
@@ -81,7 +119,7 @@ def start_sync_run(
             ).first()
             if existing is None:
                 raise
-            return existing
+            return SyncRunStartResult(sync_run=existing, created=False)
 
 
 def update_sync_run_counts(

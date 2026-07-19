@@ -4,12 +4,12 @@
 > This file may lag behind reality.
 > **Always verify against actual Git, GitHub, repository files and CI status.**
 
-_Last updated: 2026-07-15_
+_Last updated: 2026-07-17_
 
 ## Current Baseline
 
 - **Branch**: `main`
-- **HEAD**: `a931b2f` — feat(indexes): activate due memberships (#7)
+- **HEAD**: `7a61c2a` — feat(indexes): add index constituent snapshot contract (#8)
 - **GitHub**: [AlaxJiangX/earnings-radar](https://github.com/AlaxJiangX/earnings-radar)
 - **CI**: [GitHub Actions](https://github.com/AlaxJiangX/earnings-radar/actions)
 
@@ -30,19 +30,21 @@ _Last updated: 2026-07-15_
 | 2.3 | Company, SecurityListing, controlled write services | Complete |
 | 3.1A | MarketIndex (S&P 500, Nasdaq-100, DJIA, Russell 2000) | Complete |
 | 3.1B | IndexMembership, lifecycle, triggers, services, selectors | Complete |
+| 3.2A | Activate due memberships | Complete |
+| 3.2B-1 | Offline index fixture Provider and canonical snapshot contract | Complete |
 
 ## Active Development
 
-- **3.2b (Index Constituent Contract)**: In progress on `codex/3.2b-index-constituent-contract`. Not yet merged. A separate Git worktree is used for isolation.
+- **3.2B-2 (Offline snapshot ingestion orchestration)**: implemented on `codex/3.2b-2-index-sync-orchestration`; pending merge. It intentionally stops before live Provider, membership reconciliation and the command entry point.
 
 ## Development Tooling
 
 - **Branch**: `codex/dev-workflow-tools` — `scripts/codex-issue` and workflow docs.
-- **Status**: First round implementation in review.
+- **Status**: Local auxiliary branch; no open GitHub PR as of the last update. It is outside the 3.2B-2 implementation scope.
 
 > **Note**: If multiple worktrees are in use on this machine, run `git worktree list` for the authoritative list. Local paths and branch names shown here are examples from the development environment.
 
-## Important Architecture## Important Architecture Constraints
+## Important Architecture Constraints
 
 - Django modular monolith (no microservices)
 - PostgreSQL only (no Redis, no Celery in MVP)
@@ -55,7 +57,7 @@ _Last updated: 2026-07-15_
 
 ## Next Planned Stage
 
-- `3.2` — First real Index Provider + sync command (blocked by source/license confirmation)
+- `3.2` — Confirm one index source/license, then implement its real Provider + guarded sync command
 - Stage 4 — Earnings events (after index stages complete)
 
 ## Blocked Product Decisions
@@ -64,10 +66,10 @@ _Last updated: 2026-07-15_
 - Email service provider selection
 - Public registration strategy (alpha: closed; beta: open)
 
-## Recent Test Count
+## Verification
 
-- Full pytest suite: run locally via `docker compose run --rm web pytest` or CI
-- Tooling tests: 36 (all passing)
+- Full pytest suite: run locally via `docker compose run --rm web pytest` or CI.
+- The exact test count is intentionally not cached here; use the current collection and latest CI run.
 
 ## Key Documents
 

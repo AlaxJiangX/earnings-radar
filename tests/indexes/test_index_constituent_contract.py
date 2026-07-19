@@ -152,6 +152,17 @@ class TestParserInvalidJson:
         with pytest.raises(InvalidIndexConstituentSnapshot, match="UTF-8"):
             parse_index_constituent_snapshot(raw, expected_index_code="SP500")
 
+    def test_rejects_valid_utf16_json(self) -> None:
+        raw = json.dumps(
+            {
+                "index_code": "SP500",
+                "as_of_date": "2026-07-15",
+                "constituents": [],
+            }
+        ).encode("utf-16")
+        with pytest.raises(InvalidIndexConstituentSnapshot, match="UTF-8"):
+            parse_index_constituent_snapshot(raw, expected_index_code="SP500")
+
 
 class TestParserRootStructure:
     def test_rejects_non_object(self) -> None:
@@ -399,6 +410,19 @@ class TestSecurity:
         with pytest.raises(InvalidIndexConstituentSnapshot) as exc_info:
             parse_index_constituent_snapshot(raw, expected_index_code="SP500")
         assert "X" * 2000 not in str(exc_info.value)
+
+    def test_error_does_not_echo_invalid_external_field_value(self) -> None:
+        external_value = "external-marker-" * 200
+        raw = json.dumps(
+            {
+                "index_code": "SP500",
+                "as_of_date": external_value,
+                "constituents": [],
+            }
+        ).encode()
+        with pytest.raises(InvalidIndexConstituentSnapshot) as exc_info:
+            parse_index_constituent_snapshot(raw, expected_index_code="SP500")
+        assert external_value not in str(exc_info.value)
 
 
 def _scan_keys(obj: object, forbidden: set[str], path: tuple[str, ...]) -> None:

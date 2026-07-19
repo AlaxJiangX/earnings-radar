@@ -7,6 +7,7 @@ import pytest
 
 from audit.models import DataSource, RawDataObservation, RawDataRecord, SyncRun
 from audit.services import record_raw_data_observation, start_sync_run
+from providers.base import Provider
 from providers.testing import FakeProvider, make_fake_provider_request
 
 PROVIDERS_ROOT = Path(__file__).resolve().parents[2] / "providers"
@@ -85,22 +86,25 @@ def test_future_orchestrator_can_persist_provider_result_through_audit_service()
     request = make_fake_provider_request(api_key_in_url="fixture-query-key")
     provider_result = FakeProvider(api_key="fixture-header-key").fetch(request)
 
+    request_descriptor = Provider.describe_request(FakeProvider(), request)
+
     assert RawDataRecord.objects.count() == 0
     assert RawDataObservation.objects.count() == 0
 
     ingest_result = record_raw_data_observation(
         sync_run=sync_run,
-        source_url=provider_result.source_url,
+        source_url=request_descriptor.source_url.stored,
         payload=provider_result.raw_content,
-        request_method=provider_result.request_method,
-        request_identity=provider_result.request_identity,
+        request_method=request_descriptor.method,
+        request_identity=request_descriptor.identity,
         fetched_at=provider_result.fetched_at,
         observed_at=provider_result.fetched_at,
         http_status=provider_result.http_status,
         content_type=provider_result.content_type,
+        request_descriptor=request_descriptor,
     )
 
-    assert ingest_result.record.request_fingerprint == provider_result.request_fingerprint
+    assert ingest_result.record.request_fingerprint == request_descriptor.fingerprint
     assert ingest_result.record.source_url == provider_result.source_url
     assert bytes(ingest_result.record.payload) == provider_result.raw_content
     assert ingest_result.observation.sync_run_id == sync_run.pk

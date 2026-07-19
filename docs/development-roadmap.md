@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 1 工程骨架、阶段 2.1A、2.1B-1 至 2.1B-3、阶段 2.2 Provider 契约和测试夹具，以及阶段 2.3 Company/SecurityListing 身份基础已完成；指数、财报、SEC Filing、同步编排器和真实 Provider 仍未开始。
+> 状态：规划稿。阶段 1、阶段 2.1A、2.1B-1 至 2.1B-3、阶段 2.2、阶段 2.3、阶段 3.1，以及阶段 3.2 的离线契约与原始数据编排基础已完成；真实指数 Provider 和同步命令仍受来源/许可确认门阻塞，财报、SEC Filing 和通知尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -220,12 +220,18 @@
 - 并发幂等（savepoint + IntegrityError 恢复）
 - 只读 Admin
 
-未实现（延后至 3.2）：
-- activate_due_memberships
+后续阶段尚未实现：
 - 真实指数 Provider / 同步命令
 - IndexChangeEvent / IndexChangeLeg
 
 #### 3.2 首个指数 Provider 与同步命令
+
+当前拆分进度：
+
+- 3.2A：`activate_due_memberships` 已完成；
+- 3.2B-1：四指数人工 fixture、canonical snapshot contract 和纯解析器已完成；
+- 3.2B-2：离线 Provider → SyncRun → RawDataRecord/RawDataObservation → 注入 parser 的编排基础已完成，包含失败状态、空快照保护和幂等重放；
+- 尚未完成：已确认来源的真实 Provider、运行锁、SecurityListing 核对、IndexMembership 差异写入、异常缩减阈值、management command 和受控 smoke test。来源与许可确认前不得实现这些 live 能力。
 
 交付：按已确认来源实现一个指数的端到端 Provider，再扩展至其他三个。
 

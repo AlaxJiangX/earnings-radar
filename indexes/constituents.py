@@ -38,9 +38,9 @@ class IndexConstituentEntry:
 class IndexConstituentSnapshot:
     """A normalized index snapshot at a single point in time.
 
-    This is the provider-agnostic contract that every
-    ``IndexConstituentProvider`` must eventually normalize into, regardless
-    of the underlying JSON/XML/CSV format.
+    This is the provider-agnostic contract that every source-specific parser
+    must eventually normalize into, regardless of the upstream JSON/XML/CSV
+    format.
 
     ``entries`` are deterministically ordered by ``(ticker, exchange)``.
     """
@@ -55,10 +55,15 @@ def parse_index_constituent_snapshot(
     *,
     expected_index_code: str,
 ) -> IndexConstituentSnapshot:
-    """Parse and validate raw index constituent JSON into a normalized snapshot.
+    """Parse canonical UTF-8 snapshot JSON into a normalized snapshot.
+
+    This parser defines the artificial fixture/canonical JSON format used by
+    offline tests.  It is not a parser for arbitrary upstream Provider bytes.
+    A live integration must persist ``ProviderResult.raw_content`` first, then
+    invoke a source-specific parser that produces this same snapshot contract.
 
     Args:
-        raw_content: Raw UTF-8 JSON bytes from a ProviderResult.
+        raw_content: Canonical UTF-8 JSON bytes.
         expected_index_code: The index code the caller expects to see
             (e.g. ``"SP500"``).  Must match the ``index_code`` in the JSON.
 
@@ -80,11 +85,15 @@ def parse_index_constituent_snapshot(
 
     # ---- 1. Parse JSON ---------------------------------------------------
     try:
-        data = json.loads(raw_content)
-    except json.JSONDecodeError as exc:
-        raise InvalidIndexConstituentSnapshot("Index constituent data is not valid JSON.") from exc
-    except UnicodeDecodeError as exc:
-        raise InvalidIndexConstituentSnapshot("Index constituent data is not valid UTF-8.") from exc
+        decoded_content = raw_content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise InvalidIndexConstituentSnapshot(
+            "Index constituent data is not valid UTF-8."
+        ) from None
+    try:
+        data = json.loads(decoded_content)
+    except json.JSONDecodeError:
+        raise InvalidIndexConstituentSnapshot("Index constituent data is not valid JSON.") from None
 
     if not isinstance(data, dict):
         raise InvalidIndexConstituentSnapshot("Index constituent data must be a JSON object.")
@@ -114,7 +123,7 @@ def parse_index_constituent_snapshot(
         identity = (entry.ticker, entry.exchange)
         if identity in seen:
             raise InvalidIndexConstituentSnapshot(
-                f"Duplicate constituent {entry.ticker}/{entry.exchange} at row {raw_position}."
+                f"Duplicate constituent identity at row {raw_position}."
             )
         seen.add(identity)
         entries.append(entry)
@@ -152,12 +161,10 @@ def _validate_index_code(data: dict[str, object], expected: str) -> str:
     code = raw.strip().upper()
     if code not in ALLOWED_INDEX_CODES:
         raise InvalidIndexConstituentSnapshot(
-            f"Unknown index_code {raw!r}.  Allowed: {', '.join(sorted(ALLOWED_INDEX_CODES))}."
+            f"Unknown index_code. Allowed: {', '.join(sorted(ALLOWED_INDEX_CODES))}."
         )
     if code != expected.strip().upper():
-        raise InvalidIndexConstituentSnapshot(
-            f"index_code mismatch: expected {expected!r}, got {raw!r}."
-        )
+        raise InvalidIndexConstituentSnapshot("index_code mismatch with the requested index.")
     return code
 
 
@@ -171,15 +178,13 @@ def _validate_as_of_date(data: dict[str, object]) -> date:
     if not isinstance(raw, str) or not raw:
         raise InvalidIndexConstituentSnapshot("'as_of_date' must be a non-empty string.")
     if not _AS_OF_DATE_RE.fullmatch(raw):
-        raise InvalidIndexConstituentSnapshot(
-            f"'as_of_date' must be exactly YYYY-MM-DD, got {raw!r}."
-        )
+        raise InvalidIndexConstituentSnapshot("'as_of_date' must be exactly YYYY-MM-DD.")
     try:
         return date.fromisoformat(raw)
-    except ValueError as exc:
+    except ValueError:
         raise InvalidIndexConstituentSnapshot(
-            f"'as_of_date' {raw!r} is not a valid ISO date."
-        ) from exc
+            "'as_of_date' is not a valid calendar date."
+        ) from None
 
 
 def _parse_constituent_entry(

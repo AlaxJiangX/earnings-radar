@@ -9,10 +9,9 @@ from typing import cast
 
 from audit.security import (
     AuditSecurityError,
+    build_provider_request_context_descriptor,
     ensure_payload_has_no_credentials,
     normalize_json_without_credentials,
-    normalize_request_identity,
-    sanitize_url,
 )
 from providers.exceptions import ProviderValidationError
 
@@ -41,24 +40,19 @@ class ProviderRequest:
             raise ProviderValidationError("Provider capability must use the supported enum.")
         if not _is_aware(self.request_started_at):
             raise ProviderValidationError("Provider request_started_at must be timezone-aware.")
-        normalized_method = self.method.strip().upper()
-        if not normalized_method:
-            raise ProviderValidationError("Provider request method must not be empty.")
         try:
-            sanitize_url(self.source_url)
-            normalized_scope = _normalize_secure_mapping(self.scope, value_name="Provider scope")
-            normalized_identity = normalize_request_identity(dict(self.request_identity))
+            descriptor = build_provider_request_context_descriptor(
+                capability=self.capability.value,
+                scope=self.scope,
+                method=self.method,
+                source_url=self.source_url,
+                request_identity=self.request_identity,
+            )
         except AuditSecurityError as error:
             raise ProviderValidationError(str(error)) from None
-        if not isinstance(normalized_identity, dict):
-            raise ProviderValidationError("Provider request identity must be a JSON object.")
-        object.__setattr__(self, "method", normalized_method)
-        object.__setattr__(self, "scope", normalized_scope)
-        object.__setattr__(
-            self,
-            "request_identity",
-            cast(dict[str, object], normalized_identity),
-        )
+        object.__setattr__(self, "method", descriptor.method)
+        object.__setattr__(self, "scope", descriptor.scope)
+        object.__setattr__(self, "request_identity", descriptor.identity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +89,13 @@ class ProviderResult:
         if not isinstance(self.raw_content, bytes):
             raise ProviderValidationError("Provider raw content must be bytes.")
         try:
-            sanitized_url = sanitize_url(self.source_url)
-            normalized_scope = _normalize_secure_mapping(self.scope, value_name="Provider scope")
-            normalized_identity = normalize_request_identity(dict(self.request_identity))
+            descriptor = build_provider_request_context_descriptor(
+                capability=self.capability.value,
+                scope=self.scope,
+                method=self.request_method,
+                source_url=self.source_url,
+                request_identity=self.request_identity,
+            )
             normalized_metadata = _normalize_secure_mapping(
                 self.metadata,
                 value_name="Provider metadata",
@@ -105,15 +103,17 @@ class ProviderResult:
             ensure_payload_has_no_credentials(self.raw_content)
         except AuditSecurityError as error:
             raise ProviderValidationError(str(error)) from None
-        if self.source_url not in {sanitized_url.stored, sanitized_url.canonical}:
+        if self.source_url not in {
+            descriptor.source_url.stored,
+            descriptor.source_url.canonical,
+        }:
             raise ProviderValidationError("Provider result source_url must already be sanitized.")
-        if not isinstance(normalized_identity, dict):
-            raise ProviderValidationError("Provider request identity must be a JSON object.")
-        normalized_method = self.request_method.strip().upper()
-        if not normalized_method:
-            raise ProviderValidationError("Provider request method must not be empty.")
         if not _SHA256_RE.fullmatch(self.request_fingerprint):
             raise ProviderValidationError("Provider request fingerprint must be lowercase SHA-256.")
+        if self.request_fingerprint != descriptor.fingerprint:
+            raise ProviderValidationError(
+                "Provider request fingerprint does not match its echoed request context."
+            )
         if (
             isinstance(self.http_status, bool)
             or not isinstance(self.http_status, int)
@@ -133,13 +133,9 @@ class ProviderResult:
         if not isinstance(safe_content_type, str):
             raise ProviderValidationError("Provider content type must be text.")
         object.__setattr__(self, "provider_version", normalized_version)
-        object.__setattr__(self, "scope", normalized_scope)
-        object.__setattr__(self, "request_method", normalized_method)
-        object.__setattr__(
-            self,
-            "request_identity",
-            cast(dict[str, object], normalized_identity),
-        )
+        object.__setattr__(self, "scope", descriptor.scope)
+        object.__setattr__(self, "request_method", descriptor.method)
+        object.__setattr__(self, "request_identity", descriptor.identity)
         object.__setattr__(self, "content_type", safe_content_type)
         object.__setattr__(self, "metadata", normalized_metadata)
 
