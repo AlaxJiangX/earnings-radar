@@ -173,6 +173,39 @@ class TestEarningsEventCanonicalConstraints:
                 status="scheduled_estimated",
             )
 
+    def test_different_rule_version_cannot_bypass_uniqueness(self) -> None:
+        """Two CANONICAL events with the same business identity but different
+        identity_rule_version values must still violate the canonical business
+        uniqueness constraint."""
+        from earnings.identity import derive_earnings_identity_key
+
+        co = _make_company("0000002202", "RuleVerCo")
+        d = date(2026, 6, 30)
+        identity_key = derive_earnings_identity_key(
+            company_id=co.pk, period_end_date=d, period_type="Q2"
+        )
+        # First: v1
+        EarningsEvent.objects.create(
+            company=co,
+            identity_status="canonical",
+            period_end_date=d,
+            period_type="Q2",
+            identity_key=identity_key,
+            identity_rule_version="v1",
+            status="scheduled_estimated",
+        )
+        # Second: same business identity, different rule_version
+        with pytest.raises(IntegrityError), transaction.atomic():
+            EarningsEvent.objects.create(
+                company=co,
+                identity_status="canonical",
+                period_end_date=d,
+                period_type="Q2",
+                identity_key=identity_key,
+                identity_rule_version="v2",  # different version
+                status="scheduled_estimated",
+            )
+
 
 @pytest.mark.django_db
 class TestEarningsEventIncludesQ4:
