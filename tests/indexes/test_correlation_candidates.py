@@ -93,8 +93,8 @@ class TestCorrelationModel:
             later_event=e2,
         )
         assert corr.status == IndexChangeCorrelation.Status.PENDING
-        assert corr.displacement is None
-        assert corr.monitoring_impact is None
+        assert corr.displacement == ""
+        assert corr.monitoring_impact == ""
 
     def test_status_default_pending(self, company: Company) -> None:
         e1 = _make_event(company, date(2026, 6, 1))

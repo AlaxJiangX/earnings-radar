@@ -2205,11 +2205,11 @@ def classify_index_change_correlation(
     changed = correlation.displacement != displacement or correlation.monitoring_impact != impact
 
     if changed:
-        if correlation.displacement is not None and correlation.displacement != displacement:
+        if correlation.displacement and correlation.displacement != displacement:
             raise IndexChangeIntegrityError(
                 f"Correlation {correlation.pk} already has displacement={correlation.displacement}."
             )
-        if correlation.monitoring_impact is not None and correlation.monitoring_impact != impact:
+        if correlation.monitoring_impact and correlation.monitoring_impact != impact:
             raise IndexChangeIntegrityError(
                 f"Correlation {correlation.pk} already has "
                 f"monitoring_impact={correlation.monitoring_impact}."
