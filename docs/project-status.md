@@ -4,12 +4,12 @@
 > This file may lag behind reality.
 > **Always verify against actual Git, GitHub, repository files and CI status.**
 
-_Last updated: 2026-07-17_
+_Last updated: 2026-07-19_
 
 ## Current Baseline
 
 - **Branch**: `main`
-- **HEAD**: `7a61c2a` — feat(indexes): add index constituent snapshot contract (#8)
+- **HEAD**: `d5eeead` — feat(indexes): add public index changes page (#16)
 - **GitHub**: [AlaxJiangX/earnings-radar](https://github.com/AlaxJiangX/earnings-radar)
 - **CI**: [GitHub Actions](https://github.com/AlaxJiangX/earnings-radar/actions)
 
@@ -32,37 +32,20 @@ _Last updated: 2026-07-17_
 | 3.1B | IndexMembership, lifecycle, triggers, services, selectors | Complete |
 | 3.2A | Activate due memberships | Complete |
 | 3.2B-1 | Offline index fixture Provider and canonical snapshot contract | Complete |
+| 3.2B-2 | Offline snapshot ingestion orchestration (merged in PR #10) | Complete |
 | 3.2B-3 | RawDataParseAttempt audit trail | Complete |
 | 3.3 | IndexChangeEvent, IndexChangeLeg, event classification, correlation, correction | Complete |
+| 3.4 | Index changes public page (`/index-changes`, filtering, HTMX pagination) | Complete |
 
 ## Active Development
 
-- **3.2B-2 (Offline snapshot ingestion orchestration)**: implemented on `codex/3.2b-2-index-sync-orchestration`; pending merge. It intentionally stops before live Provider, membership reconciliation and the command entry point.
-- **3.2B-3 (RawDataParseAttempt audit trail)**: model, recording service, consumer regression verification completed on `codex/3.2b-3-raw-data-parse-attempt`.
-
-## Development Tooling
-
-- **Branch**: `codex/dev-workflow-tools` — `scripts/codex-issue` and workflow docs.
-- **Status**: Local auxiliary branch; no open GitHub PR as of the last update. It is outside the 3.2B-2 implementation scope.
-
-> **Note**: If multiple worktrees are in use on this machine, run `git worktree list` for the authoritative list. Local paths and branch names shown here are examples from the development environment.
-
-## Important Architecture Constraints
-
-- Django modular monolith (no microservices)
-- PostgreSQL only (no Redis, no Celery in MVP)
-- All datetimes stored in UTC (date-only facts use `date`)
-- All writes go through controlled services; Admin is read-only
-- Provider adapters never write domain tables directly
-- Audit records are append-only
-- CIK stored as string with leading zeros; ticker is not a permanent key
-- SecurityListing uses half-open `[start, end)` intervals
+- **3.2** — Live index Provider + sync command: **blocked** by source/licensing gate (ADR-005). Index change domain (3.3) and UI (3.4) are complete using fixture-first approach.
+- **3.2B-2 worktrees**: Frozen at `aff5979` and `5003b63`. All relevant code was merged into main via PR #10. Worktrees preserved for reference only.
 
 ## Next Planned Stage
 
-- `3.4` — Index changes public page (`/index-changes` list, labels, filtering, HTMX pagination)
+- `4.1` — Earnings event domain model (EarningsEvent, EarningsDateChange, candidate/canonical identity, status lifecycle, Admin). Fixture-first per ADR-005.
 - `3.2` — Live index Provider + sync command (blocked by source/licensing gate)
-- Stage 4 — Earnings events (after index stages complete)
 
 ## Blocked Product Decisions
 
