@@ -1,0 +1,218 @@
+# Codex Development Workflow — Earnings Radar
+
+This document describes how to start a safe, structured development task from a
+GitHub Issue using Codex and the `codex-issue` tool.
+
+## Permanent Rules (AGENTS.md)
+
+All permanent development rules live in [AGENTS.md](/AGENTS.md). Every task
+must start by reading AGENTS.md and the required project documents. The
+`codex-issue` script enforces this in generated briefs.
+
+## Prerequisites
+
+- Git installed and configured
+- [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated
+  ```bash
+  gh auth status
+  ```
+- [Codex CLI](https://github.com/openai/codex) installed
+- Docker and Docker Compose (for running quality checks)
+
+## Generating a Task Brief
+
+From the repository root:
+
+```bash
+./scripts/codex-issue <issue-number>
+```
+
+This reads the GitHub Issue and prints a structured task brief to stdout.
+
+### Examples
+
+```bash
+# Print brief to terminal
+./scripts/codex-issue 12
+
+# Write brief to a file
+./scripts/codex-issue 12 --output task-brief.txt
+
+# Override the repository (if remote isn't the GitHub repo)
+./scripts/codex-issue 12 --repo OtherOrg/other-repo
+```
+
+### What the Brief Contains
+
+1. Task source (GitHub Issue metadata)
+2. Full Issue body (preserved verbatim)
+3. Project status snapshot (from `docs/project-status.md`)
+4. Required reading list
+5. Pre-operation Git verification steps
+6. Objective
+7. Allowed scope
+8. Prohibited actions
+9. Implementation requirements
+10. Test and quality check commands
+11. Post-completion Git verification
+12. Final report format
+
+### Closed Issues
+
+The script refuses to generate a brief for a closed Issue. Only OPEN issues are
+valid task sources. If you need to reference a closed Issue, copy its content
+manually.
+
+## Reviewing the Brief
+
+Before handing the brief to Codex:
+
+1. Read the entire output.
+2. Verify the Issue title, body, and labels match your expectations.
+3. Check the project status snapshot is current.
+4. Confirm the required reading list is complete.
+
+## Using the Brief with Codex
+
+The generated brief is plain text. You can copy it to Codex in any of these ways:
+
+### Option A: Paste into Codex interactive session
+
+Start Codex and paste the brief as the initial prompt.
+
+### Option B: Pipe from file
+
+```bash
+./scripts/codex-issue 12 --output /tmp/brief.txt
+codex exec -C /path/to/repo -s workspace-write - < /tmp/brief.txt
+```
+
+### Option C: Pipe directly
+
+```bash
+./scripts/codex-issue 12 | codex exec -C /path/to/repo -s workspace-write -
+```
+
+## Why Codex Must Still Independently Verify
+
+The brief includes project context and Issue content, but it is a snapshot.
+Codex is instructed to:
+
+- Independently verify the actual state of Git, the repository, docs, and GitHub.
+- Stop and report discrepancies if the actual state conflicts.
+- Never execute stash, reset, clean, merge, or rebase automatically.
+
+## Isolating Work from a Dirty Workspace
+
+If you have uncommitted changes in your main worktree, use Git Worktree:
+
+```bash
+# Create an isolated worktree from main
+cd /path/to/main-repo
+git fetch origin --prune
+git worktree add -b codex/my-feature /path/to/new-worktree origin/main
+
+# Work in the new worktree
+cd /path/to/new-worktree
+./scripts/codex-issue 12 | codex exec -C . -s workspace-write -
+```
+
+The original worktree and its uncommitted changes are untouched.
+
+## High-Risk Git Commands
+
+These commands should never be used carelessly:
+
+- `git stash` — can lose context
+- `git reset --hard` — destructive to working tree
+- `git clean -fd` — deletes untracked files
+- `git checkout -- <file>` — discards changes
+- `git rebase` / `git merge` — can rewrite history
+
+Codex is explicitly instructed not to execute these unless the task explicitly
+requires them.
+
+## Post-Completion Quality Checks
+
+After implementation, run these checks:
+
+```bash
+python manage.py check
+python manage.py makemigrations --check --dry-run
+pytest
+ruff check .
+ruff format --check .
+mypy .
+```
+
+For shell scripts:
+
+```bash
+bash -n scripts/<script>
+```
+
+## Checking the Diff
+
+```bash
+git status --short --branch
+git diff --stat
+git diff --check
+git diff
+```
+
+Verify:
+- Only expected files were modified.
+- No migrations or unrelated code appeared.
+- No secrets or local paths leaked into content.
+
+## Generating a Completion Report
+
+Follow the report format from AGENTS.md:
+
+1. Completed task (roadmap stage or explicit task name)
+2. Files created or modified
+3. Verification commands and results
+4. Data migration, deployment, or compatibility impact
+5. Requirement conflicts or pending decisions
+6. Work not completed or intentionally excluded
+7. Recommended next stage (do not auto-start)
+8. Final git status and diff summary
+
+## Safety Checkpoints (Human Gates)
+
+The workflow reserves three human approval points. The `codex-issue` script
+does not automate any of these:
+
+1. **After local development**: Review and approve `git commit` / `git push`.
+2. **After CI passes**: Review and approve PR ready state.
+3. **After final review**: Approve merge.
+
+## Current Limitations (First Version)
+
+The first version of `codex-issue` is read-only:
+
+- It **does not** call Codex automatically.
+- It **does not** create branches or worktrees.
+- It **does not** commit, push, or create PRs.
+- It **does not** modify GitHub Issues.
+- It **does not** execute Issue body content.
+- It outputs a text brief for you to review and use manually.
+
+Automatic `--comment` feedback to GitHub Issues is planned but not yet
+implemented.
+
+## Shell Alias (Optional)
+
+If you run `codex-issue` frequently, you may add an alias to your shell
+configuration. This is never done automatically. Because the script is at a
+repository-relative path, a shell function that locates the repo root, or an
+absolute-path alias, is more robust than a bare `./scripts/` relative alias.
+Example (adjust path for your machine):
+
+```bash
+# In ~/.zshrc or ~/.bashrc:
+codex-issue() {
+    local repo="/path/to/earnings-radar"
+    "$repo/scripts/codex-issue" "$@"
+}
+```
