@@ -186,8 +186,14 @@ class EarningsEvent(models.Model):
             # --- includes_q4 bidirectional invariant ---
             models.CheckConstraint(
                 condition=(
-                    Q(period_type="FY", includes_q4=True)
-                    | (~Q(period_type="FY") & Q(includes_q4=False))
+                    (Q(period_type__isnull=False) & Q(period_type="FY") & Q(includes_q4=True))
+                    | (
+                        Q(includes_q4=False)
+                        & (
+                            Q(period_type__isnull=True)
+                            | (Q(period_type__isnull=False) & ~Q(period_type="FY"))
+                        )
+                    )
                 ),
                 name="earnings_event_includes_q4_consistent",
             ),
@@ -195,7 +201,7 @@ class EarningsEvent(models.Model):
             models.CheckConstraint(
                 condition=(
                     ~Q(fiscal_calendar_type="week_based_52_53")
-                    | Q(period_length_weeks__in=(52, 53))
+                    | (Q(period_length_weeks__isnull=False) & Q(period_length_weeks__in=(52, 53)))
                 ),
                 name="earnings_event_week_length_valid",
             ),

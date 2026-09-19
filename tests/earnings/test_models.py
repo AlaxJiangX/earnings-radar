@@ -229,6 +229,17 @@ class TestEarningsEventIncludesQ4:
         with pytest.raises(IntegrityError), transaction.atomic():
             _make_canonical(period_type="Q1", includes_q4=True)
 
+    def test_unknown_period_with_true_invalid(self) -> None:
+        co = _make_company("0000002203", "UnknownPeriodQ4")
+        with pytest.raises(IntegrityError), transaction.atomic():
+            EarningsEvent.objects.create(
+                company=co,
+                identity_status="candidate",
+                period_type=None,
+                includes_q4=True,
+                status="scheduled_estimated",
+            )
+
     def test_q2_with_true_invalid(self) -> None:
         with pytest.raises(IntegrityError), transaction.atomic():
             _make_canonical(period_type="Q2", includes_q4=True)
@@ -288,6 +299,16 @@ class TestEarningsEvent52Week:
                 period_end_date=date(2026, 12, 31),
                 fiscal_calendar_type="week_based_52_53",
                 period_length_weeks=50,
+                includes_q4=True,
+            )
+
+    def test_week_calendar_requires_period_length(self) -> None:
+        with pytest.raises(IntegrityError), transaction.atomic():
+            _make_canonical(
+                period_type="FY",
+                period_end_date=date(2026, 12, 31),
+                fiscal_calendar_type="week_based_52_53",
+                period_length_weeks=None,
                 includes_q4=True,
             )
 
