@@ -14,12 +14,14 @@ from django.db import OperationalError, connection, transaction
 
 from accounts.models import User
 from audit.models import AuditRecord, DataChange
+from audit.services import DataChangeIntegrityError
 from earnings.models import EarningsDatePrecision, EarningsEvent, EventStatus
 from earnings.services import (
     EARNINGS_STATUS_LIFECYCLE_RULE_VERSION,
     EarningsStatusIdentityUncertain,
     EarningsStatusServiceError,
     InvalidEarningsStatusContext,
+    InvalidEarningsStatusCorrection,
     InvalidEarningsStatusEvidence,
     InvalidEarningsStatusReinstatement,
     InvalidEarningsStatusTransition,
@@ -1038,3 +1040,280 @@ class TestLifecycleConcurrency:
                 reason="Cannot use unsaved event.",
                 request_id="unpersisted-lifecycle",
             )
+
+
+@pytest.mark.django_db
+class TestVerificationAdversarial:
+    """Verification-gate probes for boundary behavior the happy path does not cover."""
+
+    def test_repeated_lifecycle_cycles_with_distinct_request_ids_write_independent_history(
+        self,
+    ) -> None:
+        event = _event(_CONFIRMED)
+        actor = User.objects.create_user(
+            email="verification-cycle@example.com",
+            password="test-password-only",
+        )
+
+        cancel_earnings_event(
+            earnings_event=event,
+            actor_user=actor,
+            reason="Cycle one cancellation.",
+            request_id="cycle-1-cancel",
+        )
+        reinstate_earnings_event(
+            earnings_event=event,
+            target_status=_CONFIRMED,
+            actor_user=actor,
+            reason="Cycle one reinstatement.",
+            request_id="cycle-1-reinstate",
+        )
+        cancel_earnings_event(
+            earnings_event=event,
+            actor_user=actor,
+            reason="Cycle two cancellation.",
+            request_id="cycle-2-cancel",
+        )
+        reinstate_earnings_event(
+            earnings_event=event,
+            target_status=_CONFIRMED,
+            actor_user=actor,
+            reason="Cycle two reinstatement.",
+            request_id="cycle-2-reinstate",
+        )
+
+        event.refresh_from_db()
+        assert event.status == _CONFIRMED
+        changes = list(
+            DataChange.objects.filter(
+                target_type=DataChange.TargetType.EARNINGS_EVENT,
+                target_id=event.pk,
+                field_name="status",
+            ).order_by("changed_at", "created_at")
+        )
+        assert [(change.old_value, change.new_value) for change in changes] == [
+            (_CONFIRMED, _CANCELLED),
+            (_CANCELLED, _CONFIRMED),
+            (_CONFIRMED, _CANCELLED),
+            (_CANCELLED, _CONFIRMED),
+        ]
+        assert len({change.change_key for change in changes}) == 4
+        assert _history_counts(event) == (4, 4)
+
+    def test_reused_manual_request_id_for_new_business_change_fails_closed(self) -> None:
+        event = _event(_CONFIRMED)
+        actor = User.objects.create_user(
+            email="verification-reused-request@example.com",
+            password="test-password-only",
+        )
+        first = correct_earnings_status(
+            earnings_event=event,
+            target_status=_ESTIMATED,
+            actor_user=actor,
+            reason="Recorded confirmation was false.",
+            request_id="reused-correction-request",
+        )
+        assert first.data_change is not None
+        assert first.data_change.change is not None
+        first_change_key = first.data_change.change.change_key
+        event.refresh_from_db()
+
+        # Returning the same fact to the same recorded state is a new business
+        # change, so callers must not reuse the prior request identity.
+        confirm_earnings_event(
+            earnings_event=event,
+            actor_user=actor,
+            reason="IR confirmed again.",
+            request_id="reused-correction-request-reconfirm",
+        )
+        event.refresh_from_db()
+        assert event.status == _CONFIRMED
+        counts_before_replay = _history_counts(event)
+
+        with pytest.raises(DataChangeIntegrityError):
+            correct_earnings_status(
+                earnings_event=event,
+                target_status=_ESTIMATED,
+                actor_user=actor,
+                reason="Recorded confirmation was false again.",
+                request_id="reused-correction-request",
+            )
+
+        event.refresh_from_db()
+        assert event.status == _CONFIRMED
+        assert _history_counts(event) == counts_before_replay
+        assert (
+            DataChange.objects.filter(
+                target_id=event.pk,
+                field_name="status",
+                change_key=first_change_key,
+            ).count()
+            == 1
+        )
+
+    def test_source_only_cancellation_requires_affirmative_intent_even_with_evidence(self) -> None:
+        event = _event(_ESTIMATED)
+        _, evidence = make_source_evidence(
+            event=event,
+            field_name="status",
+            normalized_value=_CANCELLED,
+            suffix="verification-affirmative",
+        )
+
+        with pytest.raises(InvalidEarningsStatusContext, match="affirmative_cancellation"):
+            cancel_earnings_event(
+                earnings_event=event,
+                source_evidence=evidence,
+                affirmative_cancellation=False,
+            )
+
+        event.refresh_from_db()
+        assert event.status == _ESTIMATED
+        assert _history_counts(event) == (0, 0)
+
+    def test_generic_provider_sync_run_cannot_cancel_without_intent(self) -> None:
+        event = _event(_ESTIMATED)
+
+        with pytest.raises(InvalidEarningsStatusContext, match="affirmative_cancellation"):
+            cancel_earnings_event(
+                earnings_event=event,
+                sync_run=make_sync_run("verification-missing-record"),
+            )
+
+        event.refresh_from_db()
+        assert event.status == _ESTIMATED
+        assert _history_counts(event) == (0, 0)
+
+    def test_correction_rejects_confirmed_to_cancelled_normal_bypass(self) -> None:
+        event = _event(_CONFIRMED)
+        actor = User.objects.create_user(
+            email="verification-correction-bypass@example.com",
+            password="test-password-only",
+        )
+
+        with pytest.raises(InvalidEarningsStatusCorrection):
+            correct_earnings_status(
+                earnings_event=event,
+                target_status=_CANCELLED,
+                actor_user=actor,
+                reason="Must not bypass the normal cancellation path.",
+                request_id="verification-correction-bypass",
+            )
+
+        event.refresh_from_db()
+        assert event.status == _CONFIRMED
+        assert _history_counts(event) == (0, 0)
+
+    def test_successful_outer_transaction_commits_schedule_and_status_together(self) -> None:
+        from earnings.services import update_earnings_schedule
+
+        event = _event(_ESTIMATED)
+        sync_run = _sync("verification-outer-commit")
+
+        with transaction.atomic():
+            update_earnings_schedule(
+                earnings_event=event,
+                changes={"estimated_release": date(2026, 10, 24)},
+                sync_run=sync_run,
+            )
+            confirm_earnings_event(earnings_event=event, sync_run=sync_run)
+
+        event.refresh_from_db()
+        assert event.status == _CONFIRMED
+        assert event.estimated_release_date == date(2026, 10, 24)
+        assert (
+            DataChange.objects.filter(
+                target_id=event.pk,
+                field_name__in=("status", "estimated_release"),
+            ).count()
+            == 2
+        )
+        assert (
+            AuditRecord.objects.filter(
+                target_type=AuditRecord.TargetType.EARNINGS_EVENT,
+                target_id=event.pk,
+            ).count()
+            == 2
+        )
+
+    def test_naive_changed_at_is_rejected_before_mutation(self) -> None:
+        event = _event(_ESTIMATED)
+
+        with pytest.raises(InvalidEarningsStatusContext, match="timezone-aware"):
+            confirm_earnings_event(
+                earnings_event=event,
+                sync_run=_sync("naive-ts"),
+                changed_at=datetime(2026, 9, 19, 12, 0),
+            )
+
+        event.refresh_from_db()
+        assert event.status == _ESTIMATED
+        assert _history_counts(event) == (0, 0)
+
+    def test_whitespace_only_manual_reason_is_rejected(self) -> None:
+        event = _event(_ESTIMATED)
+        actor = User.objects.create_user(
+            email="verification-whitespace-reason@example.com",
+            password="test-password-only",
+        )
+
+        with pytest.raises(InvalidEarningsStatusContext, match="reason"):
+            confirm_earnings_event(
+                earnings_event=event,
+                actor_user=actor,
+                reason="   \t  ",
+                request_id="whitespace-reason",
+            )
+
+        event.refresh_from_db()
+        assert event.status == _ESTIMATED
+        assert _history_counts(event) == (0, 0)
+
+    def test_candidate_event_is_not_silently_promoted_to_canonical(self) -> None:
+        company = make_event().company
+        candidate = EarningsEvent.objects.create(
+            company=company,
+            identity_status="candidate",
+            status=_ESTIMATED,
+        )
+
+        result = confirm_earnings_event(
+            earnings_event=candidate,
+            sync_run=_sync("candidate-lifecycle"),
+        )
+
+        candidate.refresh_from_db()
+        assert result.changed is True
+        assert candidate.status == _CONFIRMED
+        assert candidate.identity_status == "candidate"
+        assert candidate.identity_key is None
+        assert candidate.identity_rule_version is None
+
+    @pytest.mark.parametrize(
+        "error_type",
+        (InvalidEarningsStatusTransition, InvalidEarningsStatusCorrection),
+    )
+    def test_same_state_via_wrong_path_is_no_op_not_an_error(self, error_type) -> None:
+        event = _event(_CONFIRMED)
+        actor = User.objects.create_user(
+            email=f"verification-same-state-{error_type.__name__}@example.com",
+            password="test-password-only",
+        )
+
+        if error_type is InvalidEarningsStatusTransition:
+            result = transition_earnings_status(
+                earnings_event=event,
+                target_status=_CONFIRMED,
+                sync_run=_sync("same-state-transition"),
+            )
+        else:
+            result = correct_earnings_status(
+                earnings_event=event,
+                target_status=_CONFIRMED,
+                actor_user=actor,
+                reason="Retry of the current fact.",
+                request_id="same-state-correction",
+            )
+
+        assert result.changed is False
+        assert _history_counts(event) == (0, 0)
