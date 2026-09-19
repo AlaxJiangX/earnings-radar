@@ -21,7 +21,7 @@ User 1---* WatchlistItem *---1 Company 1---* SecurityListing 1---* IndexMembersh
   |              |                    |             |
   |              *---* ReminderRule   |             +-- ticker / exchange / share class history
   |                                   |
-  +---* ReminderRule                  +---* EarningsEvent 1---* EarningsDateChange
+  +---* ReminderRule                  +---* EarningsEvent 1---* EarningsDateChange *---1 DataChange
   +---* Notification                  |          |
                                       |          *---* Filing (via FilingEarningsLink)
   |
@@ -217,11 +217,19 @@ Company 不直接拥有 IndexMembership。公司级指数归属由其全部有�
 | `identity_key` | 正式事件稳定唯一键；候选事件为空 |
 | `identity_rule_version` | 生成 identity_key 的规则版本 |
 | `identity_status` | CANDIDATE / CANONICAL |
-| `estimated_release_at` | timestamptz nullable |
-| `confirmed_release_at` | timestamptz nullable |
-| `earnings_release_at` | timestamptz nullable |
-| `conference_call_at` | timestamptz nullable |
-| `release_session` | pre_market / after_market / during_market / unknown |
+| `estimated_release_at` | timestamptz nullable；仅 `estimated_release_precision=exact_datetime` 时非空 |
+| `estimated_release_date` | date nullable；仅 `estimated_release_precision=date_only` 时非空 |
+| `estimated_release_precision` | unknown / date_only / exact_datetime；非空，默认 unknown |
+| `confirmed_release_at` | timestamptz nullable；仅 `confirmed_release_precision=exact_datetime` 时非空 |
+| `confirmed_release_date` | date nullable；仅 `confirmed_release_precision=date_only` 时非空 |
+| `confirmed_release_precision` | unknown / date_only / exact_datetime；非空，默认 unknown |
+| `earnings_release_at` | timestamptz nullable；仅 `earnings_release_precision=exact_datetime` 时非空 |
+| `earnings_release_date` | date nullable；仅 `earnings_release_precision=date_only` 时非空 |
+| `earnings_release_precision` | unknown / date_only / exact_datetime；非空，默认 unknown |
+| `conference_call_at` | timestamptz nullable；仅 `conference_call_precision=exact_datetime` 时非空 |
+| `conference_call_date` | date nullable；仅 `conference_call_precision=date_only` 时非空 |
+| `conference_call_precision` | unknown / date_only / exact_datetime；非空，默认 unknown |
+| `release_session` | pre_market / after_market / during_market / unknown；非空，默认 unknown |
 | `status` | SCHEDULED_ESTIMATED / SCHEDULED_CONFIRMED / RELEASED / CANCELLED |
 | `confidence` | 可解释等级或数值，算法待确认 |
 | `primary_source_evidence_id` | 当前主证据 |
@@ -229,27 +237,58 @@ Company 不直接拥有 IndexMembership。公司级指数归属由其全部有�
 
 正式唯一身份已确定为 `company_id + period_end_date + period_type`，并由带版本的规范化函数生成 `identity_key`。年度财报统一为 `FY + includes_q4=true`，上游 Q4 年度标签不另建事件。52/53 周通过 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不作为 period_type。`fiscal_year` 是来源/展示属性，不参与唯一键。数据库对非空 `identity_key` 设置唯一约束，并要求 CANONICAL 事件必须有 `period_end_date`、`period_type`、`identity_key` 和 `identity_rule_version`。
 
-当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider 的外部事件标识和来源证据去重，不能使用 `company + fiscal_year + period_type` 作为正式身份。日期确定后由核对服务匹配或提升为 CANONICAL；候选合并、拆分和提升必须保留旧标识、来源及 DataChange，不能静默覆盖。详细决策见 ADR-001。
+当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider 的外部事件标识和来源证据去重，不能使用 `company + fiscal_year + period_type` 作为正式身份。4.1D 负责 candidate promotion、身份完成和冲突检测；跨 Provider 的候选去重、合并与拆分属于 4.2。任何身份变化必须保留旧标识、来源及 DataChange，不能静默覆盖。详细决策见 ADR-001 与 ADR-007。
 
 EarningsEvent.status 只回答“财报安排/发布到了哪一步”，不回答 SEC 文件是否提交。取消后重新安排是恢复原事件还是新候选事件仍待确认。
 
+四个发布时间字段只允许以下三种 current-state 表示，不能使用模糊双真值：
+
+```text
+unknown:           *_at = NULL, *_date = NULL, *_precision = unknown
+date_only:         *_at = NULL, *_date = YYYY-MM-DD, *_precision = date_only
+exact_datetime:    *_at = timestamp, *_date = NULL, *_precision = exact_datetime
+```
+
+四个字段都允许 date-only，因为预计、确认、实际发布和电话会来源都可能暂时只有自然日。exact datetime 以时区感知 UTC 保存；date-only 保持 `date`，不得转换成 UTC midnight。`release_session` 独立于 precision，使用领域枚举中的 `unknown` 表达未知，不使用 NULL。数据库必须为每组 `*_precision`、`*_at`、`*_date` 建立 CheckConstraint，Service 是唯一写入入口。
+
 ### 6.2 `EarningsDateChange`
 
-虽然名称为日期变化，记录中同时保存状态上下文。
+EarningsDateChange 是四个发布时间字段和 `release_session` 的 append-only 领域历史，不是 current state，也不是 status transition history。
 
 | 字段 | 说明 |
 |---|---|
 | `id` | UUID PK |
-| `earnings_event_id` | FK |
-| `field_name` | estimated_release_at / confirmed_release_at / conference_call_at 等允许字段 |
-| `old_value`, `new_value` | timestamptz nullable |
-| `old_status`, `new_status` | enum nullable |
-| `is_official` | boolean |
-| `change_key` | unique stable idempotency key |
-| `source_evidence_id` | 导致变化的证据 |
+| `earnings_event_id` | FK EarningsEvent，PROTECT |
+| `field_name` | estimated_release / confirmed_release / earnings_release / conference_call / release_session |
+| `change_kind` | value_change / precision_refinement / precision_regression |
+| `old_precision`, `new_precision` | unknown / date_only / exact_datetime / session_only |
+| `old_date`, `new_date` | date nullable；date_only 历史值 |
+| `old_datetime`, `new_datetime` | timestamptz nullable；exact_datetime 历史值 |
+| `old_session`, `new_session` | nullable；release_session 历史值 |
+| `data_change_id` | OneToOne DataChange，PROTECT，unique |
 | `detected_at` | timestamptz |
+| `created_at` | UTC |
 
-只有规范化后值变化才创建记录。数据精度（仅日期、盘前/盘后、具体时刻）应另存 precision，避免把“日期相同但精度提升”误判为日期变化；字段设计在实现前确认。
+只有一个受控字段的规范化 value 或 precision 发生非 no-op 变化时创建记录。`value_change` 表示业务日期、exact datetime 的具体时刻或具体 session 实际变化；`precision_refinement` 表示相同业务日期下精度提升或 unknown 升级；`precision_regression` 表示 precision 或信息质量下降。三者都同时创建 DataChange 和 EarningsDateChange；通知策略独立于历史记录。
+
+canonical 字段名为 `estimated_release`、`confirmed_release`、`earnings_release`、`conference_call` 和 `release_session`。DataChange 与 SourceEvidence 使用这些逻辑字段名，`*_at` / `*_date` / `*_precision` 只是表示列。
+
+DataChange 的 canonical JSON 只允许：
+
+```text
+null
+{"kind":"date","value":"2026-10-24","precision":"date_only"}
+{"kind":"datetime","value":"2026-10-24T20:30:00Z","precision":"exact_datetime"}
+{"kind":"session","value":"after_market","precision":"session_only"}
+```
+
+对于 `release_session`，`old_session/new_session` 必须非空，`old_precision/new_precision` 固定为 `session_only`。数据库负责阻止 precision 与 date/datetime/session 表示冲突；`change_kind` 的语义分类由 Service 和 rule version 负责。
+
+EarningsDateChange 不保存 `old_status/new_status`、`event_status_at_change`、`is_official`、直接 `source_evidence_id` 或第二份 `change_key`。历史 provenance 使用真实的 `DataChange.source_evidence_id` 关系；幂等依据保留在 DataChange 的唯一 `change_key`。
+
+建议索引：`(earnings_event, detected_at)`、`(field_name, change_kind, detected_at)`。EarningsDateChange 在模型和 Admin 中均为 append-only，不允许 update/delete。
+
+完整边界、precision 和事务规则见 `docs/decisions/ADR-007-earnings-date-change-precision.md`。
 
 ## 7. SEC 文件
 
@@ -453,6 +492,8 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 
 `target_type` 首版只允许 Company、SecurityListing、MarketIndex、IndexMembership、IndexChangeEvent、IndexChangeLeg、EarningsEvent、EarningsDateChange、Filing、FilingDocument 和 FilingEarningsLink。audit app 不导入这些未来业务 app；后续领域 service 负责确认 target UUID 对应对象存在。
 
+4.1B 的 EarningsDateChange 不写入 target=`EarningsDateChange` 的 SourceEvidence。日期变化的来源证据 target 保持 `EarningsEvent`，并由 DataChange 的直接 FK 关联；`EarningsDateChange` 枚举值仅为兼容保留，当前 contract 不使用，启用独立 target 前必须新增 ADR。
+
 数据库使用复合外键要求 `SourceEvidence(sync_run_id, raw_data_record_id)` 对应已存在的 `RawDataObservation(sync_run_id, raw_data_record_id)`；写入 service 还校验 SyncRun 与 RawDataRecord 的 DataSource 一致。幂等键输入为 `raw_data_record_id + target_type + target_id + field_name + canonical normalized_value + normalizer_version`，不包含 raw body、DataSource、SyncRun、confidence 或 observed_at。同一 RawDataRecord 对同一目标字段产生相同标准化值和规则版本时复用原证据；不同 RawDataRecord 即使来自同一 DataSource 且标准化值相同，也分别保存证据，以保持每份原始文档的独立追溯链。
 
 同一领域记录仍可因不同来源、字段、标准化值或规则版本拥有多条证据；领域表中的 `primary_source_evidence_id` 只是当前选中来源的快捷引用。领域 Service 使用证据时只接受其主键作为入口，重新加载持久化的 SourceEvidence、RawDataRecord、DataSource、SyncRun 和 RawDataObservation；证据 target 必须匹配领域目标，显式传入的 SyncRun 必须与证据的持久化 SyncRun 相同，并且该任务必须观察过该原始记录。调用方在内存中修改 evidence 的 target、来源或任务字段不能改变验证结果。
@@ -498,7 +539,16 @@ target_type
 
 数据库限制 target_type、非空字段/版本/来源键、change_key 格式、人工/自动来源组合，并用 PostgreSQL JSON 相等性拒绝 old_value 与 new_value 相同。Service 先做规范化比较，值相同直接返回 skipped，不创建记录。
 
-专门业务表（如 `EarningsDateChange`）用于产品语义和通知；`DataChange` 用于统一字段级追踪，两者可通过相同 change key/引用关联。
+专门业务表 `EarningsDateChange` 用于产品语义和通知；`DataChange` 用于统一字段级追踪。4.1B 使用以下真实关系：
+
+```text
+EarningsDateChange.data_change_id
+    -> DataChange.id
+    -> DataChange.source_evidence_id
+    -> SourceEvidence.id
+```
+
+DataChange 的 `target_type=earnings_event`、`target_id=EarningsEvent.id`，`field_name` 为受控字段名。EarningsDateChange 不复制 DataChange 的 `change_key` 或 source evidence；领域 Service 必须在同一个事务中创建并校验两者。
 
 ### 11.2 `AuditRecord`
 
@@ -534,7 +584,7 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | IndexMembership | security_listing + index + 不重叠有效期 |
 | IndexChangeEvent | aggregation_key unique |
 | EarningsEvent | 非空 identity_key unique；规则为 company + period_end_date + period_type，带版本 |
-| EarningsDateChange | change_key unique |
+| EarningsDateChange | data_change unique；领域历史 append-only |
 | Filing | accession_number unique |
 | WatchlistItem | user + company unique |
 | ReminderRule | null-safe user/company/event/channel/lead unique |
@@ -557,8 +607,8 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 
 ## 14. 待确认的数据决策
 
-1. 候选财报事件跨多个 Provider 的自动合并阈值，以及取消后重新安排的身份处理。
-2. 只有“日期 + 盘前/盘后”时如何表达精度，以及从日期升级为具体时刻是否通知。
+1. 候选财报事件跨多个 Provider 的自动合并阈值（4.2），以及取消后重新安排的身份处理（4.1C）。
+2. precision refinement / regression 是否通知用户，以及日期变化通知中的 old/new status 组成；历史记录规则已由 ADR-007 确定。
 3. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则。
 4. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。
 5. 1–7 日指数偏移候选的人工复核负责人、处理时限与默认行为。

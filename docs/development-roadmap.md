@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）已完成；阶段 4.1 其余内容、SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）已完成；阶段 4.1B（EarningsDateChange）已批准为下一实现阶段但尚未开始；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -287,32 +287,70 @@
 
 #### 4.1 财报事件领域模型
 
-- 4.1A EarningsEvent 核心领域模型：已完成（PR #17）。已实现 EarningsEvent、canonical/candidate 身份、Q4→FY 归一、52/53 周约束、只读 Admin 和 NULL invariant 加固；不包含 EarningsDateChange 等后续交付。
-- 阶段 4.1 其余交付仍未完成：EarningsDateChange、状态流转、候选提升/合并、日期/状态变化历史等。
+正式拆分与实现依据：
 
-阶段 4.1 完整交付：EarningsEvent、EarningsDateChange、候选/正式身份、财报发布状态机和 Admin。开始编码前必须再次核对 ADR-001 与 ADR-003。
+```text
+4.1A EarningsEvent Core Contract
+4.1B EarningsDateChange
+4.1C EarningsEvent Status Lifecycle
+4.1D Candidate Promotion
+```
 
-验收标准：
+4.1A 已完成（PR #17）：EarningsEvent、canonical/candidate 身份、Q4→FY 归一、52/53 周约束、只读 Admin 和 NULL invariant 加固。
 
-- 正式身份使用 company + period_end_date + period_type，并保存 identity_key/rule_version；
-- period_end_date 未知时只创建可追溯、幂等的候选事件；
-- 上游年度/Q4 标签统一为 FY 且 includes_q4=true，不产生 Q4/FY 双记录；
-- 52/53 周使用 fiscal_calendar_type 和 period_length_weeks，不新增 period_type；
-- 唯一规则通过 Q1–Q3、FY、H1/H2、外国发行人和 52/53 周财年测试；
-- 状态只包含 SCHEDULED_ESTIMATED/SCHEDULED_CONFIRMED/RELEASED/CANCELLED，不包含 FILED；
-- 预计、确认、发布和电话会时间独立；SEC 时间保存在 Filing；
-- 非法状态倒退被阻止或必须走有审计的修正；
-- 日期值不变时不生成变化；变化时保留旧值、新值和来源。
+4.1B 是下一实现阶段，当前尚未开始。交付：
 
-#### 4.2 财报日历 Provider 与每日同步
+- EarningsEvent 四个发布时间字段的 date-only / exact datetime precision 表示；
+- `release_session` 非空 `unknown` 语义；
+- append-only EarningsDateChange，包括 `value_change`、`precision_refinement` 和 `precision_regression`；
+- date/time/session mutation service；
+- DataChange、AuditRecord、SourceEvidence 集成；
+- 单事务、`select_for_update`、幂等重放和只读 Admin。
 
-交付：选定供应商适配器和同步命令。
+4.1B 明确不包含状态转换、candidate promotion 或 Provider reconciliation。
+
+4.1B 验收标准：
+
+- date-only 不写入 `*_at`，exact datetime 不同时写入 `*_date`，DB CheckConstraint 阻止双表示；
+- 四个发布时间字段均支持 unknown / date_only / exact_datetime；
+- `release_session` 只使用 pre_market / after_market / during_market / unknown；
+- 每个非 no-op 业务变化同时生成 DataChange 和 EarningsDateChange；
+- precision refinement / regression 保留领域历史，通知策略不在本阶段实现；
+- SourceEvidence target 为 EarningsEvent，并通过 DataChange 的真实 FK 关联；
+- 当前值、DataChange、EarningsDateChange 和 AuditRecord 同一事务提交或全部回滚；
+- 同一输入连续执行两次不产生重复 current value、DataChange 或 EarningsDateChange；
+- 4.1B 不实现 4.1C、4.1D 或 4.2。
+
+4.1C `EarningsEvent Status Lifecycle` 负责：
+
+- status transition service；
+- transition matrix 和非法倒退；
+- lifecycle audit；
+- cancellation / reschedule contract。
+
+4.1D `Candidate Promotion` 只负责：
+
+- candidate → canonical；
+- identity completion；
+- promotion collision detection，发现歧义时 fail closed；
+- promotion idempotency；
+- identity mutation audit。
+
+4.1D 不负责 cross-provider merge、provider dedup、provider conflict 或 precedence；这些属于 4.2。通用 merge / split 在没有 provider-independent 的明确领域用例前不进入 4.1D。
+
+4.1 完整交付：EarningsEvent、EarningsDateChange、candidate promotion、status lifecycle 和 Admin。开始编码前必须再次核对 ADR-001、ADR-003 与 ADR-007。
+
+#### 4.2 财报日历 Provider、同步与 Reconciliation
+
+交付：选定供应商适配器、同步命令和 Provider reconciliation。
 
 验收标准：
 
 - 仅同步当前监控池和允许范围；
 - 预计日期明确显示为预计，不冒充确认；
 - 重跑不重复事件、变化或原始正文；
+- Provider replay 使用稳定 external ID 和幂等键；
+- candidate dedup、cross-provider merge、duplicate reconciliation、source conflict 和 precedence 均在 4.2 定义并有审计；
 - 来源冲突按已批准规则处理并可追溯；
 - 模糊/不完整数据进入待复核状态而非静默覆盖。
 
@@ -553,7 +591,8 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前 |
 | 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture |
 | 邮件服务、摘要时间、重试规则 | 6.4 前 |
-| 候选财报事件跨 Provider 合并阈值与取消重排 | 4.1 前；FY/52-53 周规则已由 ADR-001 确定 |
+| 跨 Provider 合并阈值与重复核对 | 4.2 前；FY/52-53 周规则已由 ADR-001 确定 |
+| 取消后重新安排的身份处理 | 4.1C 前 |
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
 | release filing 证据清单、复核展示和时限 | 4.5 前；三态分类已由 ADR-003 确定 |
 | 来源冲突与人工锁定策略 | 首个真实来源合并前；2.3 当前仅拒绝同一 CIK 的静默冲突并要求带审计更新 |

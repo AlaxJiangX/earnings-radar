@@ -194,7 +194,9 @@ IndexMembership 绑定 `SecurityListing`，而不是直接绑定 Company。每�
 
 SEC Filing 不属于 EarningsEvent 的单向状态机。`Filing` 保存每份监管文件，`FilingEarningsLink` 保存它与财报事件的关系。Release filing 使用 `YES`、`NO`、`REVIEW_REQUIRED` 三态分类，并保存分类原因与规则版本；只有 YES 推导 `has_release_filing=true`。`has_periodic_filing` 独立推导。页面因此可以同时展示“财报已发布、8-K 已提交、10-Q 待提交”，也能表达外国发行人的 6-K/20-F/40-F 和不同提交顺序。该决策见 `docs/decisions/ADR-003-release-filing-classification.md`。
 
-任何影响用户理解的日期或状态变化都写入 `EarningsDateChange`/通用变更历史；只有值确实变化才生成记录和通知。相同数据重复同步只增加运行统计，不生成新变更。
+4.1B 中，四个发布时间字段和 `release_session` 的 current state 必须使用 `*_at` 或 `*_date` 的单一表示，并由非空 `*_precision` 消除歧义；date-only 不得伪装成 UTC midnight。所有非 no-op value、precision refinement 和 precision regression 均在同一事务中写 EarningsDateChange、DataChange 与 AuditRecord。EarningsDateChange 通过一对一关系指向 DataChange，来源证据仍由 DataChange 的直接 FK 指向 target=EarningsEvent 的 SourceEvidence。status transition 属于 4.1C，不使用 EarningsDateChange 的 old/new status 表达。完整 contract 见 `docs/decisions/ADR-007-earnings-date-change-precision.md`。
+
+相同数据重复同步只增加运行统计，不生成新变更或通知；是否通知 precision refinement 由通知阶段决定，不能反向删除领域历史。
 
 ### 5.4 SEC 文件
 
@@ -257,7 +259,7 @@ MVP 使用 Django management commands 作为所有后台入口。建议生产调
 
 ## 8. 数据一致性与事务
 
-- 当前状态、对应变更记录和通知入队应尽可能处于同一数据库事务；
+- 当前状态、对应变更记录和通知入队应尽可能处于同一数据库事务；4.1B 的 EarningsEvent mutation、EarningsDateChange、DataChange 和 AuditRecord 必须原子提交；
 - 唯一约束是幂等的最后防线，应用层先查询不能替代数据库约束；
 - 日期型业务事实（如仅有公告日、生效日）用 `date`；具体时刻用 UTC `timestamptz`；
 - 删除公司、来源、事件等关键对象原则上使用停用/结束有效期，不做级联物理删除；
@@ -336,8 +338,8 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 1. SEC 和通知要求 5 分钟级任务，而生产基线只给出 Cron Job、且禁用常驻 Worker；必须验证托管平台频率和运行时限制，必要时用单一短生命周期 dispatcher，但不引入 Celery。
 2. “每条关键数据保存每次抓取的原始响应”与“重复同步不得产生重复原始响应”存在表述张力；本方案对相同内容只存一份正文，同时每次运行保留获取/未变统计。
 3. MVP 验收要求用户可以注册，待确认项又建议开发阶段关闭公开注册；路线图已拆为关闭注册的 alpha 和开放注册的 beta。
-4. “所有数据库时间保存 UTC”不适用于只精确到自然日的公告日/生效日；本方案将其保存为 `date`，只有具体时刻使用 UTC。
-5. PRD 使用公司级 IndexMembership、单一 `FILED` 状态和早期财报唯一键作为需求草案表达；ADR-001/002/003 已确定更精确的技术模型，产品范围未改变。
+4. “所有数据库时间保存 UTC”不适用于只精确到自然日的公告日/生效日；本方案将其保存为 `date`，只有具体时刻使用 UTC。财报发布时间字段的 date-only / exact datetime 表示见 ADR-007。
+5. PRD 使用公司级 IndexMembership、单一 `FILED` 状态和早期财报唯一键作为需求草案表达；ADR-001/002/003/007 已确定更精确的技术模型，产品范围未改变。
 
 ## 14. 待产品负责人确认
 
@@ -348,7 +350,8 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 - 财报日历供应商、字段语义、许可和更新频率；
 - IR Provider 首批公司范围与维护方式；
 - 来源冲突优先级、置信度规则和管理员复核流程；
-- 候选财报事件跨 Provider 的自动合并阈值和取消后重排规则；
+- 跨 Provider 的候选自动合并阈值和重复核对规则（4.2）；
+- 取消后重新安排的身份处理（4.1C）；
 - 1–7 日指数偏移候选的人工复核负责人、时限与默认处理；
 - release filing 首版允许使用的 exhibit/文本证据清单与复核时限；
 - 日期提醒按美东自然日还是用户本地自然日计算；
