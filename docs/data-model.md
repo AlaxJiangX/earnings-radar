@@ -239,7 +239,9 @@ Company 不直接拥有 IndexMembership。公司级指数归属由其全部有�
 
 当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider 的外部事件标识和来源证据去重，不能使用 `company + fiscal_year + period_type` 作为正式身份。4.1D 负责 candidate promotion、身份完成和冲突检测；跨 Provider 的候选去重、合并与拆分属于 4.2。任何身份变化必须保留旧标识、来源及 DataChange，不能静默覆盖。详细决策见 ADR-001 与 ADR-007。
 
-EarningsEvent.status 只回答“财报安排/发布到了哪一步”，不回答 SEC 文件是否提交。取消后重新安排是恢复原事件还是新候选事件仍待确认。
+EarningsEvent.status 只回答“财报安排/发布到了哪一步”，不回答 SEC 文件是否提交。正常 transition matrix、terminal semantics、correction 和 reinstatement 见 ADR-008。`cancelled` 表示整个 logical EarningsEvent 被明确取消或证实不成立，不表示电话会取消或普通日期变化；Provider absence 不能触发 cancellation。
+
+同一 canonical earnings identity 的真实取消后重新安排复用原 EarningsEvent，通过显式 reinstatement 恢复，不创建第二个 canonical event。若 event identity 本身不确定或错误，4.1C fail closed，交由 4.1D/4.2 处理。Status history 使用 `DataChange(field_name="status")` 与 AuditRecord，不新增 `EarningsStatusChange`。
 
 四个发布时间字段只允许以下三种 current-state 表示，不能使用模糊双真值：
 
@@ -607,7 +609,7 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 
 ## 14. 待确认的数据决策
 
-1. 候选财报事件跨多个 Provider 的自动合并阈值（4.2），以及取消后重新安排的身份处理（4.1C）。
+1. 候选财报事件跨多个 Provider 的自动合并阈值（4.2）。
 2. precision refinement / regression 是否通知用户，以及日期变化通知中的 old/new status 组成；历史记录规则已由 ADR-007 确定。
 3. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则。
 4. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。

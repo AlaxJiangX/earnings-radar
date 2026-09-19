@@ -55,5 +55,6 @@ CANONICAL 事件必须具有非空 `period_end_date`、`period_type`、`identity
 
 ## 仍待确认
 
-- 候选事件跨多个 Provider 的自动合并阈值；
-- 取消后重新安排是复用原事件还是创建新候选事件。
+- 候选事件跨多个 Provider 的自动合并阈值。
+
+取消后重新安排的 identity semantics 已由 ADR-008 确定，不再是本 ADR 的未决项。

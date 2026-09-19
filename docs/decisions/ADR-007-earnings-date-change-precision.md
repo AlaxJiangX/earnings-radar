@@ -193,5 +193,7 @@ EarningsDateChange
 
 - precision refinement / regression 是否通知用户；
 - 日期变化通知中的 old/new status 如何组合；
-- candidate promotion 与 cancellation/reschedule 的完整规则；
+- candidate promotion 的完整规则；
 - cross-provider merge、conflict 和 precedence 规则。
+
+Cancellation、reschedule、correction 和 reinstatement contract 已由 ADR-008 确定。
