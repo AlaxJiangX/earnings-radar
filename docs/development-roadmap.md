@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）已完成；阶段 4.1B（EarningsDateChange）已批准为下一实现阶段但尚未开始；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）和 4.1B（EarningsDateChange）已完成；阶段 4.1C（EarningsEvent Status Lifecycle）尚未开始；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -298,7 +298,7 @@
 
 4.1A 已完成（PR #17）：EarningsEvent、canonical/candidate 身份、Q4→FY 归一、52/53 周约束、只读 Admin 和 NULL invariant 加固。
 
-4.1B 是下一实现阶段，当前尚未开始。交付：
+4.1B 已完成（PR #19）。已实现：
 
 - EarningsEvent 四个发布时间字段的 date-only / exact datetime precision 表示；
 - `release_session` 非空 `unknown` 语义；
@@ -307,9 +307,9 @@
 - DataChange、AuditRecord、SourceEvidence 集成；
 - 单事务、`select_for_update`、幂等重放和只读 Admin。
 
-4.1B 明确不包含状态转换、candidate promotion 或 Provider reconciliation。
+4.1B 明确不包含状态转换、candidate promotion 或 Provider reconciliation。下一实现阶段为 4.1C EarningsEvent Status Lifecycle，尚未开始。
 
-4.1B 验收标准：
+4.1B 已满足验收标准：
 
 - date-only 不写入 `*_at`，exact datetime 不同时写入 `*_date`，DB CheckConstraint 阻止双表示；
 - 四个发布时间字段均支持 unknown / date_only / exact_datetime；
