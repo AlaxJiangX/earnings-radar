@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
 from companies.models import Company
@@ -47,6 +48,11 @@ def _make_canonical(
         **overrides,
     }
     return EarningsEvent.objects.create(**kwargs)
+
+
+def _integrity_constraint_name(error: IntegrityError) -> str | None:
+    cause = error.__cause__
+    return getattr(getattr(cause, "diag", None), "constraint_name", None)
 
 
 @pytest.mark.django_db
@@ -173,38 +179,63 @@ class TestEarningsEventCanonicalConstraints:
                 status="scheduled_estimated",
             )
 
-    def test_different_rule_version_cannot_bypass_uniqueness(self) -> None:
-        """Two CANONICAL events with the same business identity but different
-        identity_rule_version values must still violate the canonical business
-        uniqueness constraint."""
+    def test_different_rule_version_with_distinct_business_identity_allowed(self) -> None:
+        co = _make_company("0000002204", "AllowedRuleVer")
+        first = _make_canonical(
+            company=co,
+            period_end_date=date(2026, 3, 31),
+            period_type="Q1",
+            identity_rule_version="v1",
+        )
+        second = _make_canonical(
+            company=co,
+            period_end_date=date(2026, 6, 30),
+            period_type="Q2",
+            identity_rule_version="v2",
+        )
+        assert first.identity_rule_version == "v1"
+        assert second.identity_rule_version == "v2"
+
+    def test_different_rule_version_cannot_bypass_composite_uniqueness(self) -> None:
+        """A changed rule version cannot bypass canonical business uniqueness.
+
+        The records use different identity_key values so the field-level unique
+        constraint cannot mask the conditional composite constraint failure.
+        """
         from earnings.identity import derive_earnings_identity_key
 
-        co = _make_company("0000002202", "RuleVerCo")
+        co = _make_company("0000002205", "RuleVerComposite")
         d = date(2026, 6, 30)
-        identity_key = derive_earnings_identity_key(
+        first_identity_key = derive_earnings_identity_key(
             company_id=co.pk, period_end_date=d, period_type="Q2"
         )
-        # First: v1
+        second_identity_key = "f" * 64
+        assert first_identity_key != second_identity_key
+
         EarningsEvent.objects.create(
             company=co,
             identity_status="canonical",
             period_end_date=d,
             period_type="Q2",
-            identity_key=identity_key,
+            identity_key=first_identity_key,
             identity_rule_version="v1",
             status="scheduled_estimated",
         )
-        # Second: same business identity, different rule_version
-        with pytest.raises(IntegrityError), transaction.atomic():
+
+        with pytest.raises(IntegrityError) as exc_info, transaction.atomic():
             EarningsEvent.objects.create(
                 company=co,
                 identity_status="canonical",
                 period_end_date=d,
                 period_type="Q2",
-                identity_key=identity_key,
-                identity_rule_version="v2",  # different version
+                identity_key=second_identity_key,
+                identity_rule_version="v2",
                 status="scheduled_estimated",
             )
+
+        assert (
+            _integrity_constraint_name(exc_info.value) == "earnings_event_canonical_business_unique"
+        )
 
 
 @pytest.mark.django_db
@@ -239,6 +270,22 @@ class TestEarningsEventIncludesQ4:
                 includes_q4=True,
                 status="scheduled_estimated",
             )
+
+    def test_unknown_period_with_true_invalid_on_full_clean(self) -> None:
+        co = _make_company("0000002206", "UnknownPeriodValidation")
+        event = EarningsEvent(
+            company=co,
+            identity_status="candidate",
+            period_type=None,
+            includes_q4=True,
+            status="scheduled_estimated",
+        )
+
+        with pytest.raises(
+            ValidationError,
+            match="earnings_event_includes_q4_consistent",
+        ):
+            event.full_clean(validate_constraints=True)
 
     def test_q2_with_true_invalid(self) -> None:
         with pytest.raises(IntegrityError), transaction.atomic():
@@ -311,6 +358,24 @@ class TestEarningsEvent52Week:
                 period_length_weeks=None,
                 includes_q4=True,
             )
+
+    def test_week_calendar_requires_period_length_on_full_clean(self) -> None:
+        co = _make_company("0000002207", "WeekLengthValidation")
+        event = EarningsEvent(
+            company=co,
+            identity_status="candidate",
+            period_type="FY",
+            includes_q4=True,
+            fiscal_calendar_type="week_based_52_53",
+            period_length_weeks=None,
+            status="scheduled_estimated",
+        )
+
+        with pytest.raises(
+            ValidationError,
+            match="earnings_event_week_length_valid",
+        ):
+            event.full_clean(validate_constraints=True)
 
     def test_month_based_with_weeks_invalid(self) -> None:
         with pytest.raises(IntegrityError), transaction.atomic():
