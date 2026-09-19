@@ -23,7 +23,7 @@ EarningsEvent 当前使用单一 `DateTimeField` 保存预计、确认、实际�
 - 4.1B 只负责 EarningsDateChange、四个发布时间字段及 `release_session` 的 current-state mutation、domain history、DataChange、AuditRecord、SourceEvidence 集成、事务和幂等。
 - 4.1C 负责 EarningsEvent status lifecycle、状态转换矩阵和取消/重排 contract。
 - 4.1D 只负责 candidate promotion、identity completion、promotion collision detection、promotion idempotency 和 identity mutation audit。
-- 4.2 负责 Provider replay、external ID、candidate dedup、cross-provider merge、duplicate reconciliation、source conflict 和 source precedence，并负责解决 4.1D 检测到的 promotion collision。
+- 4.2 负责 Provider replay、external ID、candidate dedup、cross-provider merge、duplicate reconciliation、source conflict 和 source precedence，并负责解决 4.1D 检测到的 promotion collision；具体契约见 ADR-010。
 - 4.1D 不承诺通用 merge / split。没有 provider-independent 的具体用例前，合并、拆分和重复核对归 4.2。
 
 本 ADR 不改变 ADR-001 的 canonical identity 规则。ADR-001 中由候选核对触发的 merge / split 操作如果在未来需要，先由 4.2 提供 provider 和重复核对语义，再在明确的实现阶段落地。
@@ -193,7 +193,7 @@ EarningsDateChange
 
 - precision refinement / regression 是否通知用户；
 - 日期变化通知中的 old/new status 如何组合；
-- candidate promotion 的完整规则；
-- cross-provider merge、conflict 和 precedence 规则。
 
-Cancellation、reschedule、correction 和 reinstatement contract 已由 ADR-008 确定。
+Candidate promotion 的完整规则已由 ADR-009 确定；cross-provider merge、conflict 和
+precedence 的 4.2 契约已由 ADR-010 确定；cancellation、reschedule、correction 和
+reinstatement contract 已由 ADR-008 确定。

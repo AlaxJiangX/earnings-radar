@@ -86,7 +86,7 @@ User / SyncRun 1---* AuditRecord
 
 CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修正必须写审计，不能直接制造第二条公司。
 
-阶段 2.3 已实现：Service 将输入 CIK 规范化为 10 位 ASCII 数字并保留前导零；非空 CIK 由数据库唯一约束保护。暂时无 CIK 的创建必须提供预分配 UUID，避免以名称误合并。相同 CIK 但字段不同的重复写入会拒绝并要求走带审计的更新流程；跨来源优先级、人工锁定与自动覆盖策略仍待产品负责人确认，真实 Provider 接入前不得自行推断。
+阶段 2.3 已实现：Service 将输入 CIK 规范化为 10 位 ASCII 数字并保留前导零；非空 CIK 由数据库唯一约束保护。暂时无 CIK 的创建必须提供预分配 UUID，避免以名称误合并。相同 CIK 但字段不同的重复写入会拒绝并要求走带审计的更新流程；Company 主数据的跨来源优先级、人工锁定与自动覆盖策略仍待产品负责人确认，真实 Provider 接入前不得自行推断。财报日历字段的 4.2 authority 已由 ADR-010 单独确定，不改变 Company 主数据规则。
 
 ### 4.2 `SecurityListing`
 
@@ -237,7 +237,7 @@ Company 不直接拥有 IndexMembership。公司级指数归属由其全部有�
 
 正式唯一身份已确定为 `company_id + period_end_date + period_type`，并由带版本的规范化函数生成 `identity_key`。年度财报统一为 `FY + includes_q4=true`，上游 Q4 年度标签不另建事件。52/53 周通过 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不作为 period_type。`fiscal_year` 是来源/展示属性，不参与唯一键。数据库对非空 `identity_key` 设置唯一约束，并要求 CANONICAL 事件必须有 `period_end_date`、`period_type`、`identity_key` 和 `identity_rule_version`。
 
-当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider 的外部事件标识和来源证据去重，不能使用 `company + fiscal_year + period_type` 作为正式身份。4.1D 通过 ADR-009 的 promotion 在同一个 EarningsEvent row 上补齐 canonical identity facts（`period_end_date`、`period_type`、派生的 `includes_q4` / `identity_key` / `identity_rule_version`），将 `identity_status` 原子变为 canonical。Promotion 是 completion 而非 correction：不修改 `company` 或 fiscal metadata，不改变 status、schedule 和既有历史；已有不同的 `period_end_date` / `period_type` 或 existing canonical collision 时 fail closed，不做 candidate dedup、merge/split 或自动合并。每个真实 identity 字段变化写 DataChange，一次 promotion 写一条 operation-level AuditRecord；`EarningsEvent.source_evidence` 保持原值。跨 Provider 的候选去重、合并与拆分属于 4.2。详细决策见 ADR-001、ADR-007 与 ADR-009。
+当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider 的外部事件标识和来源证据去重，不能使用 `company + fiscal_year + period_type` 作为正式身份。4.1D 通过 ADR-009 的 promotion 在同一个 EarningsEvent row 上补齐 canonical identity facts（`period_end_date`、`period_type`、派生的 `includes_q4` / `identity_key` / `identity_rule_version`），将 `identity_status` 原子变为 canonical。Promotion 是 completion 而非 correction：不修改 `company` 或 fiscal metadata，不改变 status、schedule 和既有历史；已有不同的 `period_end_date` / `period_type` 或 existing canonical collision 时 fail closed，不做 candidate dedup、merge/split 或自动合并。每个真实 identity 字段变化写 DataChange，一次 promotion 写一条 operation-level AuditRecord；`EarningsEvent.source_evidence` 保持原值。跨 Provider 的候选去重、合并与拆分属于 4.2，其 contract 已由 ADR-010 冻结：external ID 仅存在于 observation / reconciliation 层，V1 只做 exact-only automatic match，不做 destructive merge，canonical collision 写 decision 并保留 loser。详细决策见 ADR-001、ADR-007、ADR-009 与 ADR-010。
 
 EarningsEvent.status 只回答“财报安排/发布到了哪一步”，不回答 SEC 文件是否提交。正常 transition matrix、terminal semantics、correction 和 reinstatement 见 ADR-008。`cancelled` 表示整个 logical EarningsEvent 被明确取消或证实不成立，不表示电话会取消或普通日期变化；Provider absence 不能触发 cancellation。
 
@@ -291,6 +291,63 @@ EarningsDateChange 不保存 `old_status/new_status`、`event_status_at_change`�
 建议索引：`(earnings_event, detected_at)`、`(field_name, change_kind, detected_at)`。EarningsDateChange 在模型和 Admin 中均为 append-only，不允许 update/delete。
 
 完整边界、precision 和事务规则见 `docs/decisions/ADR-007-earnings-date-change-precision.md`。
+
+### 6.3 `EarningsCalendarObservation`（4.2B planned；当前未实现）
+
+> 本节是 ADR-010 已批准的 schema 方向，不是已实现事实。当前数据库没有该模型；4.2B 才创建
+> model 与 migration。
+
+provider-neutral normalized revision，保存 provider external identity 与 raw lineage，支撑
+replay 与 reconciliation。
+
+| 字段 | 说明 |
+|---|---|
+| `id` | UUID PK |
+| `source_id` | FK DataSource，PROTECT；必须与 RawDataRecord source 一致 |
+| `raw_data_record_id` | FK RawDataRecord，PROTECT |
+| `provider_key`, `provider_version`, `parser_version` | 来源与解析版本 |
+| `provider_event_id` | 非空 stable source identity；不进入 EarningsEvent identity |
+| company hints | `cik` / `ticker` / `exchange` / `provider_symbol` / `company_name` |
+| fiscal facts | `fiscal_label_raw` / `fiscal_year` / `period_end_date` nullable / normalized `period_type` nullable / `fiscal_calendar_type` / `period_length_weeks` |
+| schedule facts | `estimated_release`（date 或 aware datetime）/ `release_precision` / `release_session` |
+| `confidence`, `source_observed_at`, `created_at` | 可追溯信息 |
+
+约束与查询：
+
+- UNIQUE `(raw_data_record, parser_version, provider_event_id)`；
+- MUST 支持按 `(source, provider_event_id)` 查询；
+- 缺失 stable provider_event_id 的记录 MUST NOT 写入本表；
+- 本表不决定 canonical identity，也不直接写 EarningsEvent。
+
+### 6.4 `EarningsReconciliationDecision`（4.2B planned；当前未实现）
+
+> 本节同样是 ADR-010 的 planned contract，4.2B 才实现。
+
+append-only decision history，结构化保存 review / collision / mapping / dedup / conflict 事实。
+结构化 match factors MUST NOT 被塞进 AuditRecord JSON。
+
+| 字段 | 说明 |
+|---|---|
+| `id` | UUID PK |
+| `observation_id` | FK EarningsCalendarObservation，PROTECT |
+| `decision_type` | created_candidate / matched_candidate / matched_canonical / duplicate_of / collision / conflict / review_required / ignored / manual_link 等语义；最终字符串由 4.2B 决定 |
+| `status` | 区分 open review-required、resolved binding、rejected / non-binding、superseded；最终字符串由 4.2B 决定 |
+| `target_event_id` | FK EarningsEvent nullable，PROTECT |
+| `covered_fields` | manual authority decision 覆盖的字段集合 |
+| `rule_version`, `match_factors`, `reason` | 规则、证据与原因 |
+| `actor_user_id`, `sync_run_id` | 人工或系统上下文 |
+| `decided_at` | UTC |
+| `supersedes_id` | self FK nullable，PROTECT，形成 append-only decision chain |
+| `decision_key` | deterministic unique |
+
+契约语义：
+
+- 旧 decision MUST NOT update / delete；新 decision 通过 `supersedes` 指针表达替代；
+- "最新有效 decision" MUST 可查询、可重放、可审计；
+- `decision_key` MUST NOT 包含 `decided_at`，且 MUST 由无凭据的规范化输入生成；
+- mapping 冲突 MUST fail closed；
+- loser EarningsEvent MUST 保持 candidate，不删除、不覆盖、不 copy 历史；
+- loser MUST NOT 进入未来公开 canonical selector。
 
 ## 7. SEC 文件
 
@@ -500,6 +557,11 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 
 同一领域记录仍可因不同来源、字段、标准化值或规则版本拥有多条证据；领域表中的 `primary_source_evidence_id` 只是当前选中来源的快捷引用。领域 Service 使用证据时只接受其主键作为入口，重新加载持久化的 SourceEvidence、RawDataRecord、DataSource、SyncRun 和 RawDataObservation；证据 target 必须匹配领域目标，显式传入的 SyncRun 必须与证据的持久化 SyncRun 相同，并且该任务必须观察过该原始记录。调用方在内存中修改 evidence 的 target、来源或任务字段不能改变验证结果。
 
+ADR-010 进一步冻结：尚未匹配到 EarningsEvent 的 provider observation MUST NOT 创建
+SourceEvidence，其 provenance 保留在 `EarningsCalendarObservation` 与 raw / observation 链中。
+4.2A 不扩展 SourceEvidence target enum；4.2B 只评估为 observation / decision 扩展 AuditRecord
+target enum。SourceEvidence 仍只指向 EarningsEvent 等既有领域目标。
+
 `0004_rekey_source_evidence_by_raw_record` 只正向重算 evidence_key，不删除、合并或改写证据内容；其反向迁移为 noop。若需要回退代码，必须先评估旧版 key 语义与当前数据的兼容性，不能假定反向迁移会恢复旧 key。
 
 ## 11. 变更历史与审计记录
@@ -587,6 +649,8 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | IndexChangeEvent | aggregation_key unique |
 | EarningsEvent | 非空 identity_key unique；规则为 company + period_end_date + period_type，带版本 |
 | EarningsDateChange | data_change unique；领域历史 append-only |
+| EarningsCalendarObservation（4.2B planned） | raw_data_record + parser_version + provider_event_id unique；支持按 source + provider_event_id 查询 |
+| EarningsReconciliationDecision（4.2B planned） | deterministic decision_key unique；append-only；supersedes 链 |
 | Filing | accession_number unique |
 | WatchlistItem | user + company unique |
 | ReminderRule | null-safe user/company/event/channel/lead unique |
@@ -607,16 +671,27 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 - 原始响应、通知正文、审计 IP 信息的期限必须在上线前明确；
 - API 密钥、密码、session、邮件认证信息绝不进入原始数据或审计 JSON。
 
-## 14. 待确认的数据决策
+## 14. 数据决策状态
 
-1. 候选财报事件跨多个 Provider 的自动合并阈值（4.2）。
-2. precision refinement / regression 是否通知用户，以及日期变化通知中的 old/new status 组成；历史记录规则已由 ADR-007 确定。
-3. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则。
-4. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。
-5. 1–7 日指数偏移候选的人工复核负责人、处理时限与默认行为。
-6. release filing 首版 exhibit/文本证据清单、REVIEW_REQUIRED 展示范围和复核时限。
-7. 来源可信度的量表、冲突胜出矩阵及人工修正是否锁定字段。
-8. 用户级与公司级 ReminderRule 的覆盖/叠加规则。
-9. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
-10. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
-11. AuditRecord 和 DataChange 的保留期限、IP 哈希保留期及具体查看角色仍需在阶段 8.1 前确认；目标引用已确定为受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。
+Stage 4.2A 已由 ADR-010 冻结、不再属于待确认的决策：
+
+- provider external identity 分层、missing ID 处理与 provider-level 要求；
+- exact-only cross-provider automatic matching，不实现 fuzzy threshold；
+- 4.2 third-party calendar 字段权限与 append-only manual decision authority；
+- sync window / backfill / empty calendar 语义；
+- no destructive merge、loser 保留与 canonical collision 处理；
+- monitoring pool、scope、pagination 与 replay identity。
+
+以下数据决策仍待确认：
+
+1. precision refinement / regression 是否通知用户，以及日期变化通知中的 old/new status 组成；历史记录规则已由 ADR-007 确定。
+2. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则；4.2 matching 已由 ADR-010 限定为 unique CIK 或 unique exchange+ticker as-of，其余 fail closed，但 Company 主数据合并规则仍需确认。
+3. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。
+4. 1–7 日指数偏移候选的人工复核负责人、处理时限与默认行为。
+5. release filing 首版 exhibit/文本证据清单、REVIEW_REQUIRED 展示范围和复核时限。
+6. IR / SEC 等高 authority 来源的字段级冲突矩阵与复核流程（4.4 / 4.5 前）；4.2 第三方 calendar 的字段权限与 append-only manual decision authority 已由 ADR-010 确定。
+7. 用户级与公司级 ReminderRule 的覆盖/叠加规则。
+8. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
+9. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
+10. AuditRecord 和 DataChange 的保留期限、IP 哈希保留期及具体查看角色仍需在阶段 8.1 前确认；目标引用已确定为受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。
+11. 4.2F 最终 provider / license checklist 结论与 anomaly shrink operational 阈值；不阻塞 4.2B。

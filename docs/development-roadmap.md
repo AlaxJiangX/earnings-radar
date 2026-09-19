@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2 财报日历 Provider、同步与 Reconciliation 为 NEXT；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）为 NEXT；Stage 4.2C-4.2F 尚未开始，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -41,7 +41,8 @@
 - 产品负责人确认注册策略、提醒“提前一天”的时区语义；初始数据新鲜度和 alpha/beta 门槛已由 ADR-004 确定；
 - 选定并记录财报日历和四个指数的数据来源、许可、字段与频率；
 - 选定邮件供应商；
-- 来源冲突矩阵仍待确认；指数偏移窗口和方向已由 ADR-002 确定；
+- 来源冲突矩阵整体仍待确认；其中 Stage 4.2 第三方 earnings calendar 子集已由 ADR-010 确定，
+  IR / SEC 与 Company 主数据仍按各自最晚阶段确认；指数偏移窗口和方向已由 ADR-002 确定；
 - 落实已接受 ADR-001（财报身份）、ADR-002（证券级成员与偏移）、ADR-003（release filing 分类）和 ADR-004（发布门槛）的实现门。
 
 验收标准：
@@ -377,21 +378,66 @@
 - status / schedule / history 不变；
 - No migration；candidate creation、provider external ID、dedup、merge/split、cross-provider reconciliation、source conflict / precedence 均保持在 4.2 边界。
 
-4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。下一阶段为 4.2 财报日历 Provider、同步与 Reconciliation。
+4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 也已完成；下一阶段为 4.2B Earnings Calendar Observation & Reconciliation Schema Foundation。
 
-#### 4.2 财报日历 Provider、同步与 Reconciliation（NEXT）
+#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B NEXT）
 
-交付：选定供应商适配器、同步命令和 Provider reconciliation。
+正式拆分与实现依据（ADR-010）：
 
-验收标准：
+```text
+4.2A Earnings Calendar Observation / External Identity / Reconciliation Contract Ratification
+4.2B Earnings Calendar Observation & Reconciliation Schema Foundation
+4.2C Fixture-First Earnings Calendar Ingestion & Replay
+4.2D Candidate Creation & Company Matching
+4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority
+4.2F Live Earnings Calendar Provider & Sync Command
+```
+
+4.2A 已完成（ADR-010 已接受）。已冻结：external identity 分层与 missing ID 处理；exact-only
+automatic reconciliation；第三方 calendar 字段权限与 append-only manual decision authority；
+90/30 day 默认窗口与 backfill / empty calendar 语义；no destructive merge 与 canonical
+collision；observation / decision persistence direction；candidate creation contract；
+monitoring pool / scope / replay；pagination / partial；provider / license gate。4.2A 无
+model、migration 或代码。
+
+4.2B NEXT 交付：`EarningsCalendarObservation`、`EarningsReconciliationDecision`、必要
+audit target constraint 变更、DB 约束、migration 与并发 / 约束测试。验收标准：模型与
+ADR-010 契约一致；唯一约束、append-only 与 supersedes 语义有数据库测试；不实现 Provider
+网络、parser、reconciliation 规则或 command。
+
+4.2C 交付：fixture-first parser protocol、raw-first ingestion、pagination、scope /
+idempotency、empty response 语义与 replay。验收标准：普通 CI 无真实网络；同一 fixture
+连续处理两次不新增 observation / decision / domain row；partial pagination 不宣称完成且
+不写 domain；缺失 provider ID 不创建 observation / candidate。
+
+4.2D 交付：`earnings_monitoring_pool(as_of_date)`、`monitoring_pool_hash`、company /
+security matching 与独立 candidate creation service。验收标准：CIK 或唯一
+exchange+ticker 才自动匹配；ticker-only 或跨交易所歧义 fail closed；candidate 先创建再
+promotion；SourceEvidence / AuditRecord / 事务与 replay 测试通过。
+
+4.2E 交付：exact-only reconciliation、duplicate / collision decision、conflict / review 与
+manual decision authority。验收标准：ADR-010 的 4.2A-02 / 03 / 05 全部有测试；不实现 fuzzy
+auto-merge；无破坏性 merge；loser 历史完整；人工 decision 不被后续自动同步覆盖；
+review_required 可查询、可重放。
+
+4.2F 交付：license gate 通过后的 live Provider adapter 与 `earnings.calendar_window` sync
+command。验收标准：provider / license checklist 完成；普通 CI 仍不访问真实网络；受控 smoke
+test、超时 / 限速 / partial / 幂等重跑与新鲜度记录通过。license gate 未完成时本阶段
+BLOCKED。
+
+整体验收标准：
 
 - 仅同步当前监控池和允许范围；
 - 预计日期明确显示为预计，不冒充确认；
 - 重跑不重复事件、变化或原始正文；
 - Provider replay 使用稳定 external ID 和幂等键；
-- candidate dedup、cross-provider merge、duplicate reconciliation、source conflict 和 precedence 均在 4.2 定义并有审计；
+- candidate dedup、cross-provider match、duplicate reconciliation、source conflict 和
+  precedence 均按 ADR-010 定义并有审计；
+- exact-only automatic match；任何 fuzzy / 不完整数据进入 review_required，不静默覆盖；
 - 来源冲突按已批准规则处理并可追溯；
-- 模糊/不完整数据进入待复核状态而非静默覆盖。
+- no destructive merge；canonical collision fail closed；
+- provider absence / empty calendar / partial pagination 不触发删除或取消；
+- live Provider 在 license checklist 完成前保持 BLOCKED。
 
 #### 4.3 财报列表与公司详情基础页
 
@@ -628,12 +674,12 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 决策 | 最晚确认阶段 |
 |---|---|
 | 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前 |
-| 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture |
+| 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture；4.2F 前必须完成 ADR-010 的 provider / license checklist |
 | 邮件服务、摘要时间、重试规则 | 6.4 前 |
-| 跨 Provider 合并阈值与重复核对 | 4.2 前；FY/52-53 周规则已由 ADR-001 确定 |
+| 跨 Provider 合并阈值与重复核对 | 已由 ADR-010 确定为 exact-only；不实现 fuzzy auto-merge；FY/52-53 周规则由 ADR-001 确定 |
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
 | release filing 证据清单、复核展示和时限 | 4.5 前；三态分类已由 ADR-003 确定 |
-| 来源冲突与人工锁定策略 | 首个真实来源合并前；2.3 当前仅拒绝同一 CIK 的静默冲突并要求带审计更新 |
+| 来源冲突与人工锁定策略 | 4.2 第三方 calendar 字段权限与 append-only manual decision authority 已由 ADR-010 确定；IR/SEC 高 authority 矩阵最晚 4.4/4.5 前；Company 主数据仍按 2.3 |
 | 提前一天的时区/DST 语义 | 6.1 前 |
 | 原始/通知/审计数据保留 | 8.1 前 |
 | 新鲜度与 alpha/beta 门槛的后续调整 | 仅在 alpha 实测支持时修订 ADR-004 |

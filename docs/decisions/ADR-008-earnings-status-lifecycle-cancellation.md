@@ -321,7 +321,9 @@ EARNINGS_STATUS_LIFECYCLE_RULE_VERSION = "earnings-status-lifecycle-v1"
 
 ## Deferred
 
-- Provider 具体 cancellation evidence precedence：4.2。
-- Cancellation 后 identity 无法确认时的 promotion/collision resolution：4.1D/4.2。
+- Provider absence 已由 ADR-010 明确不得触发 cancellation；IR / SEC affirmative cancellation
+  evidence 的具体 authority 仍待 4.4 / 4.5。
+- Cancellation 后 identity 无法确认时的 promotion/collision resolution：4.1D 已 fail closed；
+  4.2 collision / review 契约已由 ADR-010 冻结，实现属于 4.2E。
 - Conference call 独立取消状态：未来产品需求。
 - Status change notification 的投递与去重：通知阶段。
