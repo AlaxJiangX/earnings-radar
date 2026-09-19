@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     "audit.apps.AuditConfig",
     "companies.apps.CompaniesConfig",
     "indexes.apps.IndexesConfig",
+    "earnings.apps.EarningsConfig",
 ]
 
 MIDDLEWARE = [
