@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）和 4.1C（EarningsEvent Status Lifecycle）已完成；阶段 4.1D（Candidate Promotion）contract 已由 ADR-009 ratified，READY FOR IMPLEMENTATION / NEXT；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2 财报日历 Provider、同步与 Reconciliation 为 NEXT；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -307,7 +307,7 @@
 - DataChange、AuditRecord、SourceEvidence 集成；
 - 单事务、`select_for_update`、幂等重放和只读 Admin。
 
-4.1B 明确不包含状态转换、candidate promotion 或 Provider reconciliation。下一实现阶段为 4.1D Candidate Promotion。
+4.1B 不包含状态转换、candidate promotion 或 Provider reconciliation；其中 status lifecycle 与 candidate promotion 已分别由 4.1C、4.1D 完成，Provider reconciliation 仍属于 4.2。
 
 4.1B 已满足验收标准：
 
@@ -354,11 +354,32 @@
 
 4.1D 不负责 cross-provider merge、provider dedup、provider conflict 或 precedence；这些属于 4.2。通用 merge / split 在没有 provider-independent 的明确领域用例前不进入 4.1D。
 
-4.1D promotion contract 已由 ADR-009 ratified，READY FOR IMPLEMENTATION / NEXT。Promotion 固定为同一 EarningsEvent row 的 candidate -> canonical completion；existing canonical collision fail closed，canonical identity correction、candidate dedup、merge/split 和 provider reconciliation 均延后至 4.2。
+4.1D 已完成（PR #24）。已实现：
 
-4.1 完整交付：EarningsEvent、EarningsDateChange、candidate promotion、status lifecycle 和 Admin。开始编码前必须再次核对 ADR-001、ADR-003、ADR-007、ADR-008 与 ADR-009。
+- same-row / same UUID candidate -> canonical promotion，completion-not-correction；
+- identity completion、canonical collision fail closed、同 identity replay 幂等；
+- `transaction.atomic()`、`select_for_update()`、nested savepoint 与精确的 PostgreSQL collision diagnostics；
+- unknown/unrelated `IntegrityError` 原样 re-raise；
+- per-field DataChange、exactly 1 operation-level AuditRecord；
+- SourceEvidence / SyncRun / manual provenance 集成，`EarningsEvent.source_evidence` 保持不变；
+- status、schedule、date/status history 与 fiscal metadata 保持不变；
+- 真实 PostgreSQL same-candidate 与 two-candidate concurrency coverage；
+- 无 model/schema change、无 migration。
 
-#### 4.2 财报日历 Provider、同步与 Reconciliation
+4.1D 已满足验收标准：
+
+- candidate promotion 在同一 row 原子完成，UUID 与 `created_at` 不变；
+- conflicting candidate facts 与 existing canonical collision fail closed；
+- canonical replay 返回 `changed=False`，不新增 DataChange / AuditRecord；
+- same-candidate concurrency => one mutation + one no-op；
+- two-candidate same-identity concurrency => one success + one collision，loser 完整 rollback；
+- current state、DataChange、AuditRecord 同一事务提交或全部回滚；
+- status / schedule / history 不变；
+- No migration；candidate creation、provider external ID、dedup、merge/split、cross-provider reconciliation、source conflict / precedence 均保持在 4.2 边界。
+
+4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。下一阶段为 4.2 财报日历 Provider、同步与 Reconciliation。
+
+#### 4.2 财报日历 Provider、同步与 Reconciliation（NEXT）
 
 交付：选定供应商适配器、同步命令和 Provider reconciliation。
 
