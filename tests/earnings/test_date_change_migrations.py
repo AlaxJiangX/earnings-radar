@@ -39,7 +39,10 @@ def test_0003_backfills_existing_schedule_precision_and_release_session() -> Non
             identity_status="candidate",
             status="scheduled_estimated",
             estimated_release_at=exact_at,
-            release_session=None,
+            confirmed_release_at=exact_at,
+            earnings_release_at=exact_at,
+            conference_call_at=exact_at,
+            release_session="after_market",
         )
         unknown_event = EarningsEvent.objects.create(
             id=uuid.uuid4(),
@@ -57,14 +60,20 @@ def test_0003_backfills_existing_schedule_precision_and_release_session() -> Non
         exact_after = EarningsEventAfter.objects.get(pk=exact_event.pk)
         unknown_after = EarningsEventAfter.objects.get(pk=unknown_event.pk)
 
-        assert exact_after.estimated_release_at == exact_at
-        assert exact_after.estimated_release_date is None
-        assert exact_after.estimated_release_precision == "exact_datetime"
-        assert exact_after.release_session == "unknown"
+        for prefix in (
+            "estimated_release",
+            "confirmed_release",
+            "earnings_release",
+            "conference_call",
+        ):
+            assert getattr(exact_after, f"{prefix}_at") == exact_at
+            assert getattr(exact_after, f"{prefix}_date") is None
+            assert getattr(exact_after, f"{prefix}_precision") == "exact_datetime"
+            assert getattr(unknown_after, f"{prefix}_at") is None
+            assert getattr(unknown_after, f"{prefix}_date") is None
+            assert getattr(unknown_after, f"{prefix}_precision") == "unknown"
 
-        assert unknown_after.estimated_release_at is None
-        assert unknown_after.estimated_release_date is None
-        assert unknown_after.estimated_release_precision == "unknown"
+        assert exact_after.release_session == "after_market"
         assert unknown_after.release_session == "unknown"
     finally:
         MigrationExecutor(connection).migrate(latest_targets)

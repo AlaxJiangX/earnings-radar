@@ -229,6 +229,97 @@ class TestPrecisionChanges:
         )
         assert result.date_changes[0].change_kind == EarningsDateChangeKind.PRECISION_REGRESSION
 
+    def test_exact_to_date_only_different_market_date_is_value_change(self) -> None:
+        event = _exact_event(
+            "estimated_release",
+            datetime(2026, 10, 24, 20, 30, tzinfo=UTC),
+        )
+        result = update_earnings_schedule(
+            earnings_event=event,
+            changes={"estimated_release": date(2026, 10, 25)},
+            sync_run=make_sync_run("different-date-regression"),
+        )
+        assert result.date_changes[0].change_kind == EarningsDateChangeKind.VALUE_CHANGE
+
+    def test_exact_to_unknown_is_regression(self) -> None:
+        event = _exact_event(
+            "estimated_release",
+            datetime(2026, 10, 24, 20, 30, tzinfo=UTC),
+        )
+        result = update_earnings_schedule(
+            earnings_event=event,
+            changes={"estimated_release": None},
+            sync_run=make_sync_run("exact-to-unknown"),
+        )
+        assert result.date_changes[0].change_kind == EarningsDateChangeKind.PRECISION_REGRESSION
+
+    def test_date_only_to_unknown_is_regression(self) -> None:
+        event = _date_only_event("estimated_release", date(2026, 10, 24))
+        result = update_earnings_schedule(
+            earnings_event=event,
+            changes={"estimated_release": None},
+            sync_run=make_sync_run("date-to-unknown"),
+        )
+        assert result.date_changes[0].change_kind == EarningsDateChangeKind.PRECISION_REGRESSION
+
+    def test_concrete_session_to_different_concrete_session_is_value_change(self) -> None:
+        event = make_event(release_session="after_market")
+        result = update_earnings_schedule(
+            earnings_event=event,
+            changes={"release_session": "pre_market"},
+            sync_run=make_sync_run("session-value-change"),
+        )
+        assert result.date_changes[0].change_kind == EarningsDateChangeKind.VALUE_CHANGE
+
+    def test_exact_time_change_on_same_market_date_is_value_change(self) -> None:
+        event = _exact_event(
+            "estimated_release",
+            datetime(2026, 10, 24, 20, 30, tzinfo=UTC),
+        )
+        result = update_earnings_schedule(
+            earnings_event=event,
+            changes={"estimated_release": datetime(2026, 10, 24, 20, 45, tzinfo=UTC)},
+            sync_run=make_sync_run("same-date-time-change"),
+        )
+        assert result.date_changes[0].change_kind == EarningsDateChangeKind.VALUE_CHANGE
+
+
+@pytest.mark.django_db
+class TestMarketDateAndTimezone:
+    @pytest.mark.parametrize(
+        ("exact", "market_date"),
+        (
+            (datetime(2026, 10, 24, 0, 30, tzinfo=UTC), date(2026, 10, 23)),
+            (datetime(2026, 10, 24, 4, 30, tzinfo=UTC), date(2026, 10, 24)),
+            (datetime(2026, 10, 24, 23, 30, tzinfo=UTC), date(2026, 10, 24)),
+            (datetime(2026, 3, 8, 6, 30, tzinfo=UTC), date(2026, 3, 8)),
+            (datetime(2026, 3, 8, 7, 30, tzinfo=UTC), date(2026, 3, 8)),
+            (datetime(2026, 11, 1, 5, 30, tzinfo=UTC), date(2026, 11, 1)),
+            (datetime(2026, 11, 1, 6, 30, tzinfo=UTC), date(2026, 11, 1)),
+        ),
+    )
+    def test_exact_datetime_uses_new_york_market_date(
+        self,
+        exact: datetime,
+        market_date: date,
+    ) -> None:
+        event = _date_only_event("estimated_release", market_date)
+        result = update_earnings_schedule(
+            earnings_event=event,
+            changes={"estimated_release": exact},
+            sync_run=make_sync_run("market-date"),
+        )
+        assert result.date_changes[0].change_kind == EarningsDateChangeKind.PRECISION_REFINEMENT
+
+    def test_date_only_value_is_not_timezone_converted(self) -> None:
+        event = _date_only_event("estimated_release", date(2026, 10, 24))
+        result = update_earnings_schedule(
+            earnings_event=event,
+            changes={"estimated_release": date(2026, 10, 24)},
+            sync_run=make_sync_run("date-only-no-timezone"),
+        )
+        assert result.changed is False
+
 
 @pytest.mark.django_db
 class TestNoOpAndIdempotency:
@@ -317,6 +408,45 @@ class TestNoOpAndIdempotency:
             request_id="manual-request-1",
         )
         assert first.audit_record.action == AuditRecord.Action.MANUAL_CORRECTION
+        assert second.changed is False
+        assert _history_counts(event) == first_counts
+
+    def test_same_fact_from_new_evidence_does_not_create_second_domain_history(self) -> None:
+        event = make_event()
+        _, first_evidence = make_source_evidence(
+            event=event,
+            field_name="estimated_release",
+            normalized_value={
+                "kind": "date",
+                "precision": "date_only",
+                "value": "2026-10-24",
+            },
+            suffix="same-fact-first",
+        )
+        first = update_earnings_schedule(
+            earnings_event=event,
+            changes={"estimated_release": date(2026, 10, 24)},
+            source_evidence=first_evidence,
+        )
+        first_counts = _history_counts(event)
+
+        _, second_evidence = make_source_evidence(
+            event=event,
+            field_name="estimated_release",
+            normalized_value={
+                "kind": "date",
+                "precision": "date_only",
+                "value": "2026-10-24",
+            },
+            suffix="same-fact-second",
+        )
+        second = update_earnings_schedule(
+            earnings_event=event,
+            changes={"estimated_release": date(2026, 10, 24)},
+            source_evidence=second_evidence,
+        )
+
+        assert first.changed is True
         assert second.changed is False
         assert _history_counts(event) == first_counts
 
@@ -441,6 +571,38 @@ class TestTransactionAndValidation:
         event.refresh_from_db()
         assert event.estimated_release_date is None
         assert event.estimated_release_precision == EarningsDatePrecision.UNKNOWN
+        assert _history_counts(event) == (0, 0, 0)
+
+    def test_second_field_failure_rolls_back_first_field(self, monkeypatch) -> None:
+        from earnings.services import date_changes as service_module
+
+        event = make_event()
+        sync_run = make_sync_run("multi-field-rollback")
+        original = service_module.record_data_change
+        calls = 0
+
+        def fail_second_call(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("forced second field failure")
+            return original(**kwargs)
+
+        monkeypatch.setattr(service_module, "record_data_change", fail_second_call)
+
+        with pytest.raises(RuntimeError, match="forced second field failure"):
+            update_earnings_schedule(
+                earnings_event=event,
+                changes={
+                    "estimated_release": date(2026, 10, 24),
+                    "release_session": "after_market",
+                },
+                sync_run=sync_run,
+            )
+
+        event.refresh_from_db()
+        assert event.estimated_release_date is None
+        assert event.release_session == "unknown"
         assert _history_counts(event) == (0, 0, 0)
 
     def test_stale_caller_object_does_not_supply_old_value(self) -> None:

@@ -310,3 +310,5 @@ class TestEarningsDateChangeConstraints:
             )
         with pytest.raises(AppendOnlyRecordError):
             EarningsDateChange.objects.filter(pk=change.pk).delete()
+        with pytest.raises(AppendOnlyRecordError):
+            EarningsDateChange.objects.bulk_update([change], ["change_kind"])
