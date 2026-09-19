@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）和 4.1C（EarningsEvent Status Lifecycle）已完成；阶段 4.1D（Candidate Promotion）尚未开始；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）和 4.1C（EarningsEvent Status Lifecycle）已完成；阶段 4.1D（Candidate Promotion）contract 已由 ADR-009 ratified，READY FOR IMPLEMENTATION / NEXT；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -354,7 +354,9 @@
 
 4.1D 不负责 cross-provider merge、provider dedup、provider conflict 或 precedence；这些属于 4.2。通用 merge / split 在没有 provider-independent 的明确领域用例前不进入 4.1D。
 
-4.1 完整交付：EarningsEvent、EarningsDateChange、candidate promotion、status lifecycle 和 Admin。开始编码前必须再次核对 ADR-001、ADR-003、ADR-007 与 ADR-008。
+4.1D promotion contract 已由 ADR-009 ratified，READY FOR IMPLEMENTATION / NEXT。Promotion 固定为同一 EarningsEvent row 的 candidate -> canonical completion；existing canonical collision fail closed，canonical identity correction、candidate dedup、merge/split 和 provider reconciliation 均延后至 4.2。
+
+4.1 完整交付：EarningsEvent、EarningsDateChange、candidate promotion、status lifecycle 和 Admin。开始编码前必须再次核对 ADR-001、ADR-003、ADR-007、ADR-008 与 ADR-009。
 
 #### 4.2 财报日历 Provider、同步与 Reconciliation
 

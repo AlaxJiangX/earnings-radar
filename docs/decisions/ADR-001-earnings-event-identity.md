@@ -31,7 +31,7 @@ company_id + period_end_date + period_type
 
 CANONICAL 事件必须具有非空 `period_end_date`、`period_type`、`identity_key` 和 `identity_rule_version`，数据库对非空 identity_key 设置唯一约束。
 
-当 period_end_date 未知时，可以建立 CANDIDATE 事件，但必须使用 Provider 外部事件 ID、来源和抓取范围进行候选去重。不得用 `company + fiscal_year + period_type` 作为永久唯一键。日期确定后，核对服务将候选提升、合并或拆分为正式事件，并保留旧标识、来源和 DataChange。
+当 period_end_date 未知时，可以建立 CANDIDATE 事件，但必须使用 Provider 外部事件 ID、来源和抓取范围进行候选去重。不得用 `company + fiscal_year + period_type` 作为永久唯一键。日期确定后，候选按 ADR-009 提升为正式事件；candidate dedup、merge/split 与 cross-provider reconciliation 属于 Stage 4.2。任何身份变化必须保留旧标识、来源和 DataChange。
 
 ## 结果
 

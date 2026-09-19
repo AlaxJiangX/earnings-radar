@@ -194,6 +194,8 @@ IndexMembership 绑定 `SecurityListing`，而不是直接绑定 Company。每�
 
 4.1C 的 normal transition、cancellation、correction 和 same-identity reinstatement 以 ADR-008 为准。`cancelled` 只表示整个 EarningsEvent 被明确取消或证实不成立，Provider absence 不得触发；同一 canonical identity 重新安排时复用原事件。Status history 使用 DataChange 与 AuditRecord，identity uncertainty 交由 4.1D/4.2。
 
+4.1D promotion 在同一个 EarningsEvent row 上补齐 canonical identity facts 并 fail closed 处理已有 canonical collision；promotion service 是 identity mutation 的领域写入入口，不承担 candidate dedup、merge/split 或 provider reconciliation。完整 contract 见 `docs/decisions/ADR-009-earnings-candidate-promotion.md`。
+
 SEC Filing 不属于 EarningsEvent 的单向状态机。`Filing` 保存每份监管文件，`FilingEarningsLink` 保存它与财报事件的关系。Release filing 使用 `YES`、`NO`、`REVIEW_REQUIRED` 三态分类，并保存分类原因与规则版本；只有 YES 推导 `has_release_filing=true`。`has_periodic_filing` 独立推导。页面因此可以同时展示“财报已发布、8-K 已提交、10-Q 待提交”，也能表达外国发行人的 6-K/20-F/40-F 和不同提交顺序。该决策见 `docs/decisions/ADR-003-release-filing-classification.md`。
 
 4.1B 中，四个发布时间字段和 `release_session` 的 current state 必须使用 `*_at` 或 `*_date` 的单一表示，并由非空 `*_precision` 消除歧义；date-only 不得伪装成 UTC midnight。所有非 no-op value、precision refinement 和 precision regression 均在同一事务中写 EarningsDateChange、DataChange 与 AuditRecord。EarningsDateChange 通过一对一关系指向 DataChange，来源证据仍由 DataChange 的直接 FK 指向 target=EarningsEvent 的 SourceEvidence。status transition 属于 4.1C，不使用 EarningsDateChange 的 old/new status 表达。完整 contract 见 `docs/decisions/ADR-007-earnings-date-change-precision.md`。
