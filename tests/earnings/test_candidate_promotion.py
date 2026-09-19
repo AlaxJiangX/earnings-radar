@@ -112,6 +112,18 @@ def _promotion_audits(event: EarningsEvent):
     )
 
 
+def _assert_null_candidate_rolled_back(event: EarningsEvent) -> None:
+    event.refresh_from_db()
+    assert event.identity_status == IdentityStatus.CANDIDATE
+    assert event.identity_key is None
+    assert event.identity_rule_version is None
+    assert event.period_end_date is None
+    assert event.period_type is None
+    assert event.includes_q4 is False
+    assert _promotion_data_changes(event).count() == 0
+    assert _promotion_audits(event).count() == 0
+
+
 def _schedule_snapshot(event: EarningsEvent) -> dict[str, object]:
     event.refresh_from_db()
     return {field_name: getattr(event, field_name) for field_name in _SCHEDULE_FIELDS}
@@ -1020,10 +1032,42 @@ class TestPromotionCollision:
                     sync_run=make_sync_run("unknown-integrity"),
                 )
 
-        event.refresh_from_db()
-        assert event.identity_status == IdentityStatus.CANDIDATE
-        assert _promotion_data_changes(event).count() == 0
-        assert _promotion_audits(event).count() == 0
+        _assert_null_candidate_rolled_back(event)
+
+    def test_unrelated_integrity_error_with_coincidental_winner_is_reraised(self) -> None:
+        company = make_company("unrelated-with-winner")
+        canonical = make_event(
+            company=company,
+            period_end_date=_TARGET_DATE,
+            period_type="Q1",
+        )
+        candidate = _make_candidate(company=company)
+
+        with (
+            mock.patch(
+                "earnings.services.promotion._precheck_canonical_owner",
+                return_value=None,
+            ),
+            mock.patch.object(
+                EarningsEvent,
+                "save",
+                side_effect=IntegrityError("unrelated promotion integrity failure"),
+            ),
+        ):
+            with pytest.raises(
+                IntegrityError,
+                match="unrelated promotion integrity failure",
+            ):
+                promote_earnings_event(
+                    earnings_event=candidate,
+                    period_end_date=_TARGET_DATE,
+                    period_type="Q1",
+                    sync_run=make_sync_run("unrelated-with-winner"),
+                )
+
+        canonical.refresh_from_db()
+        assert canonical.identity_status == IdentityStatus.CANONICAL
+        _assert_null_candidate_rolled_back(candidate)
 
     def test_partial_data_change_failure_rolls_back_all_writes(self) -> None:
         event = _make_candidate()
@@ -1072,6 +1116,135 @@ class TestPromotionCollision:
         assert event.identity_status == IdentityStatus.CANDIDATE
         assert _promotion_data_changes(event).count() == 0
         assert _promotion_audits(event).count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+class TestPromotionIntegrityErrorDiagnostics:
+    @staticmethod
+    def _create_raising_trigger(
+        *,
+        suffix: str,
+        sqlstate: str,
+        constraint_name: str | None = None,
+    ) -> tuple[str, str]:
+        function_name = f"verify_promotion_{suffix}_function"
+        trigger_name = f"verify_promotion_{suffix}_trigger"
+        constraint_clause = (
+            f", CONSTRAINT = '{constraint_name}'" if constraint_name is not None else ""
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name} ON earnings_earningsevent")
+            cursor.execute(f"DROP FUNCTION IF EXISTS {function_name}()")
+            cursor.execute(
+                f"""
+                CREATE FUNCTION {function_name}()
+                RETURNS trigger AS $$
+                BEGIN
+                    RAISE EXCEPTION 'verification {suffix}'
+                    USING ERRCODE = '{sqlstate}'{constraint_clause};
+                END;
+                $$ LANGUAGE plpgsql;
+                """
+            )
+            cursor.execute(
+                f"""
+                CREATE TRIGGER {trigger_name}
+                BEFORE UPDATE ON earnings_earningsevent
+                FOR EACH ROW
+                EXECUTE FUNCTION {function_name}();
+                """
+            )
+        return function_name, trigger_name
+
+    @staticmethod
+    def _drop_raising_trigger(function_name: str, trigger_name: str) -> None:
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name} ON earnings_earningsevent")
+            cursor.execute(f"DROP FUNCTION IF EXISTS {function_name}()")
+
+    def test_check_violation_with_coincidental_winner_is_reraised(self) -> None:
+        company = make_company("diag-check")
+        canonical = make_event(
+            company=company,
+            period_end_date=_TARGET_DATE,
+            period_type="Q1",
+        )
+        candidate = _make_candidate(company=company)
+        function_name, trigger_name = self._create_raising_trigger(
+            suffix="check",
+            sqlstate="23514",
+        )
+        try:
+            with mock.patch(
+                "earnings.services.promotion._precheck_canonical_owner",
+                return_value=None,
+            ):
+                with pytest.raises(IntegrityError, match="verification check"):
+                    promote_earnings_event(
+                        earnings_event=candidate,
+                        period_end_date=_TARGET_DATE,
+                        period_type="Q1",
+                        sync_run=make_sync_run("diag-check"),
+                    )
+        finally:
+            self._drop_raising_trigger(function_name, trigger_name)
+
+        canonical.refresh_from_db()
+        assert canonical.identity_status == IdentityStatus.CANONICAL
+        _assert_null_candidate_rolled_back(candidate)
+
+    def test_unrelated_unique_violation_with_coincidental_winner_is_reraised(self) -> None:
+        company = make_company("diag-unrelated-unique")
+        canonical = make_event(
+            company=company,
+            period_end_date=_TARGET_DATE,
+            period_type="Q1",
+        )
+        candidate = _make_candidate(company=company)
+        function_name, trigger_name = self._create_raising_trigger(
+            suffix="unrelated_unique",
+            sqlstate="23505",
+            constraint_name="unrelated_verification_unique",
+        )
+        try:
+            with mock.patch(
+                "earnings.services.promotion._precheck_canonical_owner",
+                return_value=None,
+            ):
+                with pytest.raises(IntegrityError, match="verification unrelated_unique"):
+                    promote_earnings_event(
+                        earnings_event=candidate,
+                        period_end_date=_TARGET_DATE,
+                        period_type="Q1",
+                        sync_run=make_sync_run("diag-unrelated-unique"),
+                    )
+        finally:
+            self._drop_raising_trigger(function_name, trigger_name)
+
+        canonical.refresh_from_db()
+        assert canonical.identity_status == IdentityStatus.CANONICAL
+        _assert_null_candidate_rolled_back(candidate)
+
+    def test_recognized_constraint_without_winner_is_reraised(self) -> None:
+        company = make_company("diag-recognized-no-winner")
+        candidate = _make_candidate(company=company)
+        function_name, trigger_name = self._create_raising_trigger(
+            suffix="recognized_no_winner",
+            sqlstate="23505",
+            constraint_name="earnings_earningsevent_identity_key_key",
+        )
+        try:
+            with pytest.raises(IntegrityError, match="verification recognized_no_winner"):
+                promote_earnings_event(
+                    earnings_event=candidate,
+                    period_end_date=_TARGET_DATE,
+                    period_type="Q1",
+                    sync_run=make_sync_run("diag-recognized-no-winner"),
+                )
+        finally:
+            self._drop_raising_trigger(function_name, trigger_name)
+
+        _assert_null_candidate_rolled_back(candidate)
 
 
 @pytest.mark.django_db

@@ -41,6 +41,16 @@ PROMOTION_IDENTITY_FIELDS: tuple[str, ...] = (
     "identity_rule_version",
 )
 
+_UNIQUE_VIOLATION_SQLSTATE = "23505"
+_IDENTITY_KEY_UNIQUE_CONSTRAINT = "earnings_earningsevent_identity_key_key"
+_CANONICAL_BUSINESS_TUPLE_UNIQUE_CONSTRAINT = "earnings_event_canonical_business_unique"
+_PROMOTION_COLLISION_CONSTRAINTS = frozenset(
+    {
+        _IDENTITY_KEY_UNIQUE_CONSTRAINT,
+        _CANONICAL_BUSINESS_TUPLE_UNIQUE_CONSTRAINT,
+    }
+)
+
 
 class EarningsPromotionServiceError(ValueError):
     """Base domain error for candidate promotion."""
@@ -90,6 +100,19 @@ class _PromotionContext:
     reason: str
     request_id: str
     ip_address: str | None
+
+
+def _is_canonical_identity_unique_violation(error: IntegrityError) -> bool:
+    """Return True only for a recognized canonical identity unique violation."""
+
+    cause = error.__cause__
+    sqlstate = getattr(cause, "sqlstate", None)
+    if sqlstate is None:
+        sqlstate = getattr(cause, "pgcode", None)
+    if sqlstate != _UNIQUE_VIOLATION_SQLSTATE:
+        return False
+    constraint_name = getattr(getattr(cause, "diag", None), "constraint_name", None)
+    return constraint_name in _PROMOTION_COLLISION_CONSTRAINTS
 
 
 def promote_earnings_event(
@@ -194,7 +217,9 @@ def promote_earnings_event(
                         "updated_at",
                     )
                 )
-        except IntegrityError:
+        except IntegrityError as error:
+            if not _is_canonical_identity_unique_violation(error):
+                raise
             existing = _find_canonical_owner(
                 company_id=current.company_id,
                 period_end_date=normalized_date,
