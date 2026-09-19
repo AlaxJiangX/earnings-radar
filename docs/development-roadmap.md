@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）和 4.1B（EarningsDateChange）已完成；阶段 4.1C（EarningsEvent Status Lifecycle）contract 已由 ADR-008 ratified，implementation 尚未开始；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）和 4.1C（EarningsEvent Status Lifecycle）已完成；阶段 4.1D（Candidate Promotion）尚未开始；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -307,7 +307,7 @@
 - DataChange、AuditRecord、SourceEvidence 集成；
 - 单事务、`select_for_update`、幂等重放和只读 Admin。
 
-4.1B 明确不包含状态转换、candidate promotion 或 Provider reconciliation。下一实现阶段为 4.1C EarningsEvent Status Lifecycle；其 lifecycle、cancellation、correction/reinstatement 和 audit contract 已由 ADR-008 ratified，但 implementation 尚未开始。
+4.1B 明确不包含状态转换、candidate promotion 或 Provider reconciliation。下一实现阶段为 4.1D Candidate Promotion。
 
 4.1B 已满足验收标准：
 
@@ -321,13 +321,28 @@
 - 同一输入连续执行两次不产生重复 current value、DataChange 或 EarningsDateChange；
 - 4.1B 不实现 4.1C、4.1D 或 4.2。
 
-4.1C `EarningsEvent Status Lifecycle` 负责：
+4.1C 已完成（PR #21）。已实现：
 
-- status transition service；
-- transition matrix 和非法倒退；
-- audited correction 与 same-identity reinstatement；
-- lifecycle audit；
-- cancellation / reschedule contract。
+- EarningsEvent status transition service，使用 ADR-008 的 normal / correction / reinstatement 三条受控路径；
+- normal transition matrix 与 released / cancelled terminal semantics；
+- `cancel_earnings_event` 的明确 cancellation intent guard，provider absence 不能自动触发 cancelled；
+- audited correction 与 same-identity reinstatement，复用原 EarningsEvent canonical identity；
+- DataChange(`field_name=status`，rule version `earnings-status-lifecycle-v1`) 与 AuditRecord 集成；
+- SourceEvidence 通过现有 resolver 重新加载并验证来源链；
+- `transaction.atomic()`、`select_for_update()`、same-state no-op、幂等重放和双连接并发测试；
+- 4.1B / 4.1C outer transaction 回滚兼容；
+- 无 model change、无 migration。
+
+4.1C 已满足验收标准：
+
+- normal transition matrix 覆盖 `scheduled_estimated -> scheduled_confirmed/released/cancelled` 和 `scheduled_confirmed -> released/cancelled`；
+- same-state 重放返回 `changed=False`，不新增 DataChange 或 AuditRecord；
+- released / cancelled 在 normal API 中为 terminal，反向变化只能走 correction 或 reinstatement；
+- correction 仅允许已批准矩阵，并要求 actor、reason 和稳定 request/origin identity；
+- reinstatement 仅允许 `cancelled -> scheduled_estimated/scheduled_confirmed/released`，不修改 identity、schedule 或伪造中间状态；
+- 自动 cancellation 必须显式声明 affirmative intent，SourceEvidence 只验证 provenance，不解释 provider semantics；
+- repeated lifecycle cycles 使用独立 request/evidence identity 时保独立 DataChange、change_key 和 AuditRecord；
+- 4.1C 不实现 candidate promotion、Provider reconciliation、notification、SEC/Filing 或 UI。
 
 4.1D `Candidate Promotion` 只负责：
 
