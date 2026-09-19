@@ -205,7 +205,8 @@ provenance，field-level 来源由 DataChange 承载。
 - Identity write 使用 nested savepoint；捕获 `IntegrityError` 后，只有当错误
   可明确分类为 canonical identity collision（可重查 winning canonical 行）
   时才转换成 domain collision exception。未知 `IntegrityError` 必须 re-raise，
-  失败候选完整 rollback。
+  失败候选完整 rollback。重查 winning canonical 必须发生在 nested savepoint
+  rollback 之后的合法 transaction state，不得在 broken transaction 内直接 query。
 
 ### 13. Status / schedule 正交
 
@@ -218,7 +219,9 @@ contract 满足。Promotion 不修改 status、release 字段、precision、
 
 4.1D 继续采用 service-only governance：不新增 `EarningsEvent.save()` /
 `QuerySet.update()` 全局 identity guard，依赖 domain service、只读 Admin 和
-DB constraints。ORM-level hardening 作为独立任务，不混入 promotion。
+DB constraints。Direct ORM mutation 仍可绕过审计，这是已知的 deferred
+governance risk，不在本 Stage 解决；ORM-level hardening 作为独立任务，
+不混入 promotion。
 
 4.1D 不提供 `create_candidate`。Candidate creation、provider external ID 和
 provider ingestion 属于 4.2；4.1D tests 使用 fixture / factory 创建候选。
