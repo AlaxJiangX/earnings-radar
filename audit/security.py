@@ -62,6 +62,8 @@ _SENSITIVE_FIELD_SUFFIXES = (
     "sessionid",
     "signature",
 )
+# Earnings release session is a market-session fact, not an authentication session.
+_NON_SENSITIVE_FIELD_NAMES = frozenset({"releasesession"})
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)(?P<label>(?<![a-z0-9_-])[\"']?(?:"
     r"x[-_]?api[-_]?key|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|"
@@ -120,6 +122,8 @@ class ProviderRequestContextDescriptor:
 
 def is_sensitive_field_name(name: str) -> bool:
     normalized = _NON_ALPHANUMERIC_RE.sub("", name.lower())
+    if normalized in _NON_SENSITIVE_FIELD_NAMES:
+        return False
     if normalized in _SENSITIVE_FIELD_NAMES:
         return True
     if any(marker in normalized for marker in _SENSITIVE_FIELD_MARKERS):

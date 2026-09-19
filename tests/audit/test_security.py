@@ -55,6 +55,12 @@ def test_plain_authentication_words_are_not_credentials(value: str) -> None:
     assert contains_authentication_credential(value) is False
 
 
+def test_release_session_is_a_business_field_not_an_auth_session() -> None:
+    assert is_sensitive_field_name("release_session") is False
+    assert is_sensitive_field_name("session") is True
+    assert is_sensitive_field_name("auth_session") is True
+
+
 def test_nested_tuple_and_list_credentials_are_rejected_without_echoing_secret() -> None:
     value = {"items": [("safe",), {"nested": {"ToKeN": "fixture-nested-secret"}}]}
 

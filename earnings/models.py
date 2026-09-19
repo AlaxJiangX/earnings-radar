@@ -4,6 +4,9 @@ import uuid
 
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
+
+from audit.models import AppendOnlyAuditModel, AppendOnlyQuerySet
 
 
 class PeriodType(models.TextChoices):
@@ -41,6 +44,33 @@ class ReleaseSession(models.TextChoices):
     UNKNOWN = "unknown", "Unknown"
 
 
+class EarningsDatePrecision(models.TextChoices):
+    UNKNOWN = "unknown", "Unknown"
+    DATE_ONLY = "date_only", "Date only"
+    EXACT_DATETIME = "exact_datetime", "Exact datetime"
+
+
+class EarningsDateHistoryPrecision(models.TextChoices):
+    UNKNOWN = "unknown", "Unknown"
+    DATE_ONLY = "date_only", "Date only"
+    EXACT_DATETIME = "exact_datetime", "Exact datetime"
+    SESSION_ONLY = "session_only", "Session only"
+
+
+class EarningsDateChangeKind(models.TextChoices):
+    VALUE_CHANGE = "value_change", "Value change"
+    PRECISION_REFINEMENT = "precision_refinement", "Precision refinement"
+    PRECISION_REGRESSION = "precision_regression", "Precision regression"
+
+
+class EarningsDateField(models.TextChoices):
+    ESTIMATED_RELEASE = "estimated_release", "Estimated release"
+    CONFIRMED_RELEASE = "confirmed_release", "Confirmed release"
+    EARNINGS_RELEASE = "earnings_release", "Earnings release"
+    CONFERENCE_CALL = "conference_call", "Conference call"
+    RELEASE_SESSION = "release_session", "Release session"
+
+
 ALLOWED_PERIOD_TYPES = frozenset({"Q1", "Q2", "Q3", "FY", "H1", "H2", "OTHER"})
 ALLOWED_EVENT_STATUSES = frozenset(
     {"scheduled_estimated", "scheduled_confirmed", "released", "cancelled"}
@@ -48,6 +78,77 @@ ALLOWED_EVENT_STATUSES = frozenset(
 ALLOWED_IDENTITY_STATUSES = frozenset({"candidate", "canonical"})
 ALLOWED_FISCAL_CALENDAR_TYPES = frozenset({"month_based", "week_based_52_53", "other"})
 ALLOWED_RELEASE_SESSIONS = frozenset({"pre_market", "after_market", "during_market", "unknown"})
+ALLOWED_EARNINGS_DATE_PRECISIONS = frozenset({"unknown", "date_only", "exact_datetime"})
+ALLOWED_EARNINGS_DATE_HISTORY_PRECISIONS = frozenset(
+    {"unknown", "date_only", "exact_datetime", "session_only"}
+)
+ALLOWED_EARNINGS_DATE_CHANGE_KINDS = frozenset(
+    {"value_change", "precision_refinement", "precision_regression"}
+)
+ALLOWED_EARNINGS_DATE_FIELDS = frozenset(
+    {
+        "estimated_release",
+        "confirmed_release",
+        "earnings_release",
+        "conference_call",
+        "release_session",
+    }
+)
+
+
+def _earnings_date_state_constraint(*, prefix: str) -> models.CheckConstraint:
+    return models.CheckConstraint(
+        condition=(
+            Q(
+                **{
+                    f"{prefix}_precision": "unknown",
+                    f"{prefix}_at__isnull": True,
+                    f"{prefix}_date__isnull": True,
+                }
+            )
+            | Q(
+                **{
+                    f"{prefix}_precision": "date_only",
+                    f"{prefix}_at__isnull": True,
+                    f"{prefix}_date__isnull": False,
+                }
+            )
+            | Q(
+                **{
+                    f"{prefix}_precision": "exact_datetime",
+                    f"{prefix}_at__isnull": False,
+                    f"{prefix}_date__isnull": True,
+                }
+            )
+        ),
+        name=f"earnings_event_{prefix}_precision_consistent",
+    )
+
+
+def _date_history_representation_is_consistent(*, side: str) -> Q:
+    return (
+        Q(
+            **{
+                f"{side}_precision": "unknown",
+                f"{side}_date__isnull": True,
+                f"{side}_datetime__isnull": True,
+            }
+        )
+        | Q(
+            **{
+                f"{side}_precision": "date_only",
+                f"{side}_date__isnull": False,
+                f"{side}_datetime__isnull": True,
+            }
+        )
+        | Q(
+            **{
+                f"{side}_precision": "exact_datetime",
+                f"{side}_date__isnull": True,
+                f"{side}_datetime__isnull": False,
+            }
+        )
+    )
 
 
 class EarningsEvent(models.Model):
@@ -129,15 +230,38 @@ class EarningsEvent(models.Model):
 
     # --- Date / time ---
     estimated_release_at = models.DateTimeField(null=True, blank=True)
+    estimated_release_date = models.DateField(null=True, blank=True)
+    estimated_release_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
     confirmed_release_at = models.DateTimeField(null=True, blank=True)
+    confirmed_release_date = models.DateField(null=True, blank=True)
+    confirmed_release_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
     earnings_release_at = models.DateTimeField(null=True, blank=True)
+    earnings_release_date = models.DateField(null=True, blank=True)
+    earnings_release_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
     conference_call_at = models.DateTimeField(null=True, blank=True)
+    conference_call_date = models.DateField(null=True, blank=True)
+    conference_call_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
 
     release_session = models.CharField(  # noqa: DJ001
         max_length=16,
         choices=ReleaseSession.choices,
-        null=True,
-        blank=True,
+        default=ReleaseSession.UNKNOWN,
     )
 
     # --- Provenance ---
@@ -158,6 +282,8 @@ class EarningsEvent(models.Model):
             models.Index(fields=("company", "period_end_date")),
             models.Index(fields=("status", "estimated_release_at")),
             models.Index(fields=("status", "confirmed_release_at")),
+            models.Index(fields=("status", "estimated_release_date")),
+            models.Index(fields=("status", "confirmed_release_date")),
             models.Index(fields=("period_end_date",)),
         ]
         constraints = [
@@ -179,10 +305,13 @@ class EarningsEvent(models.Model):
                 name="earnings_event_calendar_type_valid",
             ),
             models.CheckConstraint(
-                condition=Q(release_session__in=ALLOWED_RELEASE_SESSIONS)
-                | Q(release_session__isnull=True),
+                condition=Q(release_session__in=ALLOWED_RELEASE_SESSIONS),
                 name="earnings_event_release_session_valid",
             ),
+            _earnings_date_state_constraint(prefix="estimated_release"),
+            _earnings_date_state_constraint(prefix="confirmed_release"),
+            _earnings_date_state_constraint(prefix="earnings_release"),
+            _earnings_date_state_constraint(prefix="conference_call"),
             # --- includes_q4 bidirectional invariant ---
             models.CheckConstraint(
                 condition=(
@@ -248,3 +377,100 @@ class EarningsEvent(models.Model):
             f"{company_name} {self.period_type or '?'} "
             f"@{self.period_end_date or '?'} [{self.status}]"
         )
+
+
+class EarningsDateChange(AppendOnlyAuditModel):
+    class Meta:
+        ordering = ("-detected_at", "-created_at")
+        indexes = [
+            models.Index(fields=("earnings_event", "detected_at")),
+            models.Index(fields=("field_name", "change_kind", "detected_at")),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(field_name__in=ALLOWED_EARNINGS_DATE_FIELDS),
+                name="earnings_date_change_field_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(change_kind__in=ALLOWED_EARNINGS_DATE_CHANGE_KINDS),
+                name="earnings_date_change_kind_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(old_precision__in=ALLOWED_EARNINGS_DATE_HISTORY_PRECISIONS)
+                    & Q(new_precision__in=ALLOWED_EARNINGS_DATE_HISTORY_PRECISIONS)
+                ),
+                name="earnings_date_change_precision_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(field_name=EarningsDateField.RELEASE_SESSION)
+                        & Q(old_precision=EarningsDateHistoryPrecision.SESSION_ONLY)
+                        & Q(new_precision=EarningsDateHistoryPrecision.SESSION_ONLY)
+                        & Q(old_date__isnull=True)
+                        & Q(new_date__isnull=True)
+                        & Q(old_datetime__isnull=True)
+                        & Q(new_datetime__isnull=True)
+                        & Q(old_session__isnull=False)
+                        & Q(new_session__isnull=False)
+                    )
+                    | (
+                        ~Q(field_name=EarningsDateField.RELEASE_SESSION)
+                        & _date_history_representation_is_consistent(side="old")
+                        & _date_history_representation_is_consistent(side="new")
+                        & Q(old_session__isnull=True)
+                        & Q(new_session__isnull=True)
+                    )
+                ),
+                name="earnings_date_change_value_shape_valid",
+            ),
+        ]
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    earnings_event = models.ForeignKey(
+        EarningsEvent,
+        on_delete=models.PROTECT,
+        related_name="date_changes",
+    )
+    field_name = models.CharField(max_length=32, choices=EarningsDateField.choices)
+    change_kind = models.CharField(max_length=32, choices=EarningsDateChangeKind.choices)
+
+    old_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDateHistoryPrecision.choices,
+    )
+    new_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDateHistoryPrecision.choices,
+    )
+
+    old_date = models.DateField(null=True, blank=True)
+    new_date = models.DateField(null=True, blank=True)
+    old_datetime = models.DateTimeField(null=True, blank=True)
+    new_datetime = models.DateTimeField(null=True, blank=True)
+    old_session = models.CharField(  # noqa: DJ001
+        max_length=16,
+        choices=ReleaseSession.choices,
+        null=True,
+        blank=True,
+    )
+    new_session = models.CharField(  # noqa: DJ001
+        max_length=16,
+        choices=ReleaseSession.choices,
+        null=True,
+        blank=True,
+    )
+
+    data_change = models.OneToOneField(
+        "audit.DataChange",
+        on_delete=models.PROTECT,
+        related_name="earnings_date_change",
+    )
+    detected_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return f"{self.earnings_event_id}:{self.field_name}:{self.change_kind}"
