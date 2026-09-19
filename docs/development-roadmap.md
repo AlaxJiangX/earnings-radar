@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）和 4.1B（EarningsDateChange）已完成；阶段 4.1C（EarningsEvent Status Lifecycle）尚未开始；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）和 4.1B（EarningsDateChange）已完成；阶段 4.1C（EarningsEvent Status Lifecycle）contract 已由 ADR-008 ratified，implementation 尚未开始；SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -307,7 +307,7 @@
 - DataChange、AuditRecord、SourceEvidence 集成；
 - 单事务、`select_for_update`、幂等重放和只读 Admin。
 
-4.1B 明确不包含状态转换、candidate promotion 或 Provider reconciliation。下一实现阶段为 4.1C EarningsEvent Status Lifecycle，尚未开始。
+4.1B 明确不包含状态转换、candidate promotion 或 Provider reconciliation。下一实现阶段为 4.1C EarningsEvent Status Lifecycle；其 lifecycle、cancellation、correction/reinstatement 和 audit contract 已由 ADR-008 ratified，但 implementation 尚未开始。
 
 4.1B 已满足验收标准：
 
@@ -325,6 +325,7 @@
 
 - status transition service；
 - transition matrix 和非法倒退；
+- audited correction 与 same-identity reinstatement；
 - lifecycle audit；
 - cancellation / reschedule contract。
 
@@ -338,7 +339,7 @@
 
 4.1D 不负责 cross-provider merge、provider dedup、provider conflict 或 precedence；这些属于 4.2。通用 merge / split 在没有 provider-independent 的明确领域用例前不进入 4.1D。
 
-4.1 完整交付：EarningsEvent、EarningsDateChange、candidate promotion、status lifecycle 和 Admin。开始编码前必须再次核对 ADR-001、ADR-003 与 ADR-007。
+4.1 完整交付：EarningsEvent、EarningsDateChange、candidate promotion、status lifecycle 和 Admin。开始编码前必须再次核对 ADR-001、ADR-003、ADR-007 与 ADR-008。
 
 #### 4.2 财报日历 Provider、同步与 Reconciliation
 
@@ -592,7 +593,6 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture |
 | 邮件服务、摘要时间、重试规则 | 6.4 前 |
 | 跨 Provider 合并阈值与重复核对 | 4.2 前；FY/52-53 周规则已由 ADR-001 确定 |
-| 取消后重新安排的身份处理 | 4.1C 前 |
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
 | release filing 证据清单、复核展示和时限 | 4.5 前；三态分类已由 ADR-003 确定 |
 | 来源冲突与人工锁定策略 | 首个真实来源合并前；2.3 当前仅拒绝同一 CIK 的静默冲突并要求带审计更新 |

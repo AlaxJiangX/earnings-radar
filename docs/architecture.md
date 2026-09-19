@@ -192,6 +192,8 @@ IndexMembership 绑定 `SecurityListing`，而不是直接绑定 Company。每�
 
 财报发布生命周期只使用 `SCHEDULED_ESTIMATED`、`SCHEDULED_CONFIRMED`、`RELEASED` 和 `CANCELLED`。晚到数据不得无审计地使状态倒退；管理员修正必须写原因和审计记录。预计、确认、实际发布和电话会时间分别保存。
 
+4.1C 的 normal transition、cancellation、correction 和 same-identity reinstatement 以 ADR-008 为准。`cancelled` 只表示整个 EarningsEvent 被明确取消或证实不成立，Provider absence 不得触发；同一 canonical identity 重新安排时复用原事件。Status history 使用 DataChange 与 AuditRecord，identity uncertainty 交由 4.1D/4.2。
+
 SEC Filing 不属于 EarningsEvent 的单向状态机。`Filing` 保存每份监管文件，`FilingEarningsLink` 保存它与财报事件的关系。Release filing 使用 `YES`、`NO`、`REVIEW_REQUIRED` 三态分类，并保存分类原因与规则版本；只有 YES 推导 `has_release_filing=true`。`has_periodic_filing` 独立推导。页面因此可以同时展示“财报已发布、8-K 已提交、10-Q 待提交”，也能表达外国发行人的 6-K/20-F/40-F 和不同提交顺序。该决策见 `docs/decisions/ADR-003-release-filing-classification.md`。
 
 4.1B 中，四个发布时间字段和 `release_session` 的 current state 必须使用 `*_at` 或 `*_date` 的单一表示，并由非空 `*_precision` 消除歧义；date-only 不得伪装成 UTC midnight。所有非 no-op value、precision refinement 和 precision regression 均在同一事务中写 EarningsDateChange、DataChange 与 AuditRecord。EarningsDateChange 通过一对一关系指向 DataChange，来源证据仍由 DataChange 的直接 FK 指向 target=EarningsEvent 的 SourceEvidence。status transition 属于 4.1C，不使用 EarningsDateChange 的 old/new status 表达。完整 contract 见 `docs/decisions/ADR-007-earnings-date-change-precision.md`。
@@ -339,7 +341,7 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 2. “每条关键数据保存每次抓取的原始响应”与“重复同步不得产生重复原始响应”存在表述张力；本方案对相同内容只存一份正文，同时每次运行保留获取/未变统计。
 3. MVP 验收要求用户可以注册，待确认项又建议开发阶段关闭公开注册；路线图已拆为关闭注册的 alpha 和开放注册的 beta。
 4. “所有数据库时间保存 UTC”不适用于只精确到自然日的公告日/生效日；本方案将其保存为 `date`，只有具体时刻使用 UTC。财报发布时间字段的 date-only / exact datetime 表示见 ADR-007。
-5. PRD 使用公司级 IndexMembership、单一 `FILED` 状态和早期财报唯一键作为需求草案表达；ADR-001/002/003/007 已确定更精确的技术模型，产品范围未改变。
+5. PRD 使用公司级 IndexMembership、单一 `FILED` 状态和早期财报唯一键作为需求草案表达；ADR-001/002/003/007/008 已确定更精确的技术模型，产品范围未改变。
 
 ## 14. 待产品负责人确认
 
@@ -351,7 +353,6 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 - IR Provider 首批公司范围与维护方式；
 - 来源冲突优先级、置信度规则和管理员复核流程；
 - 跨 Provider 的候选自动合并阈值和重复核对规则（4.2）；
-- 取消后重新安排的身份处理（4.1C）；
 - 1–7 日指数偏移候选的人工复核负责人、时限与默认处理；
 - release filing 首版允许使用的 exhibit/文本证据清单与复核时限；
 - 日期提醒按美东自然日还是用户本地自然日计算；
