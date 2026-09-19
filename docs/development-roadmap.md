@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；财报（阶段 4）、SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）已完成；阶段 4.1 其余内容、SEC Filing（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -287,7 +287,10 @@
 
 #### 4.1 财报事件领域模型
 
-交付：EarningsEvent、EarningsDateChange、候选/正式身份、财报发布状态机和 Admin。开始编码前必须再次核对 ADR-001 与 ADR-003。
+- 4.1A EarningsEvent 核心领域模型：已完成（PR #17）。已实现 EarningsEvent、canonical/candidate 身份、Q4→FY 归一、52/53 周约束、只读 Admin 和 NULL invariant 加固；不包含 EarningsDateChange 等后续交付。
+- 阶段 4.1 其余交付仍未完成：EarningsDateChange、状态流转、候选提升/合并、日期/状态变化历史等。
+
+阶段 4.1 完整交付：EarningsEvent、EarningsDateChange、候选/正式身份、财报发布状态机和 Admin。开始编码前必须再次核对 ADR-001 与 ADR-003。
 
 验收标准：
 
