@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）为 NEXT；Stage 4.2C-4.2F 尚未开始，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成，observation / decision schema foundation 与持久化基元已进入 main；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）为 NEXT，尚未开始；Stage 4.2D-4.2F 尚未开始，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -378,9 +378,9 @@
 - status / schedule / history 不变；
 - No migration；candidate creation、provider external ID、dedup、merge/split、cross-provider reconciliation、source conflict / precedence 均保持在 4.2 边界。
 
-4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 也已完成；下一阶段为 4.2B Earnings Calendar Observation & Reconciliation Schema Foundation。
+4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main；下一阶段为 4.2C Fixture-First Earnings Calendar Ingestion & Replay。
 
-#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B NEXT）
+#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C NEXT）
 
 正式拆分与实现依据（ADR-010）：
 
@@ -400,12 +400,14 @@ collision；observation / decision persistence direction；candidate creation co
 monitoring pool / scope / replay；pagination / partial；provider / license gate。4.2A 无
 model、migration 或代码。
 
-4.2B NEXT 交付：`EarningsCalendarObservation`、`EarningsReconciliationDecision`、必要
-audit target constraint 变更、DB 约束、migration 与并发 / 约束测试。验收标准：模型与
-ADR-010 契约一致；唯一约束、append-only 与 supersedes 语义有数据库测试；不实现 Provider
-网络、parser、reconciliation 规则或 command。
+4.2B 已完成：`EarningsCalendarObservation`、`EarningsReconciliationDecision`、audit target
+constraint 变更、DB 约束、earnings migrations 0004 / 0005 与 audit migration 0008 已进入
+main；observation / decision persistence primitive 与 append-only / replay / concurrency /
+constraint 测试已落地。验收标准已满足：模型与 ADR-010 契约一致；唯一约束、append-only 与
+supersedes 语义有数据库测试；未实现 Provider 网络、parser、ingestion、reconciliation 规则
+或 command。
 
-4.2C 交付：fixture-first parser protocol、raw-first ingestion、pagination、scope /
+4.2C NEXT 交付：fixture-first parser protocol、raw-first ingestion、pagination、scope /
 idempotency、empty response 语义与 replay。验收标准：普通 CI 无真实网络；同一 fixture
 连续处理两次不新增 observation / decision / domain row；partial pagination 不宣称完成且
 不写 domain；缺失 provider ID 不创建 observation / candidate。
