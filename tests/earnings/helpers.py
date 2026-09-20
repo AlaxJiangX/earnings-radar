@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from django.utils import timezone
 
+from accounts.models import User
 from audit.models import (
     DataSource,
     RawDataObservation,
@@ -17,7 +18,11 @@ from audit.models import (
 from audit.services import DataChangeWriteResult, record_data_change, record_source_evidence
 from companies.models import Company
 from earnings.identity import IDENTITY_RULE_VERSION, derive_earnings_identity_key
-from earnings.models import EarningsCalendarObservation, EarningsEvent
+from earnings.models import (
+    EarningsCalendarObservation,
+    EarningsEvent,
+    EarningsReconciliationDecision,
+)
 
 
 def make_company(suffix: str, *, display_name: str | None = None) -> Company:
@@ -218,3 +223,42 @@ def make_calendar_observation(
         **overrides,
     }
     return EarningsCalendarObservation.objects.create(**values)
+
+
+_UNSET = object()
+
+
+def make_user(suffix: str = "user") -> User:
+    return User.objects.create_user(
+        email=f"{suffix}-{uuid.uuid4().hex[:8]}@example.test",
+        password="test",
+    )
+
+
+def make_reconciliation_decision(
+    *,
+    observation: EarningsCalendarObservation | None = None,
+    target_event: object = _UNSET,
+    **overrides: object,
+) -> EarningsReconciliationDecision:
+    observation = observation or make_calendar_observation()
+    if target_event is _UNSET:
+        target_event = make_event()
+    values: dict[str, object] = {
+        "observation": observation,
+        "decision_type": "matched_canonical",
+        "status": "resolved",
+        "target_event": target_event,
+        "covered_fields": [],
+        "rule_version": "fixture-reconciliation-v1",
+        "match_factors": {},
+        "reason": "",
+        "actor_user": None,
+        "sync_run": make_sync_run("reconciliation-decision"),
+        "request_id": "",
+        "decided_at": timezone.now(),
+        "supersedes": None,
+        "decision_key": hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
+        **overrides,
+    }
+    return EarningsReconciliationDecision.objects.create(**values)

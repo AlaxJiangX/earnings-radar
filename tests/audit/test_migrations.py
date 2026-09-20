@@ -5,12 +5,17 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 MIGRATE_FROM = ("audit", "0003_source_evidence")
 MIGRATE_TO = ("audit", "0004_rekey_source_evidence_by_raw_record")
+MIGRATE_AUDIT_0007 = ("audit", "0007_raw_data_parse_attempt")
+MIGRATE_AUDIT_0008 = (
+    "audit",
+    "0008_extend_audit_targets_for_reconciliation_decision",
+)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -154,3 +159,89 @@ def _create_pre_0004_history(apps: Any) -> list[uuid.UUID]:
         evidence_ids.append(evidence.pk)
 
     return evidence_ids
+
+
+@pytest.mark.django_db(transaction=True)
+def test_0008_extends_audit_record_targets_and_reverses_safely() -> None:
+    executor = MigrationExecutor(connection)
+    latest_targets = executor.loader.graph.leaf_nodes()
+    observed_at = timezone.now()
+
+    try:
+        executor.migrate([MIGRATE_AUDIT_0007])
+        old_apps = executor.loader.project_state([MIGRATE_AUDIT_0007]).apps
+        DataSource = old_apps.get_model("audit", "DataSource")
+        SyncRun = old_apps.get_model("audit", "SyncRun")
+        AuditRecord = old_apps.get_model("audit", "AuditRecord")
+
+        source = DataSource.objects.create(
+            key="migration-audit-0008",
+            name="Migration audit 0008 source",
+            source_type="manual",
+            base_url="https://migration-audit.example.test/",
+        )
+        sync_run = SyncRun.objects.create(
+            job_type="migration.audit-0008",
+            source=source,
+            scope={"fixture": "audit-0008"},
+            idempotency_key="migration.audit-0008",
+            started_at=observed_at,
+            heartbeat_at=observed_at,
+        )
+        existing = AuditRecord.objects.create(
+            sync_run=sync_run,
+            action="create",
+            target_type="earnings_event",
+            target_id=uuid.uuid4(),
+            before={},
+            after={},
+            reason="",
+            request_id="migration-audit-0008-existing",
+            audit_key=hashlib.sha256(b"audit-0008-existing").hexdigest(),
+        )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([MIGRATE_AUDIT_0008])
+        new_apps = executor.loader.project_state([MIGRATE_AUDIT_0008]).apps
+        NewAuditRecord = new_apps.get_model("audit", "AuditRecord")
+        NewSyncRun = new_apps.get_model("audit", "SyncRun")
+        current_sync_run = NewSyncRun.objects.get(pk=sync_run.pk)
+
+        preserved = NewAuditRecord.objects.get(pk=existing.pk)
+        assert preserved.target_type == "earnings_event"
+        new_target = NewAuditRecord.objects.create(
+            sync_run=current_sync_run,
+            action="create",
+            target_type="earnings_reconciliation_decision",
+            target_id=uuid.uuid4(),
+            before={},
+            after={},
+            reason="",
+            request_id="migration-audit-0008-new",
+            audit_key=hashlib.sha256(b"audit-0008-new").hexdigest(),
+        )
+        assert new_target.target_type == "earnings_reconciliation_decision"
+
+        NewAuditRecord.objects.filter(pk=new_target.pk).delete()
+        executor = MigrationExecutor(connection)
+        executor.migrate([MIGRATE_AUDIT_0007])
+        reverted_apps = executor.loader.project_state([MIGRATE_AUDIT_0007]).apps
+        RevertedAuditRecord = reverted_apps.get_model("audit", "AuditRecord")
+        RevertedSyncRun = reverted_apps.get_model("audit", "SyncRun")
+        reverted_sync_run = RevertedSyncRun.objects.get(pk=sync_run.pk)
+        assert RevertedAuditRecord.objects.filter(pk=existing.pk).exists()
+        with pytest.raises(IntegrityError):
+            with transaction.atomic():
+                RevertedAuditRecord.objects.create(
+                    sync_run=reverted_sync_run,
+                    action="create",
+                    target_type="earnings_reconciliation_decision",
+                    target_id=uuid.uuid4(),
+                    before={},
+                    after={},
+                    reason="",
+                    request_id="migration-audit-0008-reverted",
+                    audit_key=hashlib.sha256(b"audit-0008-reverted").hexdigest(),
+                )
+    finally:
+        MigrationExecutor(connection).migrate(latest_targets)

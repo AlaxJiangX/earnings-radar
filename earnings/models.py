@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 
+from django.conf import settings
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from audit.models import AppendOnlyAuditModel, AppendOnlyQuerySet
@@ -71,6 +72,24 @@ class EarningsDateField(models.TextChoices):
     RELEASE_SESSION = "release_session", "Release session"
 
 
+class ReconciliationDecisionType(models.TextChoices):
+    CREATED_CANDIDATE = "created_candidate", "Created candidate"
+    MATCHED_CANDIDATE = "matched_candidate", "Matched candidate"
+    MATCHED_CANONICAL = "matched_canonical", "Matched canonical"
+    DUPLICATE_OF = "duplicate_of", "Duplicate of"
+    COLLISION = "collision", "Collision"
+    CONFLICT = "conflict", "Conflict"
+    REVIEW_REQUIRED = "review_required", "Review required"
+    NO_MATCH = "no_match", "No match"
+    IGNORED = "ignored", "Ignored"
+
+
+class ReconciliationDecisionStatus(models.TextChoices):
+    OPEN = "open", "Open"
+    RESOLVED = "resolved", "Resolved"
+    REJECTED = "rejected", "Rejected"
+
+
 ALLOWED_PERIOD_TYPES = frozenset({"Q1", "Q2", "Q3", "FY", "H1", "H2", "OTHER"})
 ALLOWED_EVENT_STATUSES = frozenset(
     {"scheduled_estimated", "scheduled_confirmed", "released", "cancelled"}
@@ -94,6 +113,26 @@ ALLOWED_EARNINGS_DATE_FIELDS = frozenset(
         "release_session",
     }
 )
+ALLOWED_RECONCILIATION_DECISION_TYPES = frozenset(
+    {
+        "created_candidate",
+        "matched_candidate",
+        "matched_canonical",
+        "duplicate_of",
+        "collision",
+        "conflict",
+        "review_required",
+        "no_match",
+        "ignored",
+    }
+)
+ALLOWED_RECONCILIATION_DECISION_STATUSES = frozenset({"open", "resolved", "rejected"})
+RESOLVED_RECONCILIATION_DECISION_TYPES = frozenset(
+    {"created_candidate", "matched_candidate", "matched_canonical", "duplicate_of"}
+)
+OPEN_RECONCILIATION_DECISION_TYPES = frozenset({"collision", "conflict", "review_required"})
+REJECTED_RECONCILIATION_DECISION_TYPES = frozenset({"no_match", "ignored"})
+ALLOWED_RECONCILIATION_COVERED_FIELDS = frozenset({"estimated_release", "release_session"})
 
 
 def _earnings_date_state_constraint(
@@ -597,3 +636,119 @@ class EarningsCalendarObservation(AppendOnlyAuditModel):
 
     def __str__(self) -> str:
         return f"{self.source_id}:{self.provider_event_id}@{self.raw_position}"
+
+
+class EarningsReconciliationDecision(AppendOnlyAuditModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    observation = models.ForeignKey(
+        EarningsCalendarObservation,
+        on_delete=models.PROTECT,
+        related_name="reconciliation_decisions",
+    )
+    decision_type = models.CharField(
+        max_length=32,
+        choices=ReconciliationDecisionType.choices,
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=ReconciliationDecisionStatus.choices,
+    )
+    target_event = models.ForeignKey(
+        EarningsEvent,
+        on_delete=models.PROTECT,
+        related_name="reconciliation_decisions",
+        null=True,
+        blank=True,
+    )
+    covered_fields = models.JSONField(default=list, blank=True)
+    rule_version = models.CharField(max_length=100)
+    match_factors = models.JSONField(default=dict, blank=True)
+    reason = models.CharField(max_length=2000, blank=True)
+    actor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="earnings_reconciliation_decisions",
+        null=True,
+        blank=True,
+    )
+    sync_run = models.ForeignKey(
+        "audit.SyncRun",
+        on_delete=models.PROTECT,
+        related_name="earnings_reconciliation_decisions",
+        null=True,
+        blank=True,
+    )
+    request_id = models.CharField(max_length=255, blank=True)
+    decided_at = models.DateTimeField(default=timezone.now)
+    supersedes = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="superseding_decisions",
+        null=True,
+        blank=True,
+    )
+    decision_key = models.CharField(max_length=64, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-decided_at", "-created_at", "-id")
+        indexes = [
+            models.Index(fields=("observation", "decided_at")),
+            models.Index(fields=("decision_type", "status", "decided_at")),
+            models.Index(fields=("target_event", "decided_at")),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(decision_type__in=ALLOWED_RECONCILIATION_DECISION_TYPES),
+                name="earnings_reconciliation_decision_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=ALLOWED_RECONCILIATION_DECISION_STATUSES),
+                name="earnings_reconciliation_decision_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(status="resolved")
+                        & Q(decision_type__in=RESOLVED_RECONCILIATION_DECISION_TYPES)
+                        & Q(target_event__isnull=False)
+                    )
+                    | (Q(status="open") & Q(decision_type__in=OPEN_RECONCILIATION_DECISION_TYPES))
+                    | (
+                        Q(status="rejected")
+                        & Q(decision_type__in=REJECTED_RECONCILIATION_DECISION_TYPES)
+                        & Q(target_event__isnull=True)
+                    )
+                ),
+                name="earnings_reconciliation_decision_outcome_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (Q(actor_user__isnull=False) & ~Q(reason="") & ~Q(request_id=""))
+                    | (Q(actor_user__isnull=True) & Q(sync_run__isnull=False) & Q(request_id=""))
+                ),
+                name="earnings_reconciliation_decision_context_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(decision_key__regex=r"^[0-9a-f]{64}$"),
+                name="earnings_reconciliation_decision_key_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(rule_version__regex=r"[^[:space:]]"),
+                name="earnings_reconciliation_decision_rule_not_empty",
+            ),
+            models.CheckConstraint(
+                condition=Q(supersedes__isnull=True) | ~Q(supersedes=F("id")),
+                name="earnings_reconciliation_decision_not_self",
+            ),
+            models.UniqueConstraint(
+                fields=("decision_key",),
+                name="earnings_reconciliation_decision_key_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.observation_id}:{self.decision_type}:{self.status}"
