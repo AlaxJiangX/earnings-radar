@@ -42,6 +42,14 @@ from earnings.services.promotion import (
     InvalidEarningsPromotion,
     promote_earnings_event,
 )
+from earnings.services.reconciliation import (
+    EarningsReconciliationDecisionIntegrityError,
+    EarningsReconciliationDecisionServiceError,
+    EarningsReconciliationDecisionWriteResult,
+    InvalidEarningsReconciliationDecision,
+    build_earnings_reconciliation_decision_key,
+    record_earnings_reconciliation_decision,
+)
 
 __all__ = [
     "EARNINGS_CANDIDATE_PROMOTION_RULE_VERSION",
@@ -57,6 +65,9 @@ __all__ = [
     "EarningsPromotionIntegrityError",
     "EarningsPromotionServiceError",
     "EarningsPromotionWriteResult",
+    "EarningsReconciliationDecisionIntegrityError",
+    "EarningsReconciliationDecisionServiceError",
+    "EarningsReconciliationDecisionWriteResult",
     "EarningsScheduleWriteResult",
     "EarningsStatusIdentityUncertain",
     "EarningsStatusIntegrityError",
@@ -65,6 +76,7 @@ __all__ = [
     "InvalidEarningsCalendarObservation",
     "InvalidEarningsDateValue",
     "InvalidEarningsPromotion",
+    "InvalidEarningsReconciliationDecision",
     "InvalidEarningsStatusContext",
     "InvalidEarningsStatusCorrection",
     "InvalidEarningsStatusEvidence",
@@ -72,11 +84,13 @@ __all__ = [
     "InvalidEarningsStatusTransition",
     "InvalidEarningsTargetStatus",
     "cancel_earnings_event",
+    "build_earnings_reconciliation_decision_key",
     "confirm_earnings_event",
     "correct_earnings_status",
     "mark_earnings_released",
     "promote_earnings_event",
     "record_earnings_calendar_observation",
+    "record_earnings_reconciliation_decision",
     "reinstate_earnings_event",
     "transition_earnings_status",
     "update_earnings_schedule",

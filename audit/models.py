@@ -43,6 +43,10 @@ class AuditRecordTargetType(models.TextChoices):
     INDEX_CHANGE_LEG = "index_change_leg", "Index change leg"
     EARNINGS_EVENT = "earnings_event", "Earnings event"
     EARNINGS_DATE_CHANGE = "earnings_date_change", "Earnings date change"
+    EARNINGS_RECONCILIATION_DECISION = (
+        "earnings_reconciliation_decision",
+        "Earnings reconciliation decision",
+    )
     FILING = "filing", "Filing"
     FILING_DOCUMENT = "filing_document", "Filing document"
     FILING_EARNINGS_LINK = "filing_earnings_link", "Filing earnings link"
