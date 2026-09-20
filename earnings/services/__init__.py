@@ -5,6 +5,17 @@ from earnings.services.calendar import (
     InvalidEarningsCalendarObservation,
     record_earnings_calendar_observation,
 )
+from earnings.services.calendar_ingestion import (
+    EarningsCalendarIngestionError,
+    EarningsCalendarIngestionIntegrityError,
+    EarningsCalendarIngestionResult,
+    EarningsCalendarParseFailure,
+    EarningsCalendarParserSystemFailure,
+    EarningsCalendarPayloadParseFailure,
+    EarningsCalendarUnsupportedIdentity,
+    InvalidEarningsCalendarIngestion,
+    ingest_earnings_calendar_payload,
+)
 from earnings.services.date_changes import (
     EARNINGS_DATE_CHANGE_RULE_VERSION,
     EarningsDateChangeIntegrityError,
@@ -59,6 +70,13 @@ __all__ = [
     "EarningsCalendarObservationIntegrityError",
     "EarningsCalendarObservationServiceError",
     "EarningsCalendarObservationWriteResult",
+    "EarningsCalendarIngestionError",
+    "EarningsCalendarIngestionIntegrityError",
+    "EarningsCalendarIngestionResult",
+    "EarningsCalendarParseFailure",
+    "EarningsCalendarParserSystemFailure",
+    "EarningsCalendarPayloadParseFailure",
+    "EarningsCalendarUnsupportedIdentity",
     "EarningsDateChangeIntegrityError",
     "EarningsDateChangeServiceError",
     "EarningsPromotionCollision",
@@ -74,6 +92,7 @@ __all__ = [
     "EarningsStatusServiceError",
     "EarningsStatusWriteResult",
     "InvalidEarningsCalendarObservation",
+    "InvalidEarningsCalendarIngestion",
     "InvalidEarningsDateValue",
     "InvalidEarningsPromotion",
     "InvalidEarningsReconciliationDecision",
@@ -94,4 +113,5 @@ __all__ = [
     "reinstate_earnings_event",
     "transition_earnings_status",
     "update_earnings_schedule",
+    "ingest_earnings_calendar_payload",
 ]

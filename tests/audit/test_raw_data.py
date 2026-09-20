@@ -1,6 +1,6 @@
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import unquote
 
 import pytest
@@ -731,3 +731,96 @@ class TestParseAttemptTransactionBoundaries:
         mark_raw_data_parsed(raw_data_record.pk, parser_version="parser-v1")
         record = RawDataRecord.objects.get(pk=raw_data_record.pk)
         assert record.parser_version == "parser-v2"
+
+
+@pytest.mark.django_db
+class TestExplicitParseObservation:
+    """Deterministic lineage when one raw record has multiple observations."""
+
+    def test_uses_explicit_observation_instead_of_latest(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        second_run = start_sync_run(
+            job_type="fixture.raw-data",
+            source=sync_run.source,
+            scope={"fixture": True},
+            idempotency_key="fixture.raw-data:second-observation",
+        )
+        second_observation = RawDataObservation.objects.create(
+            sync_run=second_run,
+            raw_data_record=raw_data_record,
+            observed_at=raw_data_observation.observed_at + timedelta(seconds=1),
+        )
+
+        mark_raw_data_parsed(
+            raw_data_record.pk,
+            parser_version="parser-v1",
+            observation=raw_data_observation,
+        )
+
+        assert RawDataParseAttempt.objects.filter(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+            status=RawDataParseAttempt.Status.SUCCEEDED,
+        ).exists()
+        assert not RawDataParseAttempt.objects.filter(
+            observation=second_observation,
+            parser_version="parser-v1",
+        ).exists()
+
+    def test_rejects_observation_from_another_record(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        other_payload = b'{"other": true}'
+        other_record = RawDataRecord.objects.create(
+            source=sync_run.source,
+            first_sync_run=sync_run,
+            source_url="https://example.test/other",
+            request_fingerprint=hashlib.sha256(b"other-request").hexdigest(),
+            fetched_at=sync_run.started_at,
+            http_status=200,
+            content_type="application/json",
+            encoding="utf-8",
+            content_hash=hashlib.sha256(other_payload).hexdigest(),
+            payload=other_payload,
+            payload_size_bytes=len(other_payload),
+        )
+        other_observation = RawDataObservation.objects.create(
+            sync_run=sync_run,
+            raw_data_record=other_record,
+            observed_at=sync_run.started_at,
+        )
+
+        with pytest.raises(RawDataIntegrityError, match="does not belong"):
+            mark_raw_data_parsed(
+                raw_data_record.pk,
+                parser_version="parser-v1",
+                observation=other_observation,
+            )
+
+    def test_unsupported_accepts_explicit_reason(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        unsupported = mark_raw_data_unsupported(
+            raw_data_record.pk,
+            parser_version="parser-v1",
+            error_summary="Missing stable provider_event_id at raw_position 2.",
+            observation=raw_data_observation,
+        )
+
+        assert unsupported.parser_status == RawDataRecord.ParserStatus.UNSUPPORTED
+        attempt = RawDataParseAttempt.objects.get(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+        )
+        assert attempt.status == RawDataParseAttempt.Status.UNSUPPORTED
+        assert "raw_position 2" in attempt.error_summary

@@ -220,14 +220,21 @@ def mark_raw_data_parsed(
     raw_data_record_id: uuid.UUID,
     *,
     parser_version: str,
+    observation: RawDataObservation | None = None,
 ) -> RawDataRecord:
+    """Record a successful parse attempt and update the compatibility cache.
+
+    When ``observation`` is supplied, the attempt is attached to that persisted
+    observation instead of the record's latest observation.
+    """
+
     normalized_version = _require_parser_version(parser_version)
     now = timezone.now()
     with transaction.atomic():
         record = RawDataRecord.objects.select_for_update().get(pk=raw_data_record_id)
-        observation = _resolve_latest_observation(record)
+        parse_observation = _resolve_parse_observation(record, observation)
         result = record_raw_data_parse_attempt(
-            observation=observation,
+            observation=parse_observation,
             parser_version=normalized_version,
             status=RawDataParseAttempt.Status.SUCCEEDED,
             error_summary="",
@@ -247,6 +254,7 @@ def mark_raw_data_parse_failed(
     *,
     parser_version: str,
     parse_error: str,
+    observation: RawDataObservation | None = None,
 ) -> RawDataRecord:
     normalized_version = _require_parser_version(parser_version)
     sanitized_error = sanitize_error_summary(parse_error)
@@ -255,9 +263,9 @@ def mark_raw_data_parse_failed(
     now = timezone.now()
     with transaction.atomic():
         record = RawDataRecord.objects.select_for_update().get(pk=raw_data_record_id)
-        observation = _resolve_latest_observation(record)
+        parse_observation = _resolve_parse_observation(record, observation)
         result = record_raw_data_parse_attempt(
-            observation=observation,
+            observation=parse_observation,
             parser_version=normalized_version,
             status=RawDataParseAttempt.Status.DATA_ERROR,
             error_summary=sanitized_error,
@@ -276,17 +284,22 @@ def mark_raw_data_unsupported(
     raw_data_record_id: uuid.UUID,
     *,
     parser_version: str,
+    error_summary: str = "Data format not supported",
+    observation: RawDataObservation | None = None,
 ) -> RawDataRecord:
     normalized_version = _require_parser_version(parser_version)
+    sanitized_error = sanitize_error_summary(error_summary)
+    if not sanitized_error:
+        raise ValueError("An unsupported parse requires a non-empty error summary.")
     now = timezone.now()
     with transaction.atomic():
         record = RawDataRecord.objects.select_for_update().get(pk=raw_data_record_id)
-        observation = _resolve_latest_observation(record)
+        parse_observation = _resolve_parse_observation(record, observation)
         result = record_raw_data_parse_attempt(
-            observation=observation,
+            observation=parse_observation,
             parser_version=normalized_version,
             status=RawDataParseAttempt.Status.UNSUPPORTED,
-            error_summary="Data format not supported",
+            error_summary=sanitized_error,
             started_at=now,
             finished_at=now,
         )
@@ -303,6 +316,7 @@ def mark_raw_data_system_error(
     *,
     parser_version: str,
     parse_error: str,
+    observation: RawDataObservation | None = None,
 ) -> RawDataRecord:
     """Record a system-level parse failure (infrastructure / transient error).
 
@@ -316,9 +330,9 @@ def mark_raw_data_system_error(
     now = timezone.now()
     with transaction.atomic():
         record = RawDataRecord.objects.select_for_update().get(pk=raw_data_record_id)
-        observation = _resolve_latest_observation(record)
+        parse_observation = _resolve_parse_observation(record, observation)
         result = record_raw_data_parse_attempt(
-            observation=observation,
+            observation=parse_observation,
             parser_version=normalized_version,
             status=RawDataParseAttempt.Status.SYSTEM_ERROR,
             error_summary=sanitized_error,
@@ -331,6 +345,23 @@ def mark_raw_data_system_error(
             record.parse_error = sanitized_error
             record.save(update_fields=("parser_status", "parser_version", "parse_error"))
         return record
+
+
+def _resolve_parse_observation(
+    record: RawDataRecord,
+    observation: RawDataObservation | None,
+) -> RawDataObservation:
+    if observation is None:
+        return _resolve_latest_observation(record)
+    if observation._state.adding or observation.pk is None:
+        raise RawDataIntegrityError("observation must be saved before use.")
+    try:
+        persisted = RawDataObservation.objects.get(pk=observation.pk)
+    except RawDataObservation.DoesNotExist as error:
+        raise RawDataIntegrityError("observation no longer exists.") from error
+    if persisted.raw_data_record_id != record.pk:
+        raise RawDataIntegrityError("observation does not belong to the supplied RawDataRecord.")
+    return persisted
 
 
 def _resolve_latest_observation(record: RawDataRecord) -> RawDataObservation:
