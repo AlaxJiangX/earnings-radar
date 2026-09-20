@@ -23,7 +23,7 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 |---|---|---|---|---|
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
 | SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument、FilingEarningsLink 候选 | 官方来源；访问策略待实现前核对 |
-| 财报日历 | 合法第三方 API | 预计日期、时段、财年/期间、供应商事件 ID | EarningsEvent 候选/预计安排 | **供应商与许可待产品确认** |
+| 财报日历 | 合法第三方 API | 预计日期、时段、财年/期间、稳定供应商事件 ID | EarningsCalendarObservation → reconciliation → 预计安排（4.2B planned，ADR-010） | **供应商与许可待产品确认（4.2F 前）** |
 | IR 官方确认 | 公司 IR 页面或有限 IR Provider | 正式日期、电话会、新闻稿链接 | 确认状态、发布日期、来源证据 | 首批公司清单与抓取方式待确认 |
 | S&P 500 | 官方公告、合法 API 或受控导入 | 证券/ticker、公告日、生效日、成分快照 | SecurityListing 级 IndexMembership、IndexChangeLeg | **来源与许可待产品确认** |
 | Nasdaq 100 | 官方公告、合法 API 或受控导入 | 同上 | 同上 | **来源与许可待产品确认** |
@@ -74,6 +74,10 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 - 空响应、异常缩减和 schema 变化的保护策略；
 - 可用于 smoke test 的最小安全范围。
 
+财报日历 Provider MUST 提供稳定、非空的 `provider_event_id`；无法提供者 MUST NOT 进入 4.2F
+live contract（ADR-010）。缺失 ID 的单条记录仍保存 raw lineage，但不得创建 normalized
+observation、candidate 或自动 reconciliation。
+
 Provider 只返回安全的结构化原始结果，不直接创建 SyncRun、RawDataRecord、RawDataObservation，也不写 Company、SecurityListing、IndexMembership、EarningsEvent、Filing 或通知。未来同步编排 Service 负责创建 SyncRun、调用 Provider、通过 `audit.services` 保存原始记录和观察关系；领域服务再负责核对、事务、变更历史和通知。
 
 ### 3.1 阶段 2.2 已实现契约
@@ -115,10 +119,17 @@ HTTP 基础层使用必须注入的 transport 协议，当前不提供真实网�
 ### 4.2 财报事件
 
 - 正式身份由 `company_id + period_end_date + period_type` 生成；
-- Provider 外部事件 ID 只用于未知 period_end_date 的候选去重和来源追踪；
+- `provider_key + provider_event_id` 只是 source identity，MUST NOT 进入 canonical identity；
+- provider 外部事件 ID MUST 稳定；缺失时必须保留 raw / parse lineage，但不得创建
+  `EarningsCalendarObservation`、EarningsEvent candidate 或自动 reconciliation；
 - 候选事件不得仅凭 fiscal_year/fiscal_period 变为正式事件；
-- 候选提升、合并或拆分必须写 DataChange 和 identity rule version；
-- 具体规则见 ADR-001。
+- V1 只允许 exact-only automatic match：同 source + 同 external ID，或 company +
+  `period_end_date` + normalized `period_type` 精确一致；
+- release date proximity、fiscal label 相似度和 company name 相似度只能作为 review evidence，
+  MUST NOT 成为 identity；
+- no destructive merge；duplicate / collision MUST 通过 append-only reconciliation decision
+  处理并保留 loser；
+- 候选提升仍 ONLY 通过 ADR-009 promotion；4.2 完整规则见 ADR-010。
 
 ### 4.3 SEC 文件
 
@@ -129,17 +140,27 @@ HTTP 基础层使用必须注入的 transport 协议，当前不提供真实网�
 
 ## 5. 来源优先级与冲突
 
-默认原则是直接官方证据优先于第三方预计数据，但具体字段级矩阵仍需产品确认：
+默认原则是直接官方证据优先于第三方预计数据。Stage 4.2 的 third-party earnings calendar
+authority 已由 ADR-010 冻结：
 
-| 字段类别 | 默认高优先来源 | 低优先来源用途 |
-|---|---|---|
-| SEC accepted_at、form、accession | SEC 官方 | 不允许第三方覆盖 |
-| 财报正式日期、电话会 | 公司 IR 官方 | 第三方可补充候选，不可无审计覆盖 |
-| 预计财报日期 | 财报日历 Provider | IR 发布后转为官方确认维度 |
-| 指数公告日/生效日 | 指数官方公告或获许可权威源 | 快照用于交叉验证 |
-| ticker/CIK | SEC 与交易所/权威标识源 | 其他源只提供匹配线索 |
+| 字段 | 4.2 third-party calendar | 4.2 manual decision | 4.4 / 4.5 future authority |
+|---|---|---|---|
+| `estimated_release` | 可自动写，必须经 schedule service | 可修正，append-only decision | IR/SEC 高 authority 可替代 |
+| `release_session` | 可自动写，必须经 schedule service | 可修正，append-only decision | IR/SEC 高 authority 可替代 |
+| `confirmed_release` | MUST NOT 自动写 | 人工审计后可写 | IR 4.5 authority |
+| `earnings_release` | MUST NOT 自动写 | 人工审计后可写 | SEC 4.4/4.5 authority |
+| `conference_call` | MUST NOT 自动写 | 人工审计后可写 | IR 4.5 authority |
+| status | MUST NOT 自动推进或 cancel | 未来 correction，必须审计 | 4.4/4.5 affirmative evidence |
+| period_end_date / period_type / fiscal metadata | 只能作为 candidate fact | 可修正，必须审计 | 4.4/4.5 可补充 identity 证据 |
 
-发生冲突时应保存所有 SourceEvidence、当前选中证据、选择规则版本和冲突状态。管理员修正必须写原因；是否锁定字段、防止后续自动覆盖仍待确认。
+- provider absence MUST NOT 触发 cancellation、deletion 或任何 status mutation；
+- 有效的最新 resolved manual decision 优先于 4.2 third-party calendar；
+- Stage 4.2 MUST NOT 引入可变 locked flag；authority MUST 从 append-only decision history 推导；
+- 只有新 manual decision 明确 supersede，或 4.4/4.5 更高 authority contract 允许替代时，
+  人工结果才可被覆盖。
+
+发生冲突时应保存所有 SourceEvidence、当前选中证据、选择规则版本和 append-only reconciliation
+decision。管理员修正必须写原因；IR / SEC 高 authority 来源的字段级矩阵最晚在 4.4/4.5 前确认。
 
 SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 UUID，目标是否存在由后续领域 service 校验。其 evidence_key 由 RawDataRecord、目标、字段、规范化 JSON 值和 normalizer version 生成；同一 RawDataRecord 的相同标准化事实重跑时复用现有证据，不同 RawDataRecord 则分别留证。SyncRun 不进入 evidence_key，但证据写入必须引用该 SyncRun 对 RawDataRecord 的 RawDataObservation，并拒绝包含 API key、Authorization、密码、session 或 Token 的 JSON。
 
@@ -187,6 +208,10 @@ SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 
 
 - 指数快照为空或成分数量异常下降时，停止差异落库，不批量生成 REMOVED；
 - 财报日历 schema 变化时保留 RawDataRecord 并将运行标为 partial/failed；
+- 完整、合法、schema 正确、pagination 完成的 `0 records` 响应 MAY 成功，MUST NOT 因 absence
+  删除、cancel 或修改已有 EarningsEvent；
+- pagination 未完成时 MUST NOT 宣称 logical window 完成；partial failure 保留已成功 raw
+  lineage，默认不做 domain writes，retry 使用新 key；
 - SEC/IR 临时失败只按有限次数重试，不删除既有记录；
 - Provider 时间戳必须带精度与时区；不能解析时保留原值并待复核；
 - 同一 fixture 连续处理两次，第二次不得新增领域记录、变化或重复原始正文；
@@ -196,7 +221,8 @@ SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 
 
 - 财报日历供应商、四个指数来源和各自许可；
 - 首批 IR 公司清单与允许的抓取方式；
-- 字段级来源优先级和管理员修正锁定机制；
+- IR / SEC 高 authority 来源的字段级冲突矩阵与复核流程（4.4 / 4.5 前）；4.2 第三方
+  calendar 字段权限与 append-only manual decision authority 已由 ADR-010 确定；
 - Provider 限速、失败重试和成本阈值；
 - 原始响应保留期限、长期容量/删除政策，以及 1 MiB 初始保护值是否需要按已许可数据源调整；
 - 生产平台是否能支持计划频率及最长运行时间。

@@ -31,7 +31,7 @@ company_id + period_end_date + period_type
 
 CANONICAL 事件必须具有非空 `period_end_date`、`period_type`、`identity_key` 和 `identity_rule_version`，数据库对非空 identity_key 设置唯一约束。
 
-当 period_end_date 未知时，可以建立 CANDIDATE 事件，但必须使用 Provider 外部事件 ID、来源和抓取范围进行候选去重。不得用 `company + fiscal_year + period_type` 作为永久唯一键。日期确定后，候选按 ADR-009 提升为正式事件；candidate dedup、merge/split 与 cross-provider reconciliation 属于 Stage 4.2。任何身份变化必须保留旧标识、来源和 DataChange。
+当 period_end_date 未知时，可以建立 CANDIDATE 事件，但必须使用 Provider 外部事件 ID、来源和抓取范围进行候选去重。不得用 `company + fiscal_year + period_type` 作为永久唯一键。日期确定后，候选按 ADR-009 提升为正式事件；candidate dedup、merge/split 与 cross-provider reconciliation 属于 Stage 4.2，其契约已由 ADR-010 冻结。任何身份变化必须保留旧标识、来源和 DataChange。
 
 ## 结果
 
@@ -55,6 +55,6 @@ CANONICAL 事件必须具有非空 `period_end_date`、`period_type`、`identity
 
 ## 仍待确认
 
-- 候选事件跨多个 Provider 的自动合并阈值。
-
-取消后重新安排的 identity semantics 已由 ADR-008 确定，不再是本 ADR 的未决项。
+本 ADR 没有仍待确认的 identity 决策。候选事件跨多个 Provider 的自动合并规则已由 ADR-010
+确定为 exact-only automatic reconciliation；取消后重新安排的 identity semantics 已由
+ADR-008 确定。

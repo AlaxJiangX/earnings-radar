@@ -267,8 +267,8 @@ collision table 或 provider external ID 均不属于 4.1D。
 
 ## Deferred
 
-- Candidate dedup、cross-provider merge、split、duplicate reconciliation、
-  provider external ID 和 source precedence：4.2。
+- Candidate dedup、cross-provider merge、split、duplicate reconciliation、provider external ID
+  和 source precedence：contract 已由 ADR-010 冻结；实现属于 4.2B-4.2E。
 - Canonical identity correction：未来 reconciliation 或独立 ADR。
 - ORM-level identity mutation hardening：独立任务。
-- Provider-driven candidate ingestion：4.2。
+- Provider-driven candidate ingestion：4.2D planned（ADR-010）。

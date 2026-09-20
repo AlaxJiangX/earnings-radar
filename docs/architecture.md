@@ -117,7 +117,8 @@ Provider 适配器不得写入业务表或 audit 表；它返回结构化原始�
 
 MVP Provider 类型：
 
-1. `EarningsCalendarProvider`：未来预计财报和初步发布时间段；
+1. `EarningsCalendarProvider`：未来预计财报和初步发布时间段；4.2F 的真实实现 MUST 提供稳定
+   `provider_event_id`，无法提供者不得进入 live contract（ADR-010）；
 2. `InvestorRelationsProvider`：有限重点公司范围内的官方确认、电话会和新闻稿；
 3. `SecEdgarProvider`：CIK 映射及指定表单的最新提交；
 4. `IndexConstituentProvider`：指数快照、公告日期和生效日期（具体来源待确认）。
@@ -135,7 +136,12 @@ MVP Provider 类型：
   -> 创建待发送通知
 ```
 
-来源优先级原则是“官方且直接的证据优先”，但具体冲突矩阵必须配置并测试，不能只写死为某供应商优先。建议的默认顺序为公司 IR/SEC 官方文件高于第三方预计数据；该顺序仍需产品负责人确认其业务细节。
+来源优先级原则是“官方且直接的证据优先”。Stage 4.2 的第三方 earnings calendar authority
+已由 ADR-010 冻结：自动写权限仅限于 `estimated_release` / `release_session`，且必须通过
+earnings schedule domain service；`confirmed_release`、`earnings_release`、
+`conference_call` 和 status 保留给 4.4 / 4.5 的 authority contract。provider absence 不得
+删除、取消或修改任何 EarningsEvent。完整分层、matching、empty calendar、merge 与 replay
+契约见 ADR-010 和 `docs/data-sources.md`。
 
 ### 4.3 原始数据保留
 
@@ -162,6 +168,31 @@ MVP Provider 类型：
 audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，也不导入未来的公司、指数、财报或 Filing app。目标存在性由未来领域 Service 在写当前值的同一事务中确认。
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
+
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A 已批准，尚未实现）
+
+ADR-010 已冻结 4.2 的 provider-neutral 契约。以下内容为 ratified contract，不是已实现能力：
+
+- 分层：`raw -> parse -> EarningsCalendarObservation -> EarningsReconciliationDecision ->
+  EarningsEvent`；`provider_key + provider_event_id` 只表示 source identity，不进入 canonical
+  identity；
+- 自动 reconciliation：V1 只允许 exact match；任何需要相似度阈值的场景 MUST 进入 review，
+  不存在 fuzzy auto-merge；
+- 字段权限：第三方 calendar 自动写权限仅限 `estimated_release` / `release_session`，且必须
+  通过 earnings schedule service；provider absence 不得删除、cancel 或修改任何事件；
+- 人工 authority：append-only manual reconciliation decision 优先于 4.2 第三方 calendar；
+  不新增可变 lock flag；
+- duplicate：no destructive merge；loser candidate 与全部历史保留，通过 decision / mapping
+  指向 winner canonical；
+- 同步窗口：默认 `forward_horizon_days=90`、`past_correction_days=30`，必须配置化；合法
+  空日历是成功响应；
+- monitoring pool：`earnings_monitoring_pool(as_of_date)` + `monitoring_pool_hash`，scope
+  保存 as-of / hash / selector version，replay 使用原 scope；
+- pagination：一个 SyncRun 一个 logical window，多页 raw / observation / parse attempt；
+  pagination 未完成前默认不做该 window 的 domain writes；
+- live gate：4.2F 前必须完成 provider / license checklist，4.2A-4.2E 全部 fixture-first。
+
+完整决策见 `docs/decisions/ADR-010-earnings-calendar-observation-and-reconciliation.md`。
 
 ## 5. 领域流程
 
@@ -353,8 +384,8 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 - 四个指数各自合法、稳定且允许再展示的数据来源；
 - 财报日历供应商、字段语义、许可和更新频率；
 - IR Provider 首批公司范围与维护方式；
-- 来源冲突优先级、置信度规则和管理员复核流程；
-- 跨 Provider 的候选自动合并阈值和重复核对规则（4.2）；
+- IR / SEC 等高 authority 来源的字段级冲突与复核流程（4.4 / 4.5 前）；4.2 第三方 earnings
+  calendar 的字段权限、manual decision authority 和 exact-only matching 已由 ADR-010 确定；
 - 1–7 日指数偏移候选的人工复核负责人、时限与默认处理；
 - release filing 首版允许使用的 exhibit/文本证据清单与复核时限；
 - 日期提醒按美东自然日还是用户本地自然日计算；
