@@ -169,14 +169,15 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C+ workflow 未实现）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C-1 parser protocol 已实现；4.2C+ workflow 未完成）
 
 ADR-010 已冻结 4.2 的 provider-neutral 契约。4.2B 已实现
 `EarningsCalendarObservation`、`EarningsReconciliationDecision`、DB 约束、append-only /
 replay / concurrency 测试及 AuditRecord target 扩展（earnings migrations 0004 / 0005、audit
-migration 0008）。以下列表是 ratified contract；其中 parser、raw-first ingestion、pagination、
-replay、company matching、candidate creation、reconciliation policy、monitoring pool
-selector 与 live Provider 仍未实现（4.2C+）：
+migration 0008）。4.2C-1 已实现 provider-neutral parser protocol 与 synthetic fixture
+parser。以下列表是 ratified contract；其中 raw-first ingestion、pagination、scope /
+idempotency、replay、company matching、candidate creation、reconciliation policy、
+monitoring pool selector 与 live Provider 仍未实现（4.2C-2+ / 4.2D-4.2F）：
 
 - 分层：`raw -> parse -> EarningsCalendarObservation -> EarningsReconciliationDecision ->
   EarningsEvent`；`provider_key + provider_event_id` 只表示 source identity，不进入 canonical
