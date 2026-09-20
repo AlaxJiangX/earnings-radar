@@ -1,3 +1,10 @@
+from earnings.services.calendar import (
+    EarningsCalendarObservationIntegrityError,
+    EarningsCalendarObservationServiceError,
+    EarningsCalendarObservationWriteResult,
+    InvalidEarningsCalendarObservation,
+    record_earnings_calendar_observation,
+)
 from earnings.services.date_changes import (
     EARNINGS_DATE_CHANGE_RULE_VERSION,
     EarningsDateChangeIntegrityError,
@@ -41,6 +48,9 @@ __all__ = [
     "EARNINGS_DATE_CHANGE_RULE_VERSION",
     "EARNINGS_STATUS_LIFECYCLE_RULE_VERSION",
     "PROMOTION_IDENTITY_FIELDS",
+    "EarningsCalendarObservationIntegrityError",
+    "EarningsCalendarObservationServiceError",
+    "EarningsCalendarObservationWriteResult",
     "EarningsDateChangeIntegrityError",
     "EarningsDateChangeServiceError",
     "EarningsPromotionCollision",
@@ -52,6 +62,7 @@ __all__ = [
     "EarningsStatusIntegrityError",
     "EarningsStatusServiceError",
     "EarningsStatusWriteResult",
+    "InvalidEarningsCalendarObservation",
     "InvalidEarningsDateValue",
     "InvalidEarningsPromotion",
     "InvalidEarningsStatusContext",
@@ -65,6 +76,7 @@ __all__ = [
     "correct_earnings_status",
     "mark_earnings_released",
     "promote_earnings_event",
+    "record_earnings_calendar_observation",
     "reinstate_earnings_event",
     "transition_earnings_status",
     "update_earnings_schedule",
