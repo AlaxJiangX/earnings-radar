@@ -12,7 +12,14 @@ from typing import cast
 
 import pytest
 
-from audit.models import AuditRecord, SourceEvidence
+from audit.models import (
+    AuditRecord,
+    RawDataObservation,
+    RawDataParseAttempt,
+    RawDataRecord,
+    SourceEvidence,
+    SyncRun,
+)
 from earnings.calendar_parsing import (
     FIXTURE_EARNINGS_CALENDAR_FORMAT_VERSION,
     FIXTURE_EARNINGS_CALENDAR_PARSER_VERSION,
@@ -34,7 +41,7 @@ from earnings.models import (
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "providers" / "earnings_calendar"
 PARSER_MODULE_PATH = Path(__file__).resolve().parents[2] / "earnings" / "calendar_parsing.py"
-FORBIDDEN_MODULE_PREFIXES = ("audit", "providers", "django.db", "django.http")
+FORBIDDEN_MODULE_PREFIXES = ("audit", "django", "http.client", "os", "providers", "socket")
 FORBIDDEN_IMPORTED_NAMES = frozenset(
     {
         "AuditRecord",
@@ -93,8 +100,12 @@ def _accept_parser(parser: EarningsCalendarParser) -> EarningsCalendarParser:
     return parser
 
 
-def _row_counts() -> tuple[int, int, int, int, int]:
+def _row_counts() -> tuple[int, ...]:
     return (
+        SyncRun.objects.count(),
+        RawDataRecord.objects.count(),
+        RawDataObservation.objects.count(),
+        RawDataParseAttempt.objects.count(),
         EarningsEvent.objects.count(),
         EarningsCalendarObservation.objects.count(),
         EarningsReconciliationDecision.objects.count(),
@@ -135,6 +146,24 @@ def test_complete_payload_preserves_order_and_raw_positions() -> None:
     assert all(isinstance(record, NormalizedEarningsCalendarRecord) for record in result.records)
 
 
+def test_same_payload_reparses_deterministically() -> None:
+    payload = (FIXTURE_DIR / "complete_payload.json").read_bytes()
+
+    first = _parser().parse(
+        payload,
+        provider_key=FIXTURE_EARNINGS_CALENDAR_PROVIDER_KEY,
+        provider_version=FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+    )
+    second = _parser().parse(
+        payload,
+        provider_key=FIXTURE_EARNINGS_CALENDAR_PROVIDER_KEY,
+        provider_version=FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+    )
+
+    assert second == first
+    assert second.records == first.records
+
+
 def test_complete_payload_normalizes_company_and_fiscal_hints() -> None:
     first, second = _parse_fixture("complete_payload.json").records
 
@@ -167,6 +196,13 @@ def test_date_and_datetime_precision_are_not_confused() -> None:
     assert second.estimated_release_date is None
     assert second.estimated_release_at == datetime(2027, 1, 28, 21, 5, tzinfo=UTC)
     assert second.estimated_release_precision == "exact_datetime"
+
+
+def test_non_utc_aware_datetime_is_accepted() -> None:
+    record = _parse_events([_event(estimated_release_at="2026-04-22T16:30:00-04:00")]).records[0]
+
+    assert record.estimated_release_at == datetime(2026, 4, 22, 20, 30, tzinfo=UTC)
+    assert record.estimated_release_precision == "exact_datetime"
 
 
 def test_release_session_timestamp_and_confidence_are_normalized() -> None:
