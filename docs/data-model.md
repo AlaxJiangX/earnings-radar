@@ -292,10 +292,10 @@ EarningsDateChange 不保存 `old_status/new_status`、`event_status_at_change`�
 
 完整边界、precision 和事务规则见 `docs/decisions/ADR-007-earnings-date-change-precision.md`。
 
-### 6.3 `EarningsCalendarObservation`（4.2B planned；当前未实现）
+### 6.3 `EarningsCalendarObservation`（4.2B 已实现）
 
-> 本节是 ADR-010 已批准的 schema 方向，不是已实现事实。当前数据库没有该模型；4.2B 才创建
-> model 与 migration。
+> 本节描述已进入 main 的 4.2B schema foundation。本表当前可由 observation persistence
+> primitive 写入；normalized ingestion / parser / replay workflow 仍属于 4.2C。
 
 provider-neutral normalized revision，保存 provider external identity 与 raw lineage，支撑
 replay 与 reconciliation。
@@ -307,21 +307,26 @@ replay 与 reconciliation。
 | `raw_data_record_id` | FK RawDataRecord，PROTECT |
 | `provider_key`, `provider_version`, `parser_version` | 来源与解析版本 |
 | `provider_event_id` | 非空 stable source identity；不进入 EarningsEvent identity |
+| `raw_position` | 原始页内 1-based 记录位置 |
 | company hints | `cik` / `ticker` / `exchange` / `provider_symbol` / `company_name` |
 | fiscal facts | `fiscal_label_raw` / `fiscal_year` / `period_end_date` nullable / normalized `period_type` nullable / `fiscal_calendar_type` / `period_length_weeks` |
-| schedule facts | `estimated_release`（date 或 aware datetime）/ `release_precision` / `release_session` |
+| schedule facts | `estimated_release_date` / `estimated_release_at` / `estimated_release_precision` / `release_session` |
 | `confidence`, `source_observed_at`, `created_at` | 可追溯信息 |
 
 约束与查询：
 
 - UNIQUE `(raw_data_record, parser_version, provider_event_id)`；
-- MUST 支持按 `(source, provider_event_id)` 查询；
+- index `(source, provider_event_id)`；
+- append-only：不允许 update / delete；
+- primitive 校验 `source` 与 `RawDataRecord.source` 一致，且 `source.provider_adapter == provider_key`；
 - 缺失 stable provider_event_id 的记录 MUST NOT 写入本表；
 - 本表不决定 canonical identity，也不直接写 EarningsEvent。
 
-### 6.4 `EarningsReconciliationDecision`（4.2B planned；当前未实现）
+### 6.4 `EarningsReconciliationDecision`（4.2B 已实现）
 
-> 本节同样是 ADR-010 的 planned contract，4.2B 才实现。
+> 本节描述已进入 main 的 4.2B schema foundation。本表当前可由 decision persistence
+> primitive 写入；decision creation policy、matching、conflict / review 与 manual authority
+> workflow 仍属于 4.2D-4.2E。
 
 append-only decision history，结构化保存 review / collision / mapping / dedup / conflict 事实。
 结构化 match factors MUST NOT 被塞进 AuditRecord JSON。
@@ -330,10 +335,10 @@ append-only decision history，结构化保存 review / collision / mapping / de
 |---|---|
 | `id` | UUID PK |
 | `observation_id` | FK EarningsCalendarObservation，PROTECT |
-| `decision_type` | created_candidate / matched_candidate / matched_canonical / duplicate_of / collision / conflict / review_required / ignored / manual_link 等语义；最终字符串由 4.2B 决定 |
-| `status` | 区分 open review-required、resolved binding、rejected / non-binding、superseded；最终字符串由 4.2B 决定 |
+| `decision_type` | `created_candidate` / `matched_candidate` / `matched_canonical` / `duplicate_of` / `collision` / `conflict` / `review_required` / `no_match` / `ignored` |
+| `status` | `open` / `resolved` / `rejected`；supersession 通过 `supersedes` 链表达，不使用 `superseded` status |
 | `target_event_id` | FK EarningsEvent nullable，PROTECT |
-| `covered_fields` | manual authority decision 覆盖的字段集合 |
+| `covered_fields` | manual authority decision 覆盖的字段集合；仅在 resolved manual decision 上可非空 |
 | `rule_version`, `match_factors`, `reason` | 规则、证据与原因 |
 | `actor_user_id`, `sync_run_id` | 人工或系统上下文 |
 | `decided_at` | UTC |
@@ -344,7 +349,9 @@ append-only decision history，结构化保存 review / collision / mapping / de
 
 - 旧 decision MUST NOT update / delete；新 decision 通过 `supersedes` 指针表达替代；
 - "最新有效 decision" MUST 可查询、可重放、可审计；
-- `decision_key` MUST NOT 包含 `decided_at`，且 MUST 由无凭据的规范化输入生成；
+- `decision_key` 为 deterministic unique，覆盖 observation、decision_type、status、
+  target_event、covered_fields、match_factors、rule_version、supersedes 与 actor / request
+  identity；MUST NOT 包含 `decided_at`，且 MUST 由无凭据的规范化输入生成；
 - mapping 冲突 MUST fail closed；
 - loser EarningsEvent MUST 保持 candidate，不删除、不覆盖、不 copy 历史；
 - loser MUST NOT 进入未来公开 canonical selector。
@@ -559,8 +566,9 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 
 ADR-010 进一步冻结：尚未匹配到 EarningsEvent 的 provider observation MUST NOT 创建
 SourceEvidence，其 provenance 保留在 `EarningsCalendarObservation` 与 raw / observation 链中。
-4.2A 不扩展 SourceEvidence target enum；4.2B 只评估为 observation / decision 扩展 AuditRecord
-target enum。SourceEvidence 仍只指向 EarningsEvent 等既有领域目标。
+4.2A 不扩展 SourceEvidence target enum。4.2B 已按 ADR-010 扩展 AuditRecord target enum，
+新增 `earnings_reconciliation_decision`；`EarningsCalendarObservation` 本身不新增 AuditRecord
+target。SourceEvidence 仍只指向 EarningsEvent 等既有领域目标。
 
 `0004_rekey_source_evidence_by_raw_record` 只正向重算 evidence_key，不删除、合并或改写证据内容；其反向迁移为 noop。若需要回退代码，必须先评估旧版 key 语义与当前数据的兼容性，不能假定反向迁移会恢复旧 key。
 
@@ -649,8 +657,8 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | IndexChangeEvent | aggregation_key unique |
 | EarningsEvent | 非空 identity_key unique；规则为 company + period_end_date + period_type，带版本 |
 | EarningsDateChange | data_change unique；领域历史 append-only |
-| EarningsCalendarObservation（4.2B planned） | raw_data_record + parser_version + provider_event_id unique；支持按 source + provider_event_id 查询 |
-| EarningsReconciliationDecision（4.2B planned） | deterministic decision_key unique；append-only；supersedes 链 |
+| EarningsCalendarObservation（4.2B 已实现） | raw_data_record + parser_version + provider_event_id unique；按 source + provider_event_id 建索引 |
+| EarningsReconciliationDecision（4.2B 已实现） | deterministic decision_key unique；append-only；supersedes 链 |
 | Filing | accession_number unique |
 | WatchlistItem | user + company unique |
 | ReminderRule | null-safe user/company/event/channel/lead unique |
@@ -694,4 +702,4 @@ Stage 4.2A 已由 ADR-010 冻结、不再属于待确认的决策：
 8. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
 9. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
 10. AuditRecord 和 DataChange 的保留期限、IP 哈希保留期及具体查看角色仍需在阶段 8.1 前确认；目标引用已确定为受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。
-11. 4.2F 最终 provider / license checklist 结论与 anomaly shrink operational 阈值；不阻塞 4.2B。
+11. 4.2F 最终 provider / license checklist 结论与 anomaly shrink operational 阈值；不阻塞 4.2C-4.2E。
