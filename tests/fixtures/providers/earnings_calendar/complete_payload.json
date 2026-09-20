@@ -1,0 +1,40 @@
+{
+  "fixture_version": "v1",
+  "provider_key": "fixture-earnings-calendar",
+  "provider_version": "fixture-v1",
+  "events": [
+    {
+      "provider_event_id": "fixture-evt-1001",
+      "cik": "123",
+      "ticker": "FAKE",
+      "exchange": "NASDAQ",
+      "provider_symbol": "FAKE",
+      "company_name": "Fixture Calendar Corp",
+      "fiscal_label_raw": "Q1",
+      "fiscal_year": 2026,
+      "period_end_date": "2026-03-31",
+      "period_type": "Q1",
+      "fiscal_calendar_type": "month_based",
+      "estimated_release_date": "2026-04-22",
+      "release_session": "after_market",
+      "source_observed_at": "2026-04-01T12:00:00+00:00",
+      "confidence": "0.9000"
+    },
+    {
+      "provider_event_id": "fixture-evt-1002",
+      "cik": "0000000456",
+      "ticker": "TEST",
+      "exchange": "NYSE",
+      "company_name": "Fixture Year End Corp",
+      "fiscal_label_raw": "Q4",
+      "fiscal_year": 2026,
+      "period_end_date": "2026-12-31",
+      "fiscal_calendar_type": "week_based_52_53",
+      "period_length_weeks": 53,
+      "estimated_release_at": "2027-01-28T21:05:00+00:00",
+      "release_session": "after_market",
+      "source_observed_at": "2027-01-05T15:00:00+00:00",
+      "confidence": 0.75
+    }
+  ]
+}
