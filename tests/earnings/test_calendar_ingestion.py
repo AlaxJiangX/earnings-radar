@@ -21,7 +21,7 @@ from audit.models import (
     SourceEvidence,
     SyncRun,
 )
-from audit.services import mark_sync_run_succeeded, start_sync_run
+from audit.services import InvalidRawDataRequest, mark_sync_run_succeeded, start_sync_run
 from companies.models import Company, SecurityListing
 from earnings.calendar_parsing import (
     FIXTURE_EARNINGS_CALENDAR_FORMAT_VERSION,
@@ -353,6 +353,102 @@ def test_empty_payload_succeeds_with_zero_observations() -> None:
     assert result.observations_reused == 0
     assert result.raw_data_record.parser_status == RawDataRecord.ParserStatus.PARSED
     assert EarningsCalendarObservation.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_raw_persisted_callback_runs_after_raw_and_before_parse() -> None:
+    source = _calendar_source("raw-callback")
+    sync_run = _sync_run(source, "raw-callback")
+    observed: list[str] = []
+
+    class OrderingParser:
+        parser_version = FIXTURE_EARNINGS_CALENDAR_PARSER_VERSION
+
+        def parse(
+            self,
+            raw_content: bytes,
+            *,
+            provider_key: str,
+            provider_version: str,
+        ) -> EarningsCalendarParseResult:
+            observed.append("parse")
+            return FixtureEarningsCalendarParser().parse(
+                raw_content,
+                provider_key=provider_key,
+                provider_version=provider_version,
+            )
+
+    def on_raw_persisted() -> None:
+        observed.append("raw")
+        assert RawDataRecord.objects.count() == 1
+        assert RawDataObservation.objects.count() == 1
+
+    result = ingest_earnings_calendar_payload(
+        sync_run=sync_run,
+        parser=OrderingParser(),
+        raw_content=_fixture_bytes("empty_payload.json"),
+        provider_key=FIXTURE_EARNINGS_CALENDAR_PROVIDER_KEY,
+        provider_version=FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+        source_url=SOURCE_URL,
+        fetched_at=FETCHED_AT,
+        on_raw_persisted=on_raw_persisted,
+    )
+
+    assert observed == ["raw", "parse"]
+    assert result.parse_attempt.status == RawDataParseAttempt.Status.SUCCEEDED
+
+
+@pytest.mark.django_db
+def test_raw_persisted_callback_runs_when_parse_fails() -> None:
+    source = _calendar_source("raw-callback-parse-failure")
+    sync_run = _sync_run(source, "raw-callback-parse-failure")
+    callback_called = False
+
+    def on_raw_persisted() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(EarningsCalendarPayloadParseFailure):
+        ingest_earnings_calendar_payload(
+            sync_run=sync_run,
+            parser=FixtureEarningsCalendarParser(),
+            raw_content=b"{invalid-json",
+            provider_key=FIXTURE_EARNINGS_CALENDAR_PROVIDER_KEY,
+            provider_version=FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+            source_url=SOURCE_URL,
+            fetched_at=FETCHED_AT,
+            on_raw_persisted=on_raw_persisted,
+        )
+
+    assert callback_called is True
+    assert RawDataRecord.objects.count() == 1
+    assert RawDataParseAttempt.objects.get().status == RawDataParseAttempt.Status.DATA_ERROR
+
+
+@pytest.mark.django_db
+def test_raw_persisted_callback_is_not_called_when_raw_persistence_fails() -> None:
+    source = _calendar_source("raw-callback-raw-failure")
+    sync_run = _sync_run(source, "raw-callback-raw-failure")
+    callback_called = False
+
+    def on_raw_persisted() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(InvalidRawDataRequest):
+        ingest_earnings_calendar_payload(
+            sync_run=sync_run,
+            parser=FixtureEarningsCalendarParser(),
+            raw_content=b'{"authorization":"Bearer fixture-token"}',
+            provider_key=FIXTURE_EARNINGS_CALENDAR_PROVIDER_KEY,
+            provider_version=FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+            source_url=SOURCE_URL,
+            fetched_at=FETCHED_AT,
+            on_raw_persisted=on_raw_persisted,
+        )
+
+    assert callback_called is False
+    assert RawDataRecord.objects.count() == 0
 
 
 @pytest.mark.django_db

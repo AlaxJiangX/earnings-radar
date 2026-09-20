@@ -146,6 +146,9 @@ def run_earnings_calendar_window(
     request_cursor: str | None = None
     page_index = 1
 
+    def count_persisted_page() -> None:
+        update_sync_run_counts(context.sync_run.pk, fetched_delta=1)
+
     while True:
         if page_index > context.max_pages:
             cause = EarningsCalendarPaginationError(
@@ -205,6 +208,7 @@ def run_earnings_calendar_window(
                 content_type=page.content_type,
                 encoding=page.encoding,
                 request_descriptor=page.request_descriptor,
+                on_raw_persisted=count_persisted_page,
             )
         except Exception as error:
             _raise_window_failure(
@@ -222,7 +226,6 @@ def run_earnings_calendar_window(
             ingestion=ingestion_result,
         )
         pages.append(page_result)
-        update_sync_run_counts(context.sync_run.pk, fetched_delta=1)
 
         if page.is_terminal:
             finalized = mark_sync_run_succeeded(context.sync_run.pk)
