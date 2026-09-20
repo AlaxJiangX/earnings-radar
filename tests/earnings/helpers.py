@@ -17,7 +17,7 @@ from audit.models import (
 from audit.services import DataChangeWriteResult, record_data_change, record_source_evidence
 from companies.models import Company
 from earnings.identity import IDENTITY_RULE_VERSION, derive_earnings_identity_key
-from earnings.models import EarningsEvent
+from earnings.models import EarningsCalendarObservation, EarningsEvent
 
 
 def make_company(suffix: str, *, display_name: str | None = None) -> Company:
@@ -139,3 +139,82 @@ def make_data_change(
         rule_version="earnings-date-change-v1",
         sync_run=sync_run,
     )
+
+
+def make_calendar_source(suffix: str = "calendar") -> DataSource:
+    token = uuid.uuid4().hex[:8]
+    return DataSource.objects.create(
+        key=f"fixture-earnings-calendar-{suffix}-{token}",
+        name=f"Fixture earnings calendar {suffix}",
+        source_type=DataSource.SourceType.EARNINGS_CALENDAR,
+        base_url="https://calendar.example.test/",
+        provider_adapter="fixture-calendar-provider",
+        license_notes="Synthetic test-only source.",
+    )
+
+
+def make_calendar_raw_record(
+    source: DataSource,
+    suffix: str = "calendar",
+) -> RawDataRecord:
+    now = timezone.now()
+    sync_run = SyncRun.objects.create(
+        job_type="fixture.earnings-calendar",
+        source=source,
+        scope={"fixture": suffix},
+        idempotency_key=f"fixture.earnings-calendar:{suffix}:{uuid.uuid4()}",
+        started_at=now,
+        heartbeat_at=now,
+    )
+    payload = b'{"fixture":"calendar"}'
+    return RawDataRecord.objects.create(
+        source=source,
+        first_sync_run=sync_run,
+        source_url=f"https://calendar.example.test/{suffix}",
+        request_fingerprint=hashlib.sha256(uuid.uuid4().bytes).hexdigest(),
+        fetched_at=now,
+        http_status=200,
+        content_type="application/json",
+        encoding="utf-8",
+        content_hash=hashlib.sha256(payload).hexdigest(),
+        payload=payload,
+        payload_size_bytes=len(payload),
+    )
+
+
+def make_calendar_observation(
+    *,
+    source: DataSource | None = None,
+    raw_data_record: RawDataRecord | None = None,
+    **overrides: object,
+) -> EarningsCalendarObservation:
+    source = source or make_calendar_source()
+    raw_data_record = raw_data_record or make_calendar_raw_record(source)
+    values: dict[str, object] = {
+        "source": source,
+        "raw_data_record": raw_data_record,
+        "provider_key": source.provider_adapter,
+        "provider_version": "fixture-provider-v1",
+        "parser_version": "fixture-parser-v1",
+        "provider_event_id": f"evt-{uuid.uuid4().hex[:8]}",
+        "raw_position": 1,
+        "cik": "",
+        "ticker": "FAKE",
+        "exchange": "NASDAQ",
+        "provider_symbol": "FAKE",
+        "company_name": "Fixture Calendar Corp",
+        "fiscal_label_raw": "Q1",
+        "fiscal_year": 2026,
+        "period_end_date": date(2026, 3, 31),
+        "period_type": "Q1",
+        "fiscal_calendar_type": "month_based",
+        "period_length_weeks": None,
+        "estimated_release_date": date(2026, 4, 22),
+        "estimated_release_at": None,
+        "estimated_release_precision": "date_only",
+        "release_session": "after_market",
+        "source_observed_at": None,
+        "confidence": Decimal("0.9000"),
+        **overrides,
+    }
+    return EarningsCalendarObservation.objects.create(**values)

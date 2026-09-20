@@ -96,7 +96,11 @@ ALLOWED_EARNINGS_DATE_FIELDS = frozenset(
 )
 
 
-def _earnings_date_state_constraint(*, prefix: str) -> models.CheckConstraint:
+def _earnings_date_state_constraint(
+    *,
+    prefix: str,
+    name: str | None = None,
+) -> models.CheckConstraint:
     return models.CheckConstraint(
         condition=(
             Q(
@@ -121,7 +125,7 @@ def _earnings_date_state_constraint(*, prefix: str) -> models.CheckConstraint:
                 }
             )
         ),
-        name=f"earnings_event_{prefix}_precision_consistent",
+        name=name or f"earnings_event_{prefix}_precision_consistent",
     )
 
 
@@ -474,3 +478,122 @@ class EarningsDateChange(AppendOnlyAuditModel):
 
     def __str__(self) -> str:
         return f"{self.earnings_event_id}:{self.field_name}:{self.change_kind}"
+
+
+class EarningsCalendarObservation(AppendOnlyAuditModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    source = models.ForeignKey(
+        "audit.DataSource",
+        on_delete=models.PROTECT,
+        related_name="earnings_calendar_observations",
+    )
+    raw_data_record = models.ForeignKey(
+        "audit.RawDataRecord",
+        on_delete=models.PROTECT,
+        related_name="earnings_calendar_observations",
+    )
+
+    provider_key = models.CharField(max_length=64)
+    provider_version = models.CharField(max_length=100)
+    parser_version = models.CharField(max_length=100)
+    provider_event_id = models.CharField(max_length=255)
+    raw_position = models.PositiveIntegerField()
+
+    cik = models.CharField(max_length=10, blank=True)
+    ticker = models.CharField(max_length=32, blank=True)
+    exchange = models.CharField(max_length=32, blank=True)
+    provider_symbol = models.CharField(max_length=64, blank=True)
+    company_name = models.CharField(max_length=255, blank=True)
+
+    fiscal_label_raw = models.CharField(max_length=64, blank=True)
+    fiscal_year = models.IntegerField(null=True, blank=True)
+    period_end_date = models.DateField(null=True, blank=True)
+    period_type = models.CharField(  # noqa: DJ001
+        max_length=8,
+        choices=PeriodType.choices,
+        null=True,
+        blank=True,
+    )
+    fiscal_calendar_type = models.CharField(  # noqa: DJ001
+        max_length=20,
+        choices=FiscalCalendarType.choices,
+        null=True,
+        blank=True,
+    )
+    period_length_weeks = models.PositiveSmallIntegerField(null=True, blank=True)
+
+    estimated_release_date = models.DateField(null=True, blank=True)
+    estimated_release_at = models.DateTimeField(null=True, blank=True)
+    estimated_release_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
+    release_session = models.CharField(  # noqa: DJ001
+        max_length=16,
+        choices=ReleaseSession.choices,
+        default=ReleaseSession.UNKNOWN,
+    )
+
+    source_observed_at = models.DateTimeField(null=True, blank=True)
+    confidence = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("source", "provider_event_id")),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("raw_data_record", "parser_version", "provider_event_id"),
+                name="earnings_calendar_observation_record_parser_event_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(provider_key__regex=r"^[a-z][a-z0-9._-]{1,63}$"),
+                name="earnings_calendar_observation_provider_key_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(provider_version__regex=r"[^[:space:]]")
+                    & Q(parser_version__regex=r"[^[:space:]]")
+                    & Q(provider_event_id__regex=r"[^[:space:]]")
+                ),
+                name="earnings_calendar_observation_identity_not_blank",
+            ),
+            models.CheckConstraint(
+                condition=Q(cik="") | Q(cik__regex=r"^[0-9]{10}$"),
+                name="earnings_calendar_observation_cik_valid",
+            ),
+            models.CheckConstraint(
+                condition=(Q(period_type__isnull=True) | Q(period_type__in=ALLOWED_PERIOD_TYPES)),
+                name="earnings_calendar_observation_period_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(fiscal_calendar_type__isnull=True)
+                    | Q(fiscal_calendar_type__in=ALLOWED_FISCAL_CALENDAR_TYPES)
+                ),
+                name="earnings_calendar_observation_calendar_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(release_session__in=ALLOWED_RELEASE_SESSIONS),
+                name="earnings_calendar_observation_release_session_valid",
+            ),
+            _earnings_date_state_constraint(
+                prefix="estimated_release",
+                name="earnings_calendar_observation_estimated_precision_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(confidence__isnull=True) | (Q(confidence__gte=0) & Q(confidence__lte=1))
+                ),
+                name="earnings_calendar_observation_confidence_range",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.source_id}:{self.provider_event_id}@{self.raw_position}"
