@@ -1,0 +1,15 @@
+{
+  "fixture_version": "v1",
+  "provider_key": "fixture-earnings-calendar",
+  "provider_version": "fixture-v1",
+  "events": [
+    {
+      "provider_event_id": "fixture-evt-4101",
+      "ticker": "OK"
+    },
+    {
+      "provider_event_id": "fixture-evt-4102",
+      "fiscal_year": "2026"
+    }
+  ]
+}
