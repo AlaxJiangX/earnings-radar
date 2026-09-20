@@ -329,6 +329,8 @@ def _validate_parse_result(
         raise EarningsCalendarIngestionIntegrityError(
             "Parser must return an EarningsCalendarParseResult."
         )
+    if not isinstance(parse_result.records, tuple):
+        raise EarningsCalendarIngestionIntegrityError("Parser result records must be a tuple.")
     if parse_result.provider_key != context.provider_key:
         raise EarningsCalendarIngestionIntegrityError(
             "Parser result provider_key does not match the ingestion context."
@@ -353,7 +355,7 @@ def _validate_parse_result(
             raise EarningsCalendarIngestionIntegrityError(
                 "Normalized record parser_version does not match the parser identity."
             )
-        if not record.provider_event_id.strip():
+        if not isinstance(record.provider_event_id, str) or not record.provider_event_id.strip():
             raise EarningsCalendarIngestionIntegrityError(
                 "Normalized record provider_event_id must not be blank."
             )
@@ -361,7 +363,11 @@ def _validate_parse_result(
             raise EarningsCalendarIngestionIntegrityError(
                 "Parser result contains duplicate provider_event_id values."
             )
-        if record.raw_position < 1:
+        if (
+            isinstance(record.raw_position, bool)
+            or not isinstance(record.raw_position, int)
+            or record.raw_position < 1
+        ):
             raise EarningsCalendarIngestionIntegrityError(
                 "Normalized record raw_position must be 1-based."
             )

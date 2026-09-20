@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import http.client
+import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -22,6 +24,7 @@ from audit.models import (
 from audit.services import mark_sync_run_succeeded, start_sync_run
 from companies.models import Company, SecurityListing
 from earnings.calendar_parsing import (
+    FIXTURE_EARNINGS_CALENDAR_FORMAT_VERSION,
     FIXTURE_EARNINGS_CALENDAR_PARSER_VERSION,
     FIXTURE_EARNINGS_CALENDAR_PROVIDER_KEY,
     FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
@@ -59,6 +62,17 @@ SOURCE_URL = "https://fixture-earnings-calendar.test/calendar?fixture=complete"
 
 def _fixture_bytes(name: str) -> bytes:
     return (FIXTURE_DIR / name).read_bytes()
+
+
+def _payload_with_events(events: list[dict[str, object]]) -> bytes:
+    return json.dumps(
+        {
+            "fixture_version": FIXTURE_EARNINGS_CALENDAR_FORMAT_VERSION,
+            "provider_key": FIXTURE_EARNINGS_CALENDAR_PROVIDER_KEY,
+            "provider_version": FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+            "events": events,
+        }
+    ).encode()
 
 
 def _calendar_source(suffix: str) -> DataSource:
@@ -197,6 +211,61 @@ class DuplicateRecordParser:
         )
 
 
+class DuplicatePositionParser:
+    parser_version = FIXTURE_EARNINGS_CALENDAR_PARSER_VERSION
+
+    def parse(
+        self,
+        raw_content: bytes,
+        *,
+        provider_key: str,
+        provider_version: str,
+    ) -> EarningsCalendarParseResult:
+        valid = FixtureEarningsCalendarParser().parse(
+            raw_content,
+            provider_key=provider_key,
+            provider_version=provider_version,
+        )
+        duplicate_position = replace(
+            valid.records[1],
+            provider_event_id="fixture-evt-duplicate-position",
+            raw_position=valid.records[0].raw_position,
+        )
+        return EarningsCalendarParseResult(
+            provider_key=valid.provider_key,
+            provider_version=valid.provider_version,
+            parser_version=valid.parser_version,
+            records=(valid.records[0], duplicate_position),
+        )
+
+
+class NonStringIdParser:
+    parser_version = FIXTURE_EARNINGS_CALENDAR_PARSER_VERSION
+
+    def parse(
+        self,
+        raw_content: bytes,
+        *,
+        provider_key: str,
+        provider_version: str,
+    ) -> EarningsCalendarParseResult:
+        valid = FixtureEarningsCalendarParser().parse(
+            raw_content,
+            provider_key=provider_key,
+            provider_version=provider_version,
+        )
+        invalid_record = replace(
+            valid.records[0],
+            provider_event_id=cast(str, 123),
+        )
+        return EarningsCalendarParseResult(
+            provider_key=valid.provider_key,
+            provider_version=valid.provider_version,
+            parser_version=valid.parser_version,
+            records=(invalid_record,),
+        )
+
+
 def _forbidden_row_counts() -> tuple[int, ...]:
     return (
         EarningsEvent.objects.count(),
@@ -308,6 +377,21 @@ def test_missing_provider_event_id_preserves_raw_and_records_unsupported_attempt
     assert EarningsCalendarObservation.objects.count() == 0
     assert EarningsEvent.objects.count() == 0
     assert EarningsReconciliationDecision.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_blank_provider_event_id_records_unsupported_attempt() -> None:
+    source = _calendar_source("blank-id")
+    sync_run = _sync_run(source, "blank-id")
+
+    with pytest.raises(EarningsCalendarUnsupportedIdentity) as excinfo:
+        _ingest(
+            sync_run=sync_run,
+            payload=_payload_with_events([{"provider_event_id": "   "}]),
+        )
+
+    assert excinfo.value.parse_attempt.status == RawDataParseAttempt.Status.UNSUPPORTED
+    assert EarningsCalendarObservation.objects.count() == 0
 
 
 @pytest.mark.django_db
@@ -454,6 +538,40 @@ def test_duplicate_normalized_provider_event_ids_fail_closed_before_observations
 
     assert excinfo.value.parse_attempt.status == RawDataParseAttempt.Status.SYSTEM_ERROR
     assert "duplicate provider_event_id" in excinfo.value.parse_attempt.error_summary
+    assert EarningsCalendarObservation.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_duplicate_normalized_raw_positions_fail_closed_before_observations() -> None:
+    source = _calendar_source("duplicate-position")
+    sync_run = _sync_run(source, "duplicate-position")
+
+    with pytest.raises(EarningsCalendarParserSystemFailure) as excinfo:
+        _ingest(
+            sync_run=sync_run,
+            payload=_fixture_bytes("complete_payload.json"),
+            parser=DuplicatePositionParser(),
+        )
+
+    assert excinfo.value.parse_attempt.status == RawDataParseAttempt.Status.SYSTEM_ERROR
+    assert "raw_position" in excinfo.value.parse_attempt.error_summary
+    assert EarningsCalendarObservation.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_non_string_provider_event_id_fails_closed_before_observations() -> None:
+    source = _calendar_source("non-string-id")
+    sync_run = _sync_run(source, "non-string-id")
+
+    with pytest.raises(EarningsCalendarParserSystemFailure) as excinfo:
+        _ingest(
+            sync_run=sync_run,
+            payload=_fixture_bytes("complete_payload.json"),
+            parser=NonStringIdParser(),
+        )
+
+    assert excinfo.value.parse_attempt.status == RawDataParseAttempt.Status.SYSTEM_ERROR
+    assert "provider_event_id" in excinfo.value.parse_attempt.error_summary
     assert EarningsCalendarObservation.objects.count() == 0
 
 

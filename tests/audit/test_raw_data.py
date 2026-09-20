@@ -824,3 +824,54 @@ class TestExplicitParseObservation:
         )
         assert attempt.status == RawDataParseAttempt.Status.UNSUPPORTED
         assert "raw_position 2" in attempt.error_summary
+
+    def test_rejects_observation_from_another_source(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        other_source = DataSource.objects.create(
+            key="fixture-other-source",
+            name="Fixture other source",
+            source_type=DataSource.SourceType.MANUAL,
+            base_url="https://other.example.test/",
+            license_notes="Synthetic test-only source.",
+        )
+        other_run = start_sync_run(
+            job_type="fixture.raw-data",
+            source=other_source,
+            scope={"fixture": True},
+            idempotency_key="fixture.raw-data:other-source",
+        )
+        cross_source_observation = RawDataObservation.objects.create(
+            sync_run=other_run,
+            raw_data_record=raw_data_record,
+            observed_at=sync_run.started_at,
+        )
+
+        with pytest.raises(RawDataIntegrityError, match="source"):
+            mark_raw_data_parsed(
+                raw_data_record.pk,
+                parser_version="parser-v1",
+                observation=cross_source_observation,
+            )
+
+    def test_unsupported_reason_is_sanitized(
+        self,
+        sync_run: SyncRun,
+        raw_data_record: RawDataRecord,
+        raw_data_observation: RawDataObservation,
+    ) -> None:
+        mark_raw_data_unsupported(
+            raw_data_record.pk,
+            parser_version="parser-v1",
+            error_summary="password=fixture-secret-token missing identity",
+            observation=raw_data_observation,
+        )
+
+        attempt = RawDataParseAttempt.objects.get(
+            observation=raw_data_observation,
+            parser_version="parser-v1",
+        )
+        assert "fixture-secret-token" not in attempt.error_summary

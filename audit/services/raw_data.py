@@ -356,11 +356,15 @@ def _resolve_parse_observation(
     if observation._state.adding or observation.pk is None:
         raise RawDataIntegrityError("observation must be saved before use.")
     try:
-        persisted = RawDataObservation.objects.get(pk=observation.pk)
+        persisted = RawDataObservation.objects.select_related("sync_run").get(pk=observation.pk)
     except RawDataObservation.DoesNotExist as error:
         raise RawDataIntegrityError("observation no longer exists.") from error
     if persisted.raw_data_record_id != record.pk:
         raise RawDataIntegrityError("observation does not belong to the supplied RawDataRecord.")
+    if persisted.sync_run.source_id != record.source_id:
+        raise RawDataIntegrityError(
+            "observation SyncRun source does not match the RawDataRecord source."
+        )
     return persisted
 
 
