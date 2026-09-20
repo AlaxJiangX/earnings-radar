@@ -19,7 +19,13 @@ from audit.models import (
     SourceEvidence,
     SyncRun,
 )
-from audit.services import mark_sync_run_succeeded, start_sync_run, update_sync_run_counts
+from audit.services import (
+    mark_sync_run_failed,
+    mark_sync_run_partial,
+    mark_sync_run_succeeded,
+    start_sync_run,
+    update_sync_run_counts,
+)
 from companies.models import Company, SecurityListing
 from earnings.calendar_parsing import (
     FIXTURE_EARNINGS_CALENDAR_PARSER_VERSION,
@@ -38,6 +44,7 @@ from earnings.models import (
 )
 from earnings.services import (
     EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+    MAX_EARNINGS_CALENDAR_CURSOR_LENGTH,
     MAX_EARNINGS_CALENDAR_PAGES,
     EarningsCalendarPage,
     EarningsCalendarPageSource,
@@ -370,6 +377,7 @@ def test_first_page_parser_failure_finalizes_failed_and_preserves_raw() -> None:
 def test_later_page_parser_failure_finalizes_partial_and_keeps_both_lineages() -> None:
     source = _calendar_source("later-page-failure")
     sync_run = _window_run(source, "later-page-failure")
+    forbidden_before = _forbidden_row_counts()
     page_source = FixturePageSource(
         {
             None: _page(
@@ -413,12 +421,14 @@ def test_later_page_parser_failure_finalizes_partial_and_keeps_both_lineages() -
         == 1
     )
     assert EarningsCalendarObservation.objects.count() == 2
+    assert _forbidden_row_counts() == forbidden_before
 
 
 @pytest.mark.django_db
 def test_page_source_exception_on_first_page_finalizes_failed_without_raw() -> None:
     source = _calendar_source("source-error-first")
     sync_run = _window_run(source, "source-error-first")
+    forbidden_before = _forbidden_row_counts()
     page_source = FaultyPageSource(
         {},
         error_on_cursor=None,
@@ -436,6 +446,7 @@ def test_page_source_exception_on_first_page_finalizes_failed_without_raw() -> N
     assert "fixture-secret-token" not in str(failure)
     assert "RuntimeError" in failure.sync_run.error_summary
     assert RawDataRecord.objects.count() == 0
+    assert _forbidden_row_counts() == forbidden_before
 
 
 @pytest.mark.django_db
@@ -471,6 +482,7 @@ def test_page_source_exception_on_later_page_finalizes_partial() -> None:
 def test_empty_terminal_window_succeeds_with_zero_observations() -> None:
     source = _calendar_source("empty-window")
     sync_run = _window_run(source, "empty-window")
+    forbidden_before = _forbidden_row_counts()
     page_source = FixturePageSource(
         {
             None: _page(
@@ -491,6 +503,7 @@ def test_empty_terminal_window_succeeds_with_zero_observations() -> None:
     assert result.sync_run.failed_count == 0
     assert result.observation_count == 0
     assert EarningsCalendarObservation.objects.count() == 0
+    assert _forbidden_row_counts() == forbidden_before
 
 
 @pytest.mark.django_db
@@ -525,6 +538,8 @@ def test_empty_non_terminal_page_continues_and_preserves_page_occurrences() -> N
     assert RawDataObservation.objects.count() == 2
     assert RawDataParseAttempt.objects.count() == 2
     assert EarningsCalendarObservation.objects.count() == 0
+    assert RawDataRecord.objects.values("request_fingerprint").distinct().count() == 2
+    assert RawDataRecord.objects.values("source_url").distinct().count() == 2
 
 
 @pytest.mark.django_db
@@ -650,6 +665,42 @@ def test_page_provider_mismatch_fails_closed_before_raw_persistence() -> None:
 
 
 @pytest.mark.django_db
+def test_provider_key_drift_on_later_page_fails_closed_and_keeps_prior_lineage() -> None:
+    source = _calendar_source("provider-key-drift")
+    sync_run = _window_run(source, "provider-key-drift")
+    page_source = FixturePageSource(
+        {
+            None: _page(
+                cursor=None,
+                payload=_fixture_bytes("empty_payload.json"),
+                next_cursor="B",
+                is_terminal=False,
+            ),
+            "B": _page(
+                cursor="B",
+                payload=_fixture_bytes("empty_payload.json"),
+                next_cursor=None,
+                is_terminal=True,
+                provider_key="other-fixture-provider",
+            ),
+        }
+    )
+
+    with pytest.raises(EarningsCalendarWindowFailure) as excinfo:
+        _run_window(sync_run=sync_run, page_source=page_source)
+
+    failure = excinfo.value
+    assert page_source.calls == [None, "B"]
+    assert failure.failed_page_index == 2
+    assert failure.sync_run.status == SyncRun.Status.PARTIAL
+    assert failure.sync_run.fetched_count == 1
+    assert failure.sync_run.failed_count == 1
+    assert len(failure.pages) == 1
+    assert RawDataRecord.objects.count() == 1
+    assert EarningsCalendarObservation.objects.count() == 0
+
+
+@pytest.mark.django_db
 def test_provider_version_drift_on_later_page_fails_closed() -> None:
     source = _calendar_source("provider-version-drift")
     sync_run = _window_run(source, "provider-version-drift")
@@ -721,6 +772,63 @@ def test_malformed_page_envelope_fails_closed() -> None:
 
 
 @pytest.mark.django_db
+def test_non_terminal_page_without_next_cursor_fails_closed_before_raw_persistence() -> None:
+    source = _calendar_source("missing-next-cursor")
+    sync_run = _window_run(source, "missing-next-cursor")
+    page_source = FixturePageSource(
+        {
+            None: _page(
+                cursor=None,
+                payload=_fixture_bytes("empty_payload.json"),
+                next_cursor=None,
+                is_terminal=False,
+            )
+        }
+    )
+
+    with pytest.raises(EarningsCalendarWindowFailure) as excinfo:
+        _run_window(sync_run=sync_run, page_source=page_source)
+
+    assert page_source.calls == [None]
+    assert excinfo.value.sync_run.status == SyncRun.Status.FAILED
+    assert excinfo.value.sync_run.fetched_count == 0
+    assert excinfo.value.sync_run.failed_count == 1
+    assert "next_cursor" in excinfo.value.sync_run.error_summary
+    assert RawDataRecord.objects.count() == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "invalid_next_cursor",
+    ["", "   ", 17, "c" * (MAX_EARNINGS_CALENDAR_CURSOR_LENGTH + 1)],
+)
+def test_invalid_next_cursor_fails_closed_before_raw_persistence(
+    invalid_next_cursor: object,
+) -> None:
+    source = _calendar_source("invalid-next-cursor")
+    sync_run = _window_run(source, "invalid-next-cursor")
+    page_source = FixturePageSource(
+        {
+            None: _page(
+                cursor=None,
+                payload=_fixture_bytes("empty_payload.json"),
+                next_cursor=cast(str, invalid_next_cursor),
+                is_terminal=False,
+            )
+        }
+    )
+
+    with pytest.raises(EarningsCalendarWindowFailure) as excinfo:
+        _run_window(sync_run=sync_run, page_source=page_source)
+
+    assert page_source.calls == [None]
+    assert excinfo.value.sync_run.status == SyncRun.Status.FAILED
+    assert excinfo.value.sync_run.fetched_count == 0
+    assert excinfo.value.sync_run.failed_count == 1
+    assert RawDataRecord.objects.count() == 0
+
+
+@pytest.mark.django_db
 def test_max_pages_cap_fails_closed() -> None:
     source = _calendar_source("max-pages")
     sync_run = _window_run(source, "max-pages")
@@ -774,6 +882,30 @@ def test_max_pages_overflow_fails_before_extra_fetch() -> None:
     assert failure.sync_run.status == SyncRun.Status.PARTIAL
     assert failure.sync_run.fetched_count == 100
     assert failure.sync_run.failed_count == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("invalid_max_pages", [0, 101, True])
+def test_out_of_range_max_pages_is_rejected_before_pagination(invalid_max_pages: int) -> None:
+    source = _calendar_source("max-pages-bounds")
+    sync_run = _window_run(source, "max-pages-bounds")
+    page_source = FixturePageSource({})
+
+    with pytest.raises(InvalidEarningsCalendarWindow, match="max_pages"):
+        run_earnings_calendar_window(
+            sync_run=sync_run,
+            page_source=page_source,
+            parser=FixtureEarningsCalendarParser(),
+            provider_key=PROVIDER_KEY,
+            provider_version=PROVIDER_VERSION,
+            max_pages=invalid_max_pages,
+        )
+
+    assert page_source.calls == []
+    sync_run.refresh_from_db()
+    assert sync_run.status == SyncRun.Status.RUNNING
+    assert sync_run.fetched_count == 0
+    assert sync_run.failed_count == 0
 
 
 @pytest.mark.django_db
@@ -917,6 +1049,53 @@ def test_normalized_persistence_failure_on_later_page_finalizes_partial() -> Non
 
 
 @pytest.mark.django_db
+def test_normalized_persistence_failure_on_first_page_finalizes_failed() -> None:
+    source = _calendar_source("persistence-failure-first")
+    sync_run = _window_run(source, "persistence-failure-first")
+    page_source = FixturePageSource(
+        {
+            None: _page(
+                cursor=None,
+                payload=_fixture_bytes("complete_payload.json"),
+                next_cursor=None,
+                is_terminal=True,
+            )
+        }
+    )
+    real_record = cast(
+        Callable[..., EarningsCalendarObservationWriteResult],
+        real_record_earnings_calendar_observation,
+    )
+    call_count = 0
+
+    def fail_on_second_record(**kwargs: object) -> EarningsCalendarObservationWriteResult:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return real_record(**kwargs)
+        raise RuntimeError("simulated normalized persistence failure")
+
+    with mock.patch(
+        "earnings.services.calendar_ingestion.record_earnings_calendar_observation",
+        side_effect=fail_on_second_record,
+    ):
+        with pytest.raises(EarningsCalendarWindowFailure) as excinfo:
+            _run_window(sync_run=sync_run, page_source=page_source)
+
+    failure = excinfo.value
+    assert page_source.calls == [None]
+    assert failure.pages == ()
+    assert failure.failed_page_index == 1
+    assert failure.sync_run.status == SyncRun.Status.FAILED
+    assert failure.sync_run.fetched_count == 1
+    assert failure.sync_run.failed_count == 1
+    assert RawDataRecord.objects.count() == 1
+    assert RawDataObservation.objects.count() == 1
+    assert RawDataParseAttempt.objects.get().status == RawDataParseAttempt.Status.SUCCEEDED
+    assert EarningsCalendarObservation.objects.count() == 1
+
+
+@pytest.mark.django_db
 def test_count_update_failure_keeps_raw_and_finalizes_without_false_success() -> None:
     source = _calendar_source("count-update-failure")
     sync_run = _window_run(source, "count-update-failure")
@@ -958,10 +1137,80 @@ def test_count_update_failure_keeps_raw_and_finalizes_without_false_success() ->
 
 
 @pytest.mark.django_db
+def test_failed_path_terminalizes_run_exactly_once_and_preserves_original_cause() -> None:
+    source = _calendar_source("terminalize-once-failed")
+    sync_run = _window_run(source, "terminalize-once-failed")
+    original_error = RuntimeError("password=fixture-secret-token")
+    page_source = FaultyPageSource({}, error_on_cursor=None, error=original_error)
+    terminal_calls: list[str] = []
+    real_mark_failed = cast(Callable[..., SyncRun], mark_sync_run_failed)
+
+    def counting_mark_failed(sync_run_id: object, **kwargs: object) -> SyncRun:
+        terminal_calls.append("failed")
+        return real_mark_failed(sync_run_id, **kwargs)
+
+    with mock.patch(
+        "earnings.services.calendar_pagination.mark_sync_run_failed",
+        side_effect=counting_mark_failed,
+    ):
+        with pytest.raises(EarningsCalendarWindowFailure) as excinfo:
+            _run_window(sync_run=sync_run, page_source=page_source)
+
+    failure = excinfo.value
+    assert terminal_calls == ["failed"]
+    assert failure.cause is original_error
+    assert failure.sync_run.status == SyncRun.Status.FAILED
+    assert "page 1" in str(failure)
+    assert "fixture-secret-token" not in str(failure)
+    assert "fixture-secret-token" not in failure.sync_run.error_summary
+
+
+@pytest.mark.django_db
+def test_partial_path_terminalizes_run_exactly_once_and_preserves_original_cause() -> None:
+    source = _calendar_source("terminalize-once-partial")
+    sync_run = _window_run(source, "terminalize-once-partial")
+    original_error = RuntimeError("token=super-secret")
+    page_source = FaultyPageSource(
+        {
+            None: _page(
+                cursor=None,
+                payload=_fixture_bytes("empty_payload.json"),
+                next_cursor="B",
+                is_terminal=False,
+            )
+        },
+        error_on_cursor="B",
+        error=original_error,
+    )
+    terminal_calls: list[str] = []
+    real_mark_partial = cast(Callable[..., SyncRun], mark_sync_run_partial)
+
+    def counting_mark_partial(sync_run_id: object, **kwargs: object) -> SyncRun:
+        terminal_calls.append("partial")
+        return real_mark_partial(sync_run_id, **kwargs)
+
+    with mock.patch(
+        "earnings.services.calendar_pagination.mark_sync_run_partial",
+        side_effect=counting_mark_partial,
+    ):
+        with pytest.raises(EarningsCalendarWindowFailure) as excinfo:
+            _run_window(sync_run=sync_run, page_source=page_source)
+
+    failure = excinfo.value
+    assert terminal_calls == ["partial"]
+    assert failure.cause is original_error
+    assert failure.sync_run.status == SyncRun.Status.PARTIAL
+    assert "page 2" in str(failure)
+    assert "super-secret" not in str(failure)
+    assert "super-secret" not in failure.sync_run.error_summary
+
+
+@pytest.mark.django_db
 def test_window_writes_no_downstream_domain_rows() -> None:
     source = _calendar_source("side-effects")
     sync_run = _window_run(source, "side-effects")
     forbidden_before = _forbidden_row_counts()
+    sync_runs_before = SyncRun.objects.count()
     page_source = FixturePageSource(
         {
             None: _page(
@@ -982,6 +1231,7 @@ def test_window_writes_no_downstream_domain_rows() -> None:
     _run_window(sync_run=sync_run, page_source=page_source)
 
     assert _forbidden_row_counts() == forbidden_before
+    assert SyncRun.objects.count() == sync_runs_before == 1
     assert EarningsCalendarObservation.objects.count() == 2
 
 
