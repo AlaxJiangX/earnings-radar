@@ -8,7 +8,7 @@ later 4.2C sub-stages.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -128,12 +128,15 @@ def ingest_earnings_calendar_payload(
     content_type: str = "application/json",
     encoding: str = "utf-8",
     request_descriptor: ProviderRequestContextDescriptor | None = None,
+    on_raw_persisted: Callable[[], None] | None = None,
 ) -> EarningsCalendarIngestionResult:
     """Persist raw lineage, parse one payload, and materialize observations.
 
     ``sync_run`` is caller-owned and must already be running.  This service does
     not create SyncRuns, finish them, update their counts, or implement window
-    scope/idempotency.
+    scope/idempotency.  ``on_raw_persisted`` is invoked after raw lineage is
+    committed and before the parser runs, so callers can record page-level
+    counts without exposing raw-data internals.
     """
 
     context = _validate_ingestion_context(
@@ -142,6 +145,7 @@ def ingest_earnings_calendar_payload(
         raw_content=raw_content,
         provider_key=provider_key,
         provider_version=provider_version,
+        on_raw_persisted=on_raw_persisted,
     )
 
     ingest_result = record_raw_data_observation(
@@ -159,6 +163,9 @@ def ingest_earnings_calendar_payload(
     )
     raw_record = ingest_result.record
     raw_observation = ingest_result.observation
+
+    if on_raw_persisted is not None:
+        on_raw_persisted()
 
     try:
         parse_result = parser.parse(
@@ -275,6 +282,7 @@ def _validate_ingestion_context(
     raw_content: bytes,
     provider_key: str,
     provider_version: str,
+    on_raw_persisted: Callable[[], None] | None,
 ) -> _IngestionContext:
     if sync_run._state.adding or sync_run.pk is None:
         raise InvalidEarningsCalendarIngestion("sync_run must be saved before use.")
@@ -292,6 +300,8 @@ def _validate_ingestion_context(
         raise InvalidEarningsCalendarIngestion("raw_content must be bytes.")
     if not isinstance(parser, EarningsCalendarParser):
         raise InvalidEarningsCalendarIngestion("parser must implement EarningsCalendarParser.")
+    if on_raw_persisted is not None and not callable(on_raw_persisted):
+        raise InvalidEarningsCalendarIngestion("on_raw_persisted must be callable or None.")
 
     normalized_provider_key = _require_text(
         provider_key,
