@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import uuid
 from datetime import UTC, date, datetime
+from pathlib import Path
 
 import pytest
 from django.db import close_old_connections, connections
@@ -15,11 +16,18 @@ from audit.services import (
     mark_sync_run_succeeded,
     start_sync_run,
 )
+from earnings.calendar_parsing import (
+    FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+    FixtureEarningsCalendarParser,
+)
 from earnings.services import (
     EARNINGS_CALENDAR_REQUEST_IDEMPOTENCY_PREFIX,
     EARNINGS_CALENDAR_SCHEDULED_IDEMPOTENCY_PREFIX,
     EARNINGS_CALENDAR_SCOPE_FIELDS,
     EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+    MAX_REQUEST_ID_LENGTH,
+    MAX_SCHEDULE_BUCKET_LENGTH,
+    EarningsCalendarPage,
     EarningsCalendarSyncRunAlreadyRunning,
     EarningsCalendarSyncRunContextMismatch,
     EarningsCalendarSyncRunRetryRequired,
@@ -28,9 +36,12 @@ from earnings.services import (
     build_earnings_calendar_sync_scope,
     build_manual_earnings_calendar_idempotency_key,
     build_scheduled_earnings_calendar_idempotency_key,
+    run_earnings_calendar_window,
     start_scheduled_earnings_calendar_sync_run,
 )
 
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "providers" / "earnings_calendar"
+FIXTURE_FETCHED_AT = datetime(2026, 7, 14, 12, 0, 1, tzinfo=UTC)
 PROVIDER_KEY = "fixture-earnings-calendar"
 SOURCE_KEY = "fixture-earnings-calendar-source"
 WINDOW_START = date(2026, 9, 1)
@@ -526,3 +537,175 @@ def test_failed_scheduled_retry_uses_new_request_identity() -> None:
 def test_uuid_type_is_not_silently_accepted_as_source_identity() -> None:
     with pytest.raises(InvalidEarningsCalendarSyncIdentity, match="source_key"):
         _scheduled_key(source_key=uuid.uuid4())  # type: ignore[arg-type]
+
+
+@pytest.mark.django_db
+def test_distinct_sources_never_share_one_scheduled_identity() -> None:
+    first_source = _source("identity-a")
+    second_source = _source("identity-b")
+
+    first = _start(first_source)
+    second = _start(second_source)
+
+    assert first.created is True
+    assert second.created is True
+    assert first.sync_run.pk != second.sync_run.pk
+    assert first.sync_run.idempotency_key != second.sync_run.idempotency_key
+    assert SyncRun.objects.count() == 2
+
+    with pytest.raises(EarningsCalendarSyncRunAlreadyRunning) as excinfo:
+        _start(first_source)
+
+    assert excinfo.value.sync_run.pk == first.sync_run.pk
+    assert SyncRun.objects.count() == 2
+
+
+def test_scheduled_and_request_namespaces_do_not_collide_on_equal_labels() -> None:
+    shared_label = "shared-identity-label"
+
+    keys = {
+        _scheduled_key(schedule_bucket=shared_label),
+        _manual_key(window_kind=EarningsCalendarWindowKind.MANUAL, request_id=shared_label),
+        _manual_key(window_kind=EarningsCalendarWindowKind.BACKFILL, request_id=shared_label),
+        _manual_key(window_kind=EarningsCalendarWindowKind.RETRY, request_id=shared_label),
+    }
+
+    assert len(keys) == 4
+
+
+@pytest.mark.parametrize(
+    ("label", "field", "replacement"),
+    (
+        ("capability", "capability", "investor_relations"),
+        ("provider", "provider_key", "another-provider"),
+        ("kind", "window_kind", EarningsCalendarWindowKind.MANUAL.value),
+        ("start", "window_start", "2026-09-02"),
+        ("end", "window_end", "2026-12-21"),
+        ("poolasof", "monitoring_pool_as_of", "2026-09-22"),
+        ("poolhash", "monitoring_pool_hash", "b" * 64),
+        ("selector", "selector_version", "earnings-monitoring-pool-v2"),
+    ),
+)
+@pytest.mark.django_db
+def test_existing_run_scope_field_mismatch_fails_closed(
+    label: str,
+    field: str,
+    replacement: str,
+) -> None:
+    source = _source(f"drift-{label}")
+    drifted_scope = _scope()
+    drifted_scope[field] = replacement
+    start_sync_run(
+        job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+        source=source,
+        scope=drifted_scope,
+        idempotency_key=_scheduled_key(source_key=source.key),
+    )
+
+    with pytest.raises(EarningsCalendarSyncRunContextMismatch):
+        _start(source)
+
+    assert SyncRun.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_succeeded_duplicate_with_drifted_scope_is_not_silently_reused() -> None:
+    source = _source("succeeded-drift")
+    drifted_scope = _scope()
+    drifted_scope["monitoring_pool_hash"] = "c" * 64
+    drifted = start_sync_run(
+        job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+        source=source,
+        scope=drifted_scope,
+        idempotency_key=_scheduled_key(source_key=source.key),
+    )
+    mark_sync_run_succeeded(drifted.pk)
+
+    with pytest.raises(EarningsCalendarSyncRunContextMismatch):
+        _start(source)
+
+    assert SyncRun.objects.count() == 1
+
+
+@pytest.mark.parametrize(
+    ("label", "credential_value"),
+    (
+        ("token", "token=super-secret"),
+        ("password", "password=super-secret"),
+        ("authorization", "Authorization: Bearer super-secret"),
+        ("userinfo-url", "https://user:password@example.com/calendar"),
+        ("token-url", "https://example.com/calendar?token=super-secret"),
+    ),
+)
+@pytest.mark.django_db
+def test_credential_like_schedule_bucket_is_rejected_without_write_or_leak(
+    label: str,
+    credential_value: str,
+) -> None:
+    source = _source(f"credential-{label}")
+
+    with pytest.raises(InvalidEarningsCalendarSyncIdentity) as excinfo:
+        _start(source, schedule_bucket=credential_value)
+
+    assert "super-secret" not in str(excinfo.value)
+    assert "password" not in str(excinfo.value)
+    assert SyncRun.objects.count() == 0
+
+
+def test_identity_text_normalization_is_deterministic_and_bounded() -> None:
+    assert _scheduled_key(schedule_bucket="  bucket-1  ") == _scheduled_key(
+        schedule_bucket="bucket-1"
+    )
+    assert _scheduled_key(selector_version="  v1  ") == _scheduled_key(selector_version="v1")
+    newline_bucket = _scheduled_key(schedule_bucket="bucket\n2")
+    assert newline_bucket == _scheduled_key(schedule_bucket="bucket\n2")
+    assert newline_bucket != _scheduled_key(schedule_bucket="bucket 2")
+    assert _manual_key(request_id="  request-1  ") == _manual_key(request_id="request-1")
+
+    with pytest.raises(InvalidEarningsCalendarSyncIdentity, match="schedule_bucket"):
+        _scheduled_key(schedule_bucket="b" * (MAX_SCHEDULE_BUCKET_LENGTH + 1))
+    with pytest.raises(InvalidEarningsCalendarSyncIdentity, match="request_id"):
+        _manual_key(request_id="r" * (MAX_REQUEST_ID_LENGTH + 1))
+
+
+class _SingleTerminalPageSource:
+    """Minimal offline page source used to prove C-4 to C-3 handoff."""
+
+    def __init__(self, page: EarningsCalendarPage) -> None:
+        self.page = page
+        self.calls: list[str | None] = []
+
+    def fetch_page(self, cursor: str | None) -> EarningsCalendarPage:
+        self.calls.append(cursor)
+        return self.page
+
+
+@pytest.mark.django_db
+def test_created_scheduled_run_satisfies_c3_window_preconditions() -> None:
+    source = _source("c3-handoff")
+    created = _start(source)
+    page = EarningsCalendarPage(
+        cursor=None,
+        raw_content=(FIXTURE_DIR / "empty_payload.json").read_bytes(),
+        source_url="https://fixture-earnings-calendar.test/calendar",
+        fetched_at=FIXTURE_FETCHED_AT,
+        provider_key=PROVIDER_KEY,
+        provider_version=FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+        is_terminal=True,
+        next_cursor=None,
+        request_identity={"cursor": None},
+    )
+
+    result = run_earnings_calendar_window(
+        sync_run=created.sync_run,
+        page_source=_SingleTerminalPageSource(page),
+        parser=FixtureEarningsCalendarParser(),
+        provider_key=PROVIDER_KEY,
+        provider_version=FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
+    )
+
+    assert result.completed is True
+    assert result.observation_count == 0
+    finalized = SyncRun.objects.get(pk=created.sync_run.pk)
+    assert finalized.status == SyncRun.Status.SUCCEEDED
+    assert finalized.scope == _scope()
