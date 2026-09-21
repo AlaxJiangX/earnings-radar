@@ -19,6 +19,16 @@ _PROVIDER_KEY_RE = re.compile(r"^[a-z][a-z0-9._-]{1,63}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
+def validate_provider_key(value: object) -> str:
+    """Validate a stable, credential-free lowercase provider identity."""
+
+    if not isinstance(value, str):
+        raise ProviderValidationError("Provider key must be a string.")
+    if not _PROVIDER_KEY_RE.fullmatch(value):
+        raise ProviderValidationError("Provider key must be a stable lowercase identifier.")
+    return value
+
+
 class ProviderCapability(StrEnum):
     EARNINGS_CALENDAR = "earnings_calendar"
     INVESTOR_RELATIONS = "investor_relations"
@@ -73,8 +83,11 @@ class ProviderResult:
     metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not _PROVIDER_KEY_RE.fullmatch(self.provider_key):
-            raise ProviderValidationError("Provider key must be a stable lowercase identifier.")
+        object.__setattr__(
+            self,
+            "provider_key",
+            validate_provider_key(self.provider_key),
+        )
         normalized_version = self.provider_version.strip()
         if not normalized_version or len(normalized_version) > 100:
             raise ProviderValidationError("Provider version must contain 1 to 100 characters.")
