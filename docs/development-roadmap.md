@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成，observation / decision schema foundation 与持久化基元已进入 main；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）为 IN PROGRESS，4.2C-1 parser protocol、4.2C-2 raw-first ingestion foundation 与 4.2C-3 pagination + logical-window completion 已实现并通过 verification，4.2C-4 起的 scope / scheduled idempotency / replay orchestration 尚未实现；Stage 4.2D-4.2F 尚未开始，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成，observation / decision schema foundation 与持久化基元已进入 main；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）为 IN PROGRESS，4.2C-1 parser protocol、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion 与 4.2C-4 scope + scheduled idempotency foundation 已实现并通过 verification，余下的 replay orchestration 尚未实现；Stage 4.2D-4.2F 尚未开始，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -378,7 +378,7 @@
 - status / schedule / history 不变；
 - No migration；candidate creation、provider external ID、dedup、merge/split、cross-provider reconciliation、source conflict / precedence 均保持在 4.2 边界。
 
-4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main；4.2C Fixture-First Earnings Calendar Ingestion & Replay 已开始，4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation 与 4.2C-3 pagination + logical-window completion 已实现并通过 verification。
+4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main；4.2C Fixture-First Earnings Calendar Ingestion & Replay 已开始，4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion 与 4.2C-4 scope + scheduled idempotency foundation 已实现并通过 verification。
 
 #### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C IN PROGRESS）
 
@@ -413,8 +413,11 @@ ingestion foundation（raw → parse attempt → normalized observation）已实
 覆盖 single payload、failure lineage、empty payload 与 persistence replay 幂等。4.2C-3 已完成：
 provider-neutral pagination orchestration 与 logical-window completion 已实现并通过 verification，
 覆盖 cursor cycle / non-progressing / max-page cap、PARTIAL / FAILED finalization、page-level
-counts 与 raw lineage 保留。4.2C-4 起交付：scope / scheduled idempotency 与 replay
-orchestration。验收标准：普通 CI 无真实网络；同一 fixture 连续处理两次不新增 observation /
+counts 与 raw lineage 保留。4.2C-4 已完成：canonical earnings-calendar SyncRun scope、
+deterministic scheduled idempotency identity、safe/idempotent scheduled SyncRun start、
+manual / backfill / retry 的显式 request identity、existing-run context validation 与 C-3
+RUNNING run 兼容性已实现并通过 verification；replay orchestration 与 overlapping-window
+advisory lock 仍未实现。验收标准：普通 CI 无真实网络；同一 fixture 连续处理两次不新增 observation /
 decision / domain row；partial pagination 不宣称完成且不写 domain；缺失 provider ID 不创建
 observation / candidate。
 
