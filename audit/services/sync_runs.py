@@ -1,3 +1,4 @@
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from audit.security import (
 )
 
 MAX_ERROR_SUMMARY_LENGTH = 2000
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class InvalidSyncRunTransition(RuntimeError):
@@ -51,6 +53,10 @@ def start_sync_run(
     code_version: str = "",
     parser_version: str = "",
     started_at: datetime | None = None,
+    run_mode: SyncRun.RunMode | str = SyncRun.RunMode.INGESTION,
+    replay_source_sync_run: SyncRun | None = None,
+    replay_contract_version: str = "",
+    replay_input_digest: str = "",
 ) -> SyncRun:
     return start_sync_run_with_result(
         job_type=job_type,
@@ -60,6 +66,10 @@ def start_sync_run(
         code_version=code_version,
         parser_version=parser_version,
         started_at=started_at,
+        run_mode=run_mode,
+        replay_source_sync_run=replay_source_sync_run,
+        replay_contract_version=replay_contract_version,
+        replay_input_digest=replay_input_digest,
     ).sync_run
 
 
@@ -72,6 +82,10 @@ def start_sync_run_with_result(
     code_version: str = "",
     parser_version: str = "",
     started_at: datetime | None = None,
+    run_mode: SyncRun.RunMode | str = SyncRun.RunMode.INGESTION,
+    replay_source_sync_run: SyncRun | None = None,
+    replay_contract_version: str = "",
+    replay_input_digest: str = "",
 ) -> SyncRunStartResult:
     """Start a run and report whether this caller created it.
 
@@ -93,7 +107,43 @@ def start_sync_run_with_result(
         raise ValueError(str(error)) from None
     if not isinstance(normalized_scope, dict):
         raise ValueError("SyncRun scope must be a JSON object.")
-
+    try:
+        normalized_run_mode = SyncRun.RunMode(run_mode)
+    except ValueError as error:
+        raise ValueError("run_mode must be ingestion or replay.") from error
+    if not isinstance(replay_contract_version, str) or not isinstance(replay_input_digest, str):
+        raise ValueError("Replay contract metadata must be strings.")
+    normalized_contract_version = replay_contract_version.strip()
+    normalized_input_digest = replay_input_digest.strip()
+    is_replay_scope = normalized_scope.get("window_kind") == "replay"
+    if normalized_run_mode == SyncRun.RunMode.INGESTION and (
+        is_replay_scope
+        or replay_source_sync_run is not None
+        or normalized_contract_version
+        or normalized_input_digest
+    ):
+        raise ValueError("Ingestion SyncRuns cannot contain replay metadata.")
+    if normalized_run_mode == SyncRun.RunMode.REPLAY:
+        if not is_replay_scope:
+            raise ValueError('Replay SyncRuns require scope window_kind="replay".')
+        if replay_source_sync_run is None:
+            raise ValueError("Replay SyncRuns require a source SyncRun.")
+        if (
+            replay_source_sync_run._state.adding
+            or replay_source_sync_run.pk is None
+            or replay_source_sync_run.run_mode != SyncRun.RunMode.INGESTION
+        ):
+            raise ValueError("Replay source SyncRun must be a saved ingestion run.")
+        if replay_source_sync_run.source_id != source.pk:
+            raise ValueError("Replay source SyncRun must belong to the same DataSource.")
+        if replay_source_sync_run.job_type != normalized_job_type:
+            raise ValueError("Replay source SyncRun must use the same job_type.")
+        if not normalized_contract_version or len(normalized_contract_version) > 100:
+            raise ValueError("Replay SyncRuns require replay contract metadata.")
+        if not _SHA256_HEX_RE.fullmatch(normalized_input_digest):
+            raise ValueError("Replay input digest must be a SHA-256 hex digest.")
+        if not isinstance(parser_version, str) or not parser_version.strip():
+            raise ValueError("Replay SyncRuns require a parser version.")
     timestamp = _aware_timestamp(started_at)
     with transaction.atomic():
         try:
@@ -108,6 +158,10 @@ def start_sync_run_with_result(
                         heartbeat_at=timestamp,
                         code_version=code_version,
                         parser_version=parser_version,
+                        run_mode=normalized_run_mode,
+                        replay_source_sync_run=replay_source_sync_run,
+                        replay_contract_version=normalized_contract_version,
+                        replay_input_digest=normalized_input_digest,
                     ),
                     created=True,
                 )
@@ -119,6 +173,16 @@ def start_sync_run_with_result(
             ).first()
             if existing is None:
                 raise
+            _validate_existing_start_context(
+                existing,
+                source=source,
+                job_type=normalized_job_type,
+                scope=normalized_scope,
+                run_mode=normalized_run_mode,
+                replay_source_sync_run=replay_source_sync_run,
+                replay_contract_version=normalized_contract_version,
+                replay_input_digest=normalized_input_digest,
+            )
             return SyncRunStartResult(sync_run=existing, created=False)
 
 
@@ -139,6 +203,8 @@ def update_sync_run_counts(
     with transaction.atomic():
         sync_run = SyncRun.objects.select_for_update().get(pk=sync_run_id)
         _require_running(sync_run)
+        if sync_run.run_mode == SyncRun.RunMode.REPLAY and fetched_delta:
+            raise InvalidSyncRunCount("Replay SyncRuns cannot record provider fetches.")
         sync_run.fetched_count += fetched_delta
         sync_run.created_count += created_delta
         sync_run.updated_count += updated_delta
@@ -237,3 +303,38 @@ def _require_running(sync_run: SyncRun) -> None:
         raise InvalidSyncRunTransition(
             f"SyncRun {sync_run.pk} is {sync_run.status!r}; only running runs can change."
         )
+
+
+def _validate_existing_start_context(
+    sync_run: SyncRun,
+    *,
+    source: DataSource,
+    job_type: str,
+    scope: Mapping[str, object],
+    run_mode: SyncRun.RunMode,
+    replay_source_sync_run: SyncRun | None,
+    replay_contract_version: str,
+    replay_input_digest: str,
+) -> None:
+    if run_mode == SyncRun.RunMode.INGESTION:
+        if (
+            sync_run.source_id != source.pk
+            or sync_run.job_type != job_type
+            or sync_run.run_mode != SyncRun.RunMode.INGESTION
+            or sync_run.replay_source_sync_run_id is not None
+            or sync_run.replay_contract_version
+            or sync_run.replay_input_digest
+        ):
+            raise ValueError("Existing ingestion SyncRun contains replay metadata.")
+        return
+    if (
+        sync_run.source_id != source.pk
+        or sync_run.job_type != job_type
+        or sync_run.scope != dict(scope)
+        or sync_run.run_mode != run_mode
+        or replay_source_sync_run is None
+        or sync_run.replay_source_sync_run_id != replay_source_sync_run.pk
+        or sync_run.replay_contract_version != replay_contract_version
+        or sync_run.replay_input_digest != replay_input_digest
+    ):
+        raise ValueError("Existing replay SyncRun has different replay context.")

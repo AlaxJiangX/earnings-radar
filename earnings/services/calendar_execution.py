@@ -24,6 +24,9 @@ from earnings.services.calendar_pagination import (
     EarningsCalendarWindowResult,
     run_earnings_calendar_window,
 )
+from earnings.services.calendar_replay_foundation import (
+    retire_stale_earnings_calendar_replay_run,
+)
 from earnings.services.calendar_run_ownership import (
     EarningsCalendarRunBusy,
     calendar_run_ownership,
@@ -189,6 +192,12 @@ def _retire_stale_runs(*, source_id: UUID) -> None:
                 "An earnings calendar run is still within its heartbeat grace period."
             )
         for sync_run in running:
+            if sync_run.run_mode == SyncRun.RunMode.REPLAY:
+                retire_stale_earnings_calendar_replay_run(
+                    sync_run,
+                    cutoff=cutoff,
+                )
+                continue
             observation_count = RawDataObservation.objects.filter(sync_run=sync_run).count()
             if sync_run.fetched_count > observation_count:
                 raise EarningsCalendarRunCountMismatch(
