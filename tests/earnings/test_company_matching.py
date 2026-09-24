@@ -394,6 +394,92 @@ def test_exact_cik_matches_in_pool_and_persists_candidate_lineage() -> None:
 
 
 @pytest.mark.django_db
+def test_missing_fiscal_calendar_stays_unknown_and_is_idempotent() -> None:
+    scenario = _scenario(
+        "fiscal-unknown",
+        observation_overrides={"fiscal_calendar_type": None},
+    )
+
+    first = _match(scenario)
+    second = _match(scenario)
+
+    assert first.candidate is not None
+    assert second.candidate is not None
+    assert first.candidate.fiscal_calendar_type == FiscalCalendarType.UNKNOWN
+    assert second.candidate.fiscal_calendar_type == FiscalCalendarType.UNKNOWN
+    assert first.candidate.pk == second.candidate.pk
+    assert first.matching_input_revision == second.matching_input_revision
+    assert first.decision.pk == second.decision.pk
+
+
+@pytest.mark.django_db
+def test_legacy_month_based_candidate_is_not_rewritten_or_silently_reused() -> None:
+    scenario = _scenario(
+        "legacy-fiscal-month-based",
+        observation_overrides={"fiscal_calendar_type": None},
+    )
+    first = _match(scenario)
+    assert first.candidate is not None
+    EarningsEvent.objects.filter(pk=first.candidate.pk).update(
+        fiscal_calendar_type=FiscalCalendarType.MONTH_BASED
+    )
+
+    with pytest.raises(CandidateMatchingIntegrityError, match="immutable candidate"):
+        _match(scenario)
+
+    first.candidate.refresh_from_db()
+    assert first.candidate.fiscal_calendar_type == FiscalCalendarType.MONTH_BASED
+    assert EarningsEvent.objects.count() == 1
+    assert EarningsReconciliationDecision.objects.count() == 1
+
+
+@pytest.mark.parametrize(
+    ("fiscal_calendar_type", "period_length_weeks"),
+    (
+        (FiscalCalendarType.UNKNOWN, None),
+        (FiscalCalendarType.MONTH_BASED, None),
+        (FiscalCalendarType.OTHER, None),
+        (FiscalCalendarType.WEEK_BASED_52_53, 53),
+    ),
+)
+@pytest.mark.django_db
+def test_supported_fiscal_calendar_values_are_preserved(
+    fiscal_calendar_type: str,
+    period_length_weeks: int | None,
+) -> None:
+    scenario = _scenario(
+        f"fiscal-{fiscal_calendar_type}",
+        observation_overrides={
+            "fiscal_calendar_type": fiscal_calendar_type,
+            "period_length_weeks": period_length_weeks,
+        },
+    )
+
+    result = _match(scenario)
+
+    assert result.candidate is not None
+    assert result.candidate.fiscal_calendar_type == fiscal_calendar_type
+    assert result.candidate.period_length_weeks == period_length_weeks
+
+
+@pytest.mark.django_db
+def test_unknown_fiscal_calendar_does_not_infer_week_based_from_period_length() -> None:
+    scenario = _scenario(
+        "fiscal-unknown-weeks",
+        observation_overrides={
+            "fiscal_calendar_type": None,
+            "period_length_weeks": 53,
+        },
+    )
+
+    with pytest.raises(InvalidCandidateMatchingInput, match="period_length_weeks"):
+        _match(scenario)
+
+    assert EarningsEvent.objects.count() == 0
+    assert EarningsReconciliationDecision.objects.count() == 0
+
+
+@pytest.mark.django_db
 def test_exact_ticker_and_exchange_match_in_pool() -> None:
     scenario = _scenario(
         "ticker",

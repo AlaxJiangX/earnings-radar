@@ -473,6 +473,11 @@ AMBIGUOUS/OUT_OF_POOL 映射正确；replay、parser revision 与 late correctio
 Provider-specific exchange normalization 留给 4.2F adapter。pagination completion 到 run
 terminal finalization 的 lifecycle integration 仍待后续编排接入。
 
+4.2D-2 Fiscal Calendar Repair 已完成：source `fiscal_calendar_type = NULL` 现在映射为显式
+`UNKNOWN`，新 EarningsEvent 缺省值不再使用 `MONTH_BASED`；已有 known month-based /
+52/53-week 值保持不变。历史 `month_based` 行因无法可靠区分显式事实与旧默认值，不做数据
+重写；promotion 继续只保留原值，不把 unknown 转换成 known。
+
 4.2E 交付：exact-only reconciliation、duplicate / collision decision、conflict / review 与
 manual decision authority。验收标准：ADR-010 的 4.2A-02 / 03 / 05 全部有测试；不实现 fuzzy
 auto-merge；无破坏性 merge；loser 历史完整；人工 decision 不被后续自动同步覆盖；

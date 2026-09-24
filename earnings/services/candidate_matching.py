@@ -969,7 +969,7 @@ def _record_match_audit(
 def _candidate_fiscal_values(
     observation: EarningsCalendarObservation,
 ) -> dict[str, object]:
-    fiscal_calendar_type = observation.fiscal_calendar_type or FiscalCalendarType.MONTH_BASED
+    fiscal_calendar_type = observation.fiscal_calendar_type or FiscalCalendarType.UNKNOWN
     period_length_weeks = observation.period_length_weeks
     if fiscal_calendar_type == FiscalCalendarType.WEEK_BASED_52_53:
         if period_length_weeks not in (52, 53):

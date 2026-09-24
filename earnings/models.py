@@ -33,6 +33,7 @@ class EventStatus(models.TextChoices):
 
 
 class FiscalCalendarType(models.TextChoices):
+    UNKNOWN = "unknown", "Unknown"
     MONTH_BASED = "month_based", "Month-based"
     WEEK_BASED_52_53 = "week_based_52_53", "52/53-week"
     OTHER = "other", "Other"
@@ -95,7 +96,7 @@ ALLOWED_EVENT_STATUSES = frozenset(
     {"scheduled_estimated", "scheduled_confirmed", "released", "cancelled"}
 )
 ALLOWED_IDENTITY_STATUSES = frozenset({"candidate", "canonical"})
-ALLOWED_FISCAL_CALENDAR_TYPES = frozenset({"month_based", "week_based_52_53", "other"})
+ALLOWED_FISCAL_CALENDAR_TYPES = frozenset({"unknown", "month_based", "week_based_52_53", "other"})
 ALLOWED_RELEASE_SESSIONS = frozenset({"pre_market", "after_market", "during_market", "unknown"})
 ALLOWED_EARNINGS_DATE_PRECISIONS = frozenset({"unknown", "date_only", "exact_datetime"})
 ALLOWED_EARNINGS_DATE_HISTORY_PRECISIONS = frozenset(
@@ -255,7 +256,7 @@ class EarningsEvent(models.Model):
     fiscal_calendar_type = models.CharField(
         max_length=20,
         choices=FiscalCalendarType.choices,
-        default=FiscalCalendarType.MONTH_BASED,
+        default=FiscalCalendarType.UNKNOWN,
     )
 
     period_length_weeks = models.IntegerField(

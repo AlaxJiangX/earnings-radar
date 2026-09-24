@@ -212,7 +212,7 @@ Company 不直接拥有 IndexMembership。公司级指数归属由其全部有�
 | `period_type` | Q1 / Q2 / Q3 / FY / H1 / H2 / OTHER；年度统一为 FY |
 | `period_end_date` | date nullable |
 | `includes_q4` | boolean；FY 固定为 true，其他期间默认 false |
-| `fiscal_calendar_type` | MONTH_BASED / WEEK_BASED_52_53 / OTHER |
+| `fiscal_calendar_type` | UNKNOWN / MONTH_BASED / WEEK_BASED_52_53 / OTHER；缺省 UNKNOWN |
 | `period_length_weeks` | integer nullable；周制年度通常为 52 或 53 |
 | `identity_key` | 正式事件稳定唯一键；候选事件为空 |
 | `identity_rule_version` | 生成 identity_key 的规则版本 |
@@ -236,6 +236,11 @@ Company 不直接拥有 IndexMembership。公司级指数归属由其全部有�
 | `created_at`, `updated_at` | UTC |
 
 正式唯一身份已确定为 `company_id + period_end_date + period_type`，并由带版本的规范化函数生成 `identity_key`。年度财报统一为 `FY + includes_q4=true`，上游 Q4 年度标签不另建事件。52/53 周通过 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不作为 period_type。`fiscal_year` 是来源/展示属性，不参与唯一键。数据库对非空 `identity_key` 设置唯一约束，并要求 CANONICAL 事件必须有 `period_end_date`、`period_type`、`identity_key` 和 `identity_rule_version`。
+
+`fiscal_calendar_type = UNKNOWN` 表示来源未提供或明确未知，不使用 NULL，也不得默认成
+`MONTH_BASED`。observation 的 NULL source fact 在 candidate persistence 时映射为
+`UNKNOWN`；显式 month-based 与 52/53-week 值保持不变。历史 `month_based` 行无法可靠区分
+显式事实和旧默认值，因此 repair migration 不重写历史数据。
 
 当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider 的外部事件标识和来源证据去重，不能使用 `company + fiscal_year + period_type` 作为正式身份。4.1D 通过 ADR-009 的 promotion 在同一个 EarningsEvent row 上补齐 canonical identity facts（`period_end_date`、`period_type`、派生的 `includes_q4` / `identity_key` / `identity_rule_version`），将 `identity_status` 原子变为 canonical。Promotion 是 completion 而非 correction：不修改 `company` 或 fiscal metadata，不改变 status、schedule 和既有历史；已有不同的 `period_end_date` / `period_type` 或 existing canonical collision 时 fail closed，不做 candidate dedup、merge/split 或自动合并。每个真实 identity 字段变化写 DataChange，一次 promotion 写一条 operation-level AuditRecord；`EarningsEvent.source_evidence` 保持原值。跨 Provider 的候选去重、合并与拆分属于 4.2，其 contract 已由 ADR-010 冻结：external ID 仅存在于 observation / reconciliation 层，V1 只做 exact-only automatic match，不做 destructive merge，canonical collision 写 decision 并保留 loser。详细决策见 ADR-001、ADR-007、ADR-009 与 ADR-010。
 

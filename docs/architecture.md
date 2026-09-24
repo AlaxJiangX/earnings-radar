@@ -255,7 +255,7 @@ IndexMembership 绑定 `SecurityListing`，而不是直接绑定 Company。每�
 
 ### 5.3 财报事件生命周期
 
-财报正式身份由 `company_id + period_end_date + period_type` 确定，并保存稳定的 `identity_key` 与 `identity_rule_version`。年度财报内部统一为 `period_type=FY` 且 `includes_q4=true`，不另建 Q4 正式事件。52/53 周财年使用 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不扩张 period_type。财年标签是展示/来源属性，不参与正式唯一身份。`period_end_date` 未知时只建立候选事件，候选记录必须依赖来源事件标识并等待核对，不能用 `company + fiscal_year + fiscal_period` 冒充正式唯一键。该决策见 `docs/decisions/ADR-001-earnings-event-identity.md`。
+财报正式身份由 `company_id + period_end_date + period_type` 确定，并保存稳定的 `identity_key` 与 `identity_rule_version`。年度财报内部统一为 `period_type=FY` 且 `includes_q4=true`，不另建 Q4 正式事件。52/53 周财年使用 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不扩张 period_type；缺省 fiscal calendar 使用显式 `UNKNOWN`，不得伪造成 `MONTH_BASED`。财年标签是展示/来源属性，不参与正式唯一身份。`period_end_date` 未知时只建立候选事件，候选记录必须依赖来源事件标识并等待核对，不能用 `company + fiscal_year + fiscal_period` 冒充正式唯一键。该决策见 `docs/decisions/ADR-001-earnings-event-identity.md`。
 
 财报发布生命周期只使用 `SCHEDULED_ESTIMATED`、`SCHEDULED_CONFIRMED`、`RELEASED` 和 `CANCELLED`。晚到数据不得无审计地使状态倒退；管理员修正必须写原因和审计记录。预计、确认、实际发布和电话会时间分别保存。
 

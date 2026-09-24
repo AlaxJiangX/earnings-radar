@@ -79,7 +79,9 @@ reconciliation，不允许通过 promotion 顺手纠正。已有值与输入相�
 
 `company` 不得修改。候选的 `company` 与已确认 identity 不一致时 fail closed，
 交由 4.2。`fiscal_year`、`fiscal_calendar_type`、`period_length_weeks`
-不属于 promotion mutation surface，保持原值。
+不属于 promotion mutation surface，保持原值。`fiscal_calendar_type = UNKNOWN`
+不得因默认值、promotion 或 identity completion 被转换成 `MONTH_BASED`；后续证据补充若需要
+改变该事实，必须进入独立的受审计 correction 流程。
 
 ### 4. Period label 归一化边界
 
