@@ -1,10 +1,10 @@
-# Stage 4.2C Offline Replay Contract / Planning Gate
+# Stage 4.2C Offline Replay Contract
 
 - ADR 编号：ADR-011
-- 状态：提案（Planning Gate；未接受）
+- 状态：已接受（4.2C-6 Replay Foundation Ratification）
 - 日期：2026-09-24
-- 决策者：待产品负责人确认
-- 影响阶段：4.2C-6；不进入 4.2D
+- 决策者：产品负责人
+- 影响阶段：4.2C-6 foundation、4.2C-7 orchestration；不进入 4.2D
 - 评审基线：`origin/main`，commit `ab23395305063e359dbbf36e685b260604fa1ba1`
 
 ## 1. Git Baseline
@@ -15,8 +15,9 @@
 - 原始 dirty `main` 保持不动，仍有用户已有的 `M Dockerfile`；本阶段没有覆盖或修改该文件。
 - 4.2C-5 为已完成；4.2C 仍为 IN PROGRESS；4.2D 尚未开始。
 
-本文件只做 persistence audit、正式 Contract 和 Planning Gate。没有实现 replay、没有写
-migration、没有新增依赖，也没有初始化 Django 或进入 4.2D。
+本文件冻结 persistence、identity、count、pool 和 concurrency contract。4.2C-6 已按
+ratification 结果实现最小 schema foundation 与 validation service；没有实现 full offline
+replay orchestration、Provider fetch、4.2D selector 或其他 domain workflow。
 
 ## 2. Existing Persistence
 
@@ -30,14 +31,15 @@ data-sources、roadmap 和 ADR-001 至 ADR-010。
 | `RawDataObservation.sync_run`、`raw_data_record`、`observed_at` | 把一个 raw record 绑定到一次 SyncRun；`(sync_run, raw_data_record)` 唯一 | **FACT / IMMUTABLE HISTORY**；重建 source run 的 evidence 集合，replay run 需要新增自己的 observation |
 | `RawDataParseAttempt.observation`、`parser_version`、`status` | `(observation, parser_version)` 唯一；同状态重复写复用，状态冲突拒绝 | **FACT / IMMUTABLE HISTORY**；parse replay 的结果记录 |
 | `EarningsCalendarObservation` | 以 `(raw_data_record, parser_version, provider_event_id)` 唯一；追加式保存 normalized facts | **DERIVED / REGENERATABLE**；可验证 normalized replay 幂等，不能当 replay 输入 |
-| `SyncRun.scope`、`job_type`、`source`、`idempotency_key`、`status`、时间戳和现有 counts | 保存窗口、provider、pool as-of/hash、selector version、terminal 状态和当前 fetch/写入计数 | **FACT / REPLAY METADATA**；需要新增明确 replay lineage 与 replay 计数语义 |
+| `SyncRun.scope`、`job_type`、`source`、`idempotency_key`、`status`、时间戳和现有 counts | 保存窗口、provider、pool as-of/hash、selector version、terminal 状态和当前 fetch/写入计数；4.2C-6 新增受约束 replay metadata | **FACT / REPLAY METADATA**；foundation 已提供 lineage、run mode、contract version、digest 与 replay count |
 | `fetched_count` | 当前表达 provider/page fetch 进度 | **FACT**；offline replay 必须保持为零，不能改写成 replay 条数 |
-| `persisted_count`、`page_count` | 当前 `SyncRun` 没有这两个一等字段 | **UNRESOLVED CONTRACT**；不能假设它们存在 |
-| monitoring pool selector | ADR-010 要求按 as-of + selector version 重算并核对 hash；当前 selector 尚未实现 | **REGENERATABLE PRECONDITION**；缺失时必须 BLOCKED |
+| `persisted_count`、`page_count` | 当前 `SyncRun` 没有这两个一等字段 | **NOT NEEDED**；V1 replay unit 是整个 terminal run，不能用未持久化 page subset 冒充输入 |
+| monitoring pool contract | source run 的 canonical scope 已保存 as-of、hash 和 selector version；4.2C-6 只核对请求值与这些持久化值一致 | **IMMUTABLE REPLAY CONTRACT**；不调用 4.2D selector，也不重算当前的 monitoring pool |
 | request/page identity | `RawDataRecord` 有 request fingerprint；`RawDataObservation` 没有 page index/terminal manifest | **FACT（部分）**；首版只允许整个 terminal source run，不支持隐式 page subset 或补页 |
 
-当前 persistence 能支撑 raw、parse 和 normalized 的幂等基元，但没有完整的 replay
-orchestration、replay source lineage、独立 replay 计数和 monitoring-pool selector。
+当前 persistence 已补齐 replay source lineage、contract version、input digest、独立 replay
+计数、受约束 run mode 和 replay-compatible stale recovery。尚无完整 replay orchestration、
+company matching 或 4.2D monitoring-pool selector。
 
 ## 3. Offline Replay Definition
 
@@ -66,14 +68,14 @@ Replay 的唯一主要 source of truth 是 source run 关联的 `RawDataObservat
 | logical window | 重试原窗口，重新走 provider pagination | 复用 source run 的 canonical window；初版输入为整个 terminal source run |
 | raw evidence 来源 | 新网络响应，可新建或复用 RawDataRecord | 现有 `RawDataRecord.payload`，不得伪造新的 fetch evidence |
 | old run 是否改变 | 否；原 FAILED/PARTIAL 保留 | 否；source run 的 status、counts、heartbeat、finished_at 均不变 |
-| monitoring pool hash | 重试前核对原 pool hash | 重新按原 `monitoring_pool_as_of` + `selector_version` 计算并核对原 hash；selector 缺失或不一致则拒绝 |
+| monitoring pool hash | 重试前核对原 pool hash | **Option A**：只核对 replay request 与 source run 已持久化的 as-of/hash/version；不在 4.2C 重算 selector |
 | lineage | retry SyncRun → 新 RawDataObservation/Record → retry ParseAttempt | replay SyncRun → replay RawDataObservation → 既有 RawDataRecord → source RawDataObservation → source SyncRun |
 | parse attempt | 对新/复用 observation 按 parser version 写入 | 对 replay observation + parser version 写入；同 replay 重复时复用 |
 | normalized result | 新 raw identity 允许产生新的 normalized observation | 同 raw + parser + provider event ID 复用；parser version 改变时新增 append-only revision |
-| idempotency | 失败/partial 重试使用新 key；同 key 的 terminal run 可复用 | `source run + request + parser + contract + input digest` 形成 deterministic identity；同 identity 复用 |
+| idempotency | 失败/partial 重试使用新 key；同 key 的 terminal run 可复用 | `run mode + source + job type + source run + logical window + parser/contract + input digest` 形成 deterministic identity；同 identity 复用 |
 
-表中无法从当前 persistence 直接推出的关键项已标记为 `UNRESOLVED CONTRACT`，并在第 18 节
-列为 schema/foundation gap。
+表中所有 replay 必需项均已由 4.2C-6 persistence/service foundation 覆盖；未持久化
+page subset 与 `persisted_count` 明确不属于 V1 contract。
 
 ## 5. Replay Source of Truth
 
@@ -99,32 +101,34 @@ RawDataRecord.payload）**。
 
 - `RUNNING` source run 不可 replay；
 - 初版不支持自由 page subset、按 ticker 过滤、补缺页或以今天的 pool 补齐；
-- input 集合按 `RawDataObservation.observed_at ASC, RawDataObservation.id ASC` 排序，摘要每条
-  observation 的 ID、raw record ID、content hash 和 request fingerprint；
+- input 集合按稳定的 raw identity tuple（`request_fingerprint`、`content_hash`、
+  `source_url`、`raw_data_record_id`）排序，摘要每条 observation 的 raw record ID、
+  request fingerprint、content hash、payload size 和受控 response metadata；
 - source `SUCCEEDED` 必须能证明 fetch/page count 与 raw observation 集合一致；不一致时 fail closed；
 - source `PARTIAL` / `FAILED` 只能 replay 已保存的 subset，并保留“窗口不完整”语义。
 
 ## 7. Replay Identity
 
-实现不得复用 scheduled/manual/backfill/retry builder；需增加显式 `window_kind = "replay"`。
-建议的 canonical identity：
+实现不得复用 scheduled/manual/backfill/retry builder；需同时使用显式
+`run_mode = "replay"` 与 `window_kind = "replay"`。canonical identity：
 
 ```text
 SHA256(canonical_json({
-  source_key,
+  run_mode,
+  source_id,
   job_type,
   source_sync_run_id,
-  replay_request_id,
+  logical_window,
   parser_version,
   replay_contract_version,
-  source_scope_digest,
-  ordered_input_digest,
+  replay_input_digest
 }))
 ```
 
-同一 `source_sync_run_id + replay_request_id + parser/version context + input digest` 必须复用
-已有 replay run；任一组成值变化必须产生新的 replay identity。Replay request ID 必须显式、
-可审计且不含凭据。
+同一 source run、logical window、parser context、contract version 和 input digest 必须得到
+同一个 replay identity；任一组成值变化必须产生新的 replay identity。数据库使用 replay-only
+partial unique constraint 作为最终防线。V1 不引入独立的 replay request ID：需要新 replay
+identity 时必须改变有语义的 parser/contract context，而不是用随机请求号复制同一计算。
 
 ## 8. Lineage Contract
 
@@ -138,9 +142,10 @@ replay SyncRun
   -> source SyncRun
 ```
 
-推荐将 `replayed_from_sync_run`（nullable `PROTECT` FK）和 `replay_input_digest` 作为一等
-metadata。若产品选择只存 scope，必须先提供受约束的 resolver、字段校验和 digest 校验，
-不能依赖自由 JSON 文本。
+Foundation 采用一等 `replay_source_sync_run`（nullable `PROTECT` FK）和
+`replay_input_digest`。服务会重新加载 source run，并验证 ingestion mode、同 source、同
+job type、terminal status、canonical scope 和 raw observation count；DB 约束禁止自引用，
+并通过 replay-only unique constraint 固化身份。
 
 Replay 不得复制/修改 RawDataRecord，不得覆盖 source run 的任何状态或计数；所有 parse、
 normalized 和失败记录必须指向 replay observation 或其 raw record，并保持 append-only。
@@ -192,9 +197,10 @@ normalized 和失败记录必须指向 replay observation 或其 raw record，�
 
 1. source run 存在且 terminal；job type/source/provider/scope 通过 canonical validator；
 2. source scope 的 window、pool as-of/hash、selector version 完整且无凭据；
-3. selector 能按原 as-of + version 重算 monitoring pool 并得到相同 hash；
+3. replay request 的 monitoring pool as-of/hash/selector version 与 source run 持久化
+   immutable scope 完全一致；Option A 不重算 selector；
 4. 所有 source raw observations 与 records 完整、hash 一致、来源链可解析；
-5. replay identity 输入已规范化，request ID/parser/contract version 非空；
+5. replay identity 输入已规范化，run mode、parser version 和 contract version 非空；
 6. replay persistence foundation（第 18 节）已完成；
 7. provider/network adapter 在 replay path 不可被调用。
 
@@ -202,6 +208,10 @@ normalized 和失败记录必须指向 replay observation 或其 raw record，�
 
 4.2C 选择 correctness 优先：offline replay 与 scheduled/retry/manual ingestion 共用
 `(source, job_type)` advisory lock。
+
+Foundation 的 replay start 在该锁域内完成 source/contract 校验和 run creation；fresh
+`RUNNING` replay 会让后续 scheduled/retry start 被现有 stale gate 判为 busy，不新增 replay
+专属锁。
 
 | 场景 | 结果 |
 |---|---|
@@ -231,10 +241,11 @@ Replay 不允许通过更细的锁域换取吞吐；normalized duplicate 只能�
   stale run 只能在持有 `(source, job_type)` lock 时被标为 `PARTIAL`（已有 evidence）或
   `FAILED`（没有 evidence），不得直接复活旧 run。
 - stale run 的既有 ParseAttempt 和 normalized rows 不回滚、不删除、不改写。
-- 重新回放使用新的 `replay_request_id` / idempotency key，仍然不访问 Provider；现有 normalized
-  unique key 保证不会产生重复 derived result。
-- 当前 stale helper 只理解 `fetched_count` 与 raw observation 数量，无法正确表达 replay
-  progress；必须在 persistence foundation 中增加独立 replay progress 语义后才能实现。
+- `replayed_count` 只从该 replay run 下已持久化的 RawDataObservation 重建；计数领先于事实
+  时 fail closed，不从内存累加值猜测。
+- stale terminal replay 不自动复活。V1 的同一 identity 继续复用 terminal result；只有在
+  parser 或 replay contract context 变化时才形成新的 replay identity。后续若需要同上下文的
+  operational replay retry，必须另行批准 request identity，不能偷偷复用 ingestion retry key。
 
 ## 17. Missing Evidence Behavior
 
@@ -243,41 +254,46 @@ Replay 不允许通过更细的锁域换取吞吐；normalized duplicate 只能�
 | original/source run 不存在 | 立即拒绝；不创建 replay run，不写任何 lineage |
 | original/source run `RUNNING` | 立即拒绝；等待 source terminal 后再 replay |
 | source raw observation 缺失 | fail closed；source run 不变；若 replay 已部分写入则保留并终止为 PARTIAL/FAILED |
+| source fetch count 与 persisted raw observations 不一致 | fail closed；不猜测缺失 page，也不把未知 raw 补成证据 |
 | RawDataRecord 缺失或 hash/bytes 不一致 | fail closed；不信任旧 normalized result，不伪造 raw |
 | source partial evidence | 只处理现有 evidence，replay 最多 PARTIAL，不能补 fetch |
 | 合法空 source | 仅在 source terminal 语义和计数可验证时成功 |
 | parser failure | 保留 raw/parse failure lineage，不创建 normalized row |
 | pool hash mismatch | 在 replay writes 前拒绝；不使用当前 pool，不修改 source run |
 
-## 18. Schema Gap
+## 18. Ratified Foundation
 
-**Schema change required = YES。**
+**Schema change required = YES；4.2C-6 foundation 已实现。**
 
-当前 schema 缺少以下可安全实现 replay 所需的语义：
+最终采用 Option A，不实现 4.2D selector。最小 `SyncRun` 扩展如下：
 
-1. `SyncRun` 没有 `window_kind = replay` 的受约束 identity 入口，也没有一等
-   `replayed_from_sync_run` 关系或等价受约束 lineage metadata；source run ID 放在自由 scope 中
-   不足以保证可查询、可校验和可审计；
-2. 没有独立 `replayed_count`（及必要的 replay progress/error 计数）。复用 `fetched_count`
-   会违反“零 provider fetch”语义，并且现有 stale helper 可能把 replay 进度误判为 raw fetch
-   进度；
-3. 没有 replay input digest / contract version 的持久化位置，无法证明两次 replay 读取了同一
-   evidence 集合和规则上下文。
+| 字段 / constraint | Purpose | Nullability / default | Historical rows | Constraint / index |
+|---|---|---|---|---|
+| `run_mode` | 区分 ingestion 与 replay，避免只靠自由 JSON | 非空，`ingestion` | migration 后全部为 ingestion | choices + DB check |
+| `replay_source_sync_run` | replay → source SyncRun 的一等 lineage | nullable；replay 必须非空 | 历史 ingestion 为 NULL | `PROTECT`；replay-only unique identity；self-reference check |
+| `replay_contract_version` | 固定 replay 语义版本 | 非空字符串，默认空串 | 历史 rows 为空串，表示不适用 | replay 必须含非空白字符 |
+| `replay_input_digest` | 证明一次 replay 消费的完整 raw manifest | 非空字符串，默认空串 | 历史 rows 为空串，表示不适用 | replay 必须为 64 位小写 SHA-256 hex |
+| `replayed_count` | 从 replay-linked RawDataObservation 重建的独立进度 | 非负整数，默认 0 | 历史 rows 为 0，表示无 replay progress | non-negative check；不与 `fetched_count` 混用 |
+| `parser_version` | 固定 parse context；现有字段 | 非空字符串 | ingestion 语义不变 | replay-only check 要求非空 |
 
-最小 foundation / migration stage（本轮只列出，不执行）：
+Replay identity 另有 partial unique constraint，覆盖 source、job type、source SyncRun、parser
+version、contract version 和 input digest。即使调用方伪造不同 `idempotency_key`，数据库仍会
+拒绝第二条 equivalent replay run。
 
-- 为 `SyncRun` 增加可为空、`PROTECT` 的 replay source relation，或先由产品确认并实现严格
-  的 scope resolver；
-- 增加 `replay_contract_version`、`replay_input_digest` 和独立 `replayed_count`（必要时再
-  增加 replayed failure counters），现有运行默认保持空/零，不回写历史；
-- 为 `window_kind = replay`、replay identity builder、stale progress 和 counts 增加模型/服务
-  约束与迁移；
-- 提供可按 as-of/version 重算 pool hash 的 selector service。它是代码 foundation，不应被
-  伪装成 4.2C replay 的顺手实现。
+`window_kind` enum 增加 `replay`，但 manual/backfill/retry request-key builder 不接受它。
+`EarningsCalendarWindowKind.REPLAY` 只与 `run_mode=replay` 一起由 foundation service 使用。
 
-迁移风险：需要为已存在的 SyncRun 提供无破坏性默认值，保持现有唯一约束和 append-only 历史；
-必须验证旧 scheduled/retry run 不会被误识别为 replay，且升级期间 stale recovery、counts 和
-source lineage 读取兼容。不得删除或重写既有 raw/parse/normalized/history。
+ParseAttempt 与 normalized revision 不新增 schema：
+
+- `RawDataParseAttempt` 的 `(observation, parser_version)` 唯一键已支持同一 raw record 的
+  append-only parser revisions；
+- `EarningsCalendarObservation` 的 `(raw_data_record, parser_version, provider_event_id)`
+  唯一键已支持 parser-version revision，旧 row 保持不变。
+
+Migration `audit/0009_syncrun_offline_replay_foundation.py` 为历史 SyncRun 保留原 status、
+scope、counts、timestamps 和 history；仅填充不适用默认值，不回填或猜测 replay lineage。
+Reverse migration 删除新增 fields 与 constraints，不删除历史 SyncRun。Migration test 覆盖
+forward、reverse、再次 forward 和 historical row preservation。
 
 ## 19. Required Tests
 
@@ -302,53 +318,61 @@ source lineage 读取兼容。不得删除或重写既有 raw/parse/normalized/h
 | lineage preserved | replay observation/attempt 可追溯到 source run 与同一 RawDataRecord |
 | original run unchanged | source status/counts/heartbeat/finished_at/history 完全不变 |
 
-必须等 schema foundation 后才能可靠实现：replay success 的独立计数、stale replay recovery、
-lineage query、input digest idempotency、source/replay 并发回归。Raw bytes/hash 校验、parser
-failure 和 normalized duplicate 的底层单元测试可以先用现有 primitives 覆盖，但不能宣称完整
-replay 已实现。
+4.2C-6 foundation 已覆盖 lineage、input digest、独立计数、pool contract validation、
+parallel-lock rejection、stale recovery 和 append-only revision primitives。完整 replay
+success/failure orchestration、page manifest consumption 和 domain no-op 仍属于 4.2C-7，
+不能因为 foundation 测试通过而宣称完整 replay 已实现。
 
 ## 20. Explicit Non-Goals
 
-本阶段明确不做：
+4.2C-6 foundation 明确不做：
 
-- replay source adapter、Replay service、management command、API 或 UI；
-- migration 或 `SyncRun`/`RawDataObservation`/`RawDataParseAttempt`/earnings schema 修改；
-- monitoring pool selector 的实现（只列为 precondition/foundation）；
-- historical backfill、live provider refetch、company matching、candidate generation、
-  reconciliation、Stage 4.2D/4.2E；
+- full replay orchestration loop、parse-all-source-run executor 或 normalized replay executor；
+- replay source adapter、management command、API 或 UI；
+- Provider fetch/network access；
+- monitoring pool selector、company matching、candidate、reconciliation 或 EarningsEvent write；
+- historical backfill、live provider refetch 或 Stage 4.2D/4.2E；
 - Celery、Redis、queue infrastructure；
 - 任何 domain write、通知或 destructive merge。
 
 ## 21. Next Implementation Scope
 
-在产品接受本提案并完成第 18 节 foundation 后，下一单一实现阶段应是：
+在 4.2C-6 foundation gate 通过后，下一单一实现阶段应是：
 
-> **Stage 4.2C-6 — Offline Replay Orchestration Implementation**
+> **Stage 4.2C-7 — Offline Replay Orchestration Implementation**
 
-可能修改的文件（仅用于下一阶段规划）：
+4.2C-7 应实现：
 
-- `audit/models.py` 与对应 audit migration；
-- `audit/services/sync_runs.py` 及 stale/progress helper；
-- `earnings/services/calendar_sync_identity.py`；
-- 新的 DB-backed replay source/orchestration service；
-- monitoring-pool selector 所属 service（若已被提前抽取）；
-- `tests/earnings/` 与 audit replay contract tests。
+- 基于 4.2C-6 digest、lineage、count 和 lock primitive 的 DB-backed replay executor；
+- 完整 source run raw manifest 的 replay observation、parse attempt 和 normalized persistence；
+- crash/stale recovery 与 terminal completion；
+- provider-call prohibition regression。
 
-本轮不修改这些文件。
+4.2C-7 仍不实现 4.2D company matching、candidate generation 或 live selector。
 
-## 22. Planning Gate Decision
+## 22. Ratification Decision
 
-**BLOCKED — schema/foundation gap must be resolved first.**
+```text
+Monitoring pool strategy:
+Option A
 
-Blocking evidence：
+Why:
+offline replay 的目标是基于已持久化 raw evidence 重做 parse / normalized pipeline；source
+run 已保存 immutable monitoring pool as-of/hash/selector version。4.2C foundation 只验证 replay
+request 与这些 persisted values 完全一致，不重算历史 selector，也不使用 today's pool。
 
-1. 当前 `SyncRun` 无 replay source lineage、`replayed_count` 或 input digest 的受约束持久化
-   语义；
-2. 当前 window identity 只接受 scheduled/manual/backfill/retry，不能把 replay 与 retry 明确
-   区分；
-3. monitoring-pool selector 尚未实现，不能按原始 as-of 证明 pool hash；
-4. 当前 stale/count helper 只按 fetch 语义工作，无法在零网络 replay 中安全表示进度。
+Does this enter Stage 4.2D:
+NO
+```
 
-Minimum foundation / migration stage：先接受并实现第 18 节的最小 schema 与 selector foundation，
-再开启第 21 节的 orchestration implementation。直到那时，4.2C 继续保持 IN PROGRESS，4.2D
-保持 NOT STARTED。
+Option A 的边界是：本阶段可以证明 replay 使用了 source run 当时持久化的 pool contract，
+不能独立证明当年的 selector calculation 本身正确。后者仍由 Stage 4.2D 的历史 selector
+实现与后续审计负责。
+
+4.2C-6 gate decision：
+
+```text
+PASS — replay foundation is ready for offline replay orchestration
+```
+
+4.2C 整体继续保持 IN PROGRESS；4.2D 保持 NOT STARTED。
