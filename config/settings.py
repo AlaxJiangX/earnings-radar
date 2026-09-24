@@ -36,6 +36,7 @@ if DJANGO_ENV not in _local_environments and DEBUG:
 
 _development_secret = "unsafe-development-only-key"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", _development_secret)
+_normalized_secret = SECRET_KEY.strip()
 _development_secrets = {
     _development_secret,
     "unsafe-local-development-key",  # Docker Compose default
@@ -43,8 +44,8 @@ _development_secrets = {
 }
 if (
     DJANGO_ENV not in _local_environments
-    and (not SECRET_KEY.strip() or SECRET_KEY in _development_secrets)
-) or (not DEBUG and SECRET_KEY == _development_secret):
+    and (not _normalized_secret or _normalized_secret in _development_secrets)
+) or (not DEBUG and _normalized_secret == _development_secret):
     raise ImproperlyConfigured("DJANGO_SECRET_KEY must use a non-development value.")
 
 _development_audit_ip_hash_key = "unsafe-development-and-test-only-audit-ip-hash-key"
