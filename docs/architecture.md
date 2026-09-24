@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D Planning Gate 已接受 ADR-012，4.2D-1 selector/snapshot core 已实现并通过 verification，待独立 pre-merge review；scheduled command integration 与 company matching/candidate 尚未实现。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、reconciliation workflow、SEC Filing 或通知领域模型。
+当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 planning gate 已接受 ADR-013，candidate/company matching implementation 尚未开始。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、reconciliation workflow、SEC Filing 或通知领域模型。
 
 ## 1. 架构目标与边界
 
@@ -169,7 +169,7 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching contract planned）
 
 ADR-010 已冻结 4.2 的 provider-neutral 契约。4.2B 已实现
 `EarningsCalendarObservation`、`EarningsReconciliationDecision`、DB 约束、append-only /
@@ -190,9 +190,15 @@ NULL replay 拒绝，并把 provider context 纳入 replay digest；offline repl
 Company，使用 explicit enabled index policy 的 as-of normative membership，持久化 hybrid
 snapshot，并保持 retry/replay 只复用 persisted contract。4.2D-1 已实现 selector
 service、immutable snapshot/member schema、canonical input revision、pool hash 与
-PostgreSQL 并发复用；以下列表是 ratified contract，其中 scheduled entry point 仍使用
-caller-supplied pool contract，company matching、candidate creation、reconciliation policy
-与 live Provider 仍未实现（余下 4.2D-2-4.2F）：
+PostgreSQL 并发复用。ADR-013 进一步冻结 candidate/company matching contract：Candidate
+复用 EarningsEvent candidate；search space 限制 frozen monitoring snapshot；matching date
+为 `monitoring_pool_as_of`；只允许 exact CIK 或 exact ticker + canonical exchange；
+unmatched/ambiguous/out-of-pool 使用 append-only decision 留痕，不创建 candidate；generic
+matcher 不承担 Provider exchange alias mapping；candidate phase 在完整 pagination/normalization
+后、run terminal finalization 前，以现有 `(source, job_type)` ownership 和短 transaction
+执行。以下列表仍是 ratified contract，其中 scheduled entry point 仍使用 caller-supplied
+pool contract，company matching、candidate creation、reconciliation policy 与 live Provider
+仍未实现（余下 4.2D-2-4.2F）：
 
 - 分层：`raw -> parse -> EarningsCalendarObservation -> EarningsReconciliationDecision ->
   EarningsEvent`；`provider_key + provider_event_id` 只表示 source identity，不进入 canonical
@@ -216,8 +222,9 @@ caller-supplied pool contract，company matching、candidate creation、reconcil
 - live gate：4.2F 前必须完成 provider / license checklist，4.2A-4.2E 全部 fixture-first。
 
 完整决策见 `docs/decisions/ADR-010-earnings-calendar-observation-and-reconciliation.md`、
-`docs/decisions/ADR-011-earnings-calendar-offline-replay.md` 与
-`docs/decisions/ADR-012-monitoring-pool-selector.md`。
+`docs/decisions/ADR-011-earnings-calendar-offline-replay.md`、
+`docs/decisions/ADR-012-monitoring-pool-selector.md` 与
+`docs/decisions/ADR-013-earnings-candidate-company-matching.md`。
 
 ## 5. 领域流程
 
