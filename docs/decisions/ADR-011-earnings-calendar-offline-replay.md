@@ -396,3 +396,8 @@ PASS — replay foundation is ready for offline replay orchestration
   override、current-version fallback 和从 normalized observation 反推均禁止。
 - provider version 属于 parser context，必须纳入 replay input digest。不同 provider version
   必须产生不同 digest，并通过 digest 产生不同 replay identity。
+- direct ORM creation bypasses domain service invariants and is unsupported for production
+  earnings-calendar SyncRuns. New supported ingestion paths must use the domain start services.
+- `audit/0009` 的 reverse migration 会移除 replay-only 字段；包含 replay semantics 的 production
+  data 不得把 downgrade 到 `audit 0008` 视为无损操作。正常 forward migration
+  `0009 → 0010` 不受影响。

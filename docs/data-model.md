@@ -526,6 +526,9 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 - `provider_version` 是 run-level immutable parser context：同一 run 的所有 page 必须一致；
   历史 NULL 表示 provenance unknown 且 replay-ineligible，不得从 normalized observation 或
   current provider version 推断。
+- Direct ORM creation of earnings-calendar SyncRuns bypasses these service invariants and is
+  unsupported for production writes. `audit/0009` downgrade removes replay-only semantics and
+  is not a lossless operation for data containing replay runs.
 
 ### 10.3 `RawDataRecord`
 
