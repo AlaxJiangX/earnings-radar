@@ -516,8 +516,8 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 - `run_mode=replay` 的行必须具有 `window_kind=replay`、source lineage、非空 parser/contract
   version、64 位小写 SHA-256 input digest，且 `fetched_count=0`；
 - replay source FK 禁止自引用并使用 `PROTECT`；服务验证 source 与 replay 的 DataSource、
-  job type 相同，source 为 terminal ingestion run，raw observation count 与 source
-  `fetched_count` 一致；
+  job type 相同，replay scope 与 source scope 除 `window_kind` 外完全一致，source 为
+  terminal ingestion run，raw observation count 与 source `fetched_count` 一致；
 - partial unique constraint 固化 replay identity：source、job type、source SyncRun、parser
   version、contract version 与 input digest 相同不得创建第二条 replay run；
 - historical SyncRun 迁移时全部标记为 ingestion，新增 metadata 为空、`replayed_count=0`，

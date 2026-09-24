@@ -102,8 +102,9 @@ RawDataRecord.payload）**。
 - `RUNNING` source run 不可 replay；
 - 初版不支持自由 page subset、按 ticker 过滤、补缺页或以今天的 pool 补齐；
 - input 集合按稳定的 raw identity tuple（`request_fingerprint`、`content_hash`、
-  `source_url`、`raw_data_record_id`）排序，摘要每条 observation 的 raw record ID、
-  request fingerprint、content hash、payload size 和受控 response metadata；
+  `source_url`、`payload_size_bytes`）排序；RawDataRecord UUID 是数据库 row identity，
+  不作为 digest 输入。摘要每条 observation 的 request fingerprint、content hash、
+  payload size 和受控 response metadata；
 - source `SUCCEEDED` 必须能证明 fetch/page count 与 raw observation 集合一致；不一致时 fail closed；
 - source `PARTIAL` / `FAILED` 只能 replay 已保存的 subset，并保留“窗口不完整”语义。
 
@@ -144,8 +145,9 @@ replay SyncRun
 
 Foundation 采用一等 `replay_source_sync_run`（nullable `PROTECT` FK）和
 `replay_input_digest`。服务会重新加载 source run，并验证 ingestion mode、同 source、同
-job type、terminal status、canonical scope 和 raw observation count；DB 约束禁止自引用，
-并通过 replay-only unique constraint 固化身份。
+job type、terminal status、canonical scope 和 raw observation count；replay scope 必须与
+source scope 完全相同，只允许把 `window_kind` 改为 `replay`。DB 约束禁止自引用，并通过
+replay-only unique constraint 固化身份。
 
 Replay 不得复制/修改 RawDataRecord，不得覆盖 source run 的任何状态或计数；所有 parse、
 normalized 和失败记录必须指向 replay observation 或其 raw record，并保持 append-only。
