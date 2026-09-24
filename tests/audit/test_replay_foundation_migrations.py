@@ -7,7 +7,8 @@ from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 
 MIGRATE_FROM = ("audit", "0008_extend_audit_targets_for_reconciliation_decision")
-MIGRATE_TO = ("audit", "0009_syncrun_offline_replay_foundation")
+MIGRATE_REPLAY = ("audit", "0009_syncrun_offline_replay_foundation")
+MIGRATE_TO = ("audit", "0010_syncrun_provider_version_provenance")
 
 
 @pytest.mark.django_db(transaction=True)
@@ -35,7 +36,6 @@ def test_replay_foundation_migration_preserves_historical_ingestion_rows() -> No
             started_at=observed_at,
             heartbeat_at=observed_at,
         )
-
         executor = MigrationExecutor(connection)
         executor.migrate([MIGRATE_TO])
         new_apps = executor.loader.project_state([MIGRATE_TO]).apps
@@ -47,6 +47,7 @@ def test_replay_foundation_migration_preserves_historical_ingestion_rows() -> No
         assert migrated.replay_input_digest == ""
         assert migrated.replayed_count == 0
         assert migrated.fetched_count == 0
+        assert migrated.provider_version is None
         assert migrated.scope == {"fixture": "historical"}
         assert migrated.job_type == "migration.fixture"
 
@@ -62,6 +63,7 @@ def test_replay_foundation_migration_preserves_historical_ingestion_rows() -> No
                 replay_input_digest="a" * 64,
                 parser_version="fixture-parser-v1",
                 fetched_count=1,
+                provider_version="fixture-v1",
                 started_at=observed_at,
                 heartbeat_at=observed_at,
             )
@@ -77,6 +79,64 @@ def test_replay_foundation_migration_preserves_historical_ingestion_rows() -> No
         executor = MigrationExecutor(connection)
         executor.migrate([MIGRATE_TO])
         NewSyncRun = executor.loader.project_state([MIGRATE_TO]).apps.get_model("audit", "SyncRun")
-        assert NewSyncRun.objects.get(pk=sync_run.pk).run_mode == "ingestion"
+        refowarded = NewSyncRun.objects.get(pk=sync_run.pk)
+        assert refowarded.run_mode == "ingestion"
+        assert refowarded.provider_version is None
+    finally:
+        MigrationExecutor(connection).migrate(latest_targets)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_provider_version_migration_keeps_historical_replay_rows_valid() -> None:
+    executor = MigrationExecutor(connection)
+    latest_targets = executor.loader.graph.leaf_nodes()
+    observed_at = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
+
+    try:
+        executor.migrate([MIGRATE_FROM])
+        old_apps = executor.loader.project_state([MIGRATE_FROM]).apps
+        DataSource = old_apps.get_model("audit", "DataSource")
+        SyncRun = old_apps.get_model("audit", "SyncRun")
+        source = DataSource.objects.create(
+            key="migration-provider-replay",
+            name="Provider replay migration source",
+            source_type="manual",
+            base_url="https://migration-provider-replay.example.test/",
+        )
+        source_run = SyncRun.objects.create(
+            job_type="migration.fixture",
+            source=source,
+            scope={"fixture": "historical"},
+            idempotency_key="migration.provider-source",
+            started_at=observed_at,
+            heartbeat_at=observed_at,
+        )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([MIGRATE_REPLAY])
+        replay_apps = executor.loader.project_state([MIGRATE_REPLAY]).apps
+        ReplaySyncRun = replay_apps.get_model("audit", "SyncRun")
+        historical_replay = ReplaySyncRun.objects.create(
+            job_type="migration.fixture",
+            source_id=source.pk,
+            scope={"window_kind": "replay"},
+            idempotency_key="migration.historical-replay",
+            run_mode="replay",
+            replay_source_sync_run_id=source_run.pk,
+            replay_contract_version="1",
+            replay_input_digest="c" * 64,
+            parser_version="fixture-parser-v1",
+            started_at=observed_at,
+            heartbeat_at=observed_at,
+        )
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([MIGRATE_TO])
+        new_apps = executor.loader.project_state([MIGRATE_TO]).apps
+        NewSyncRun = new_apps.get_model("audit", "SyncRun")
+        migrated = NewSyncRun.objects.get(pk=historical_replay.pk)
+        assert migrated.run_mode == "replay"
+        assert migrated.provider_version is None
+        assert migrated.replay_input_digest == "c" * 64
     finally:
         MigrationExecutor(connection).migrate(latest_targets)

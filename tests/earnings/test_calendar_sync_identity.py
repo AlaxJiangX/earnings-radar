@@ -43,6 +43,7 @@ from earnings.services import (
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "providers" / "earnings_calendar"
 FIXTURE_FETCHED_AT = datetime(2026, 7, 14, 12, 0, 1, tzinfo=UTC)
 PROVIDER_KEY = "fixture-earnings-calendar"
+PROVIDER_VERSION = FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION
 SOURCE_KEY = "fixture-earnings-calendar-source"
 WINDOW_START = date(2026, 9, 1)
 WINDOW_END = date(2026, 12, 20)
@@ -149,6 +150,7 @@ def _start(
     monitoring_pool_hash: str = POOL_HASH,
     selector_version: str = SELECTOR_VERSION,
     schedule_bucket: str = SCHEDULE_BUCKET,
+    provider_version: str = PROVIDER_VERSION,
     code_version: str = "",
     parser_version: str = "",
     started_at: datetime | None = None,
@@ -162,6 +164,7 @@ def _start(
         monitoring_pool_hash=monitoring_pool_hash,
         selector_version=selector_version,
         schedule_bucket=schedule_bucket,
+        provider_version=provider_version,
         code_version=code_version,
         parser_version=parser_version,
         started_at=started_at,
@@ -342,6 +345,7 @@ def test_first_scheduled_start_creates_running_c3_compatible_run() -> None:
     assert run.idempotency_key == _scheduled_key(source_key=source.key)
     assert run.code_version == ""
     assert run.parser_version == ""
+    assert run.provider_version == PROVIDER_VERSION
     assert (
         run.fetched_count,
         run.created_count,
@@ -352,6 +356,16 @@ def test_first_scheduled_start_creates_running_c3_compatible_run() -> None:
     assert run.source.source_type == DataSource.SourceType.EARNINGS_CALENDAR
     assert run.source.provider_adapter == PROVIDER_KEY
     assert SyncRun.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_scheduled_start_requires_persisted_provider_version() -> None:
+    source = _source("missing-provider-version")
+
+    with pytest.raises(InvalidEarningsCalendarSyncIdentity, match="provider_version"):
+        _start(source, provider_version="")
+
+    assert SyncRun.objects.count() == 0
 
 
 @pytest.mark.django_db

@@ -36,6 +36,7 @@ from earnings.services import (
     EarningsCalendarRunBusy,
     EarningsCalendarRunOwnershipLost,
     InvalidEarningsCalendarReplay,
+    ReplayProviderContextUnavailable,
     build_earnings_calendar_replay_idempotency_key,
     build_earnings_calendar_replay_input_digest,
     build_earnings_calendar_sync_scope,
@@ -51,6 +52,7 @@ from earnings.services import calendar_replay_foundation as replay_foundation
 from tests.earnings.helpers import make_calendar_observation
 
 PROVIDER_KEY = "fixture-calendar-provider"
+PROVIDER_VERSION = "fixture-provider-v1"
 JOB_TYPE = EARNINGS_CALENDAR_WINDOW_JOB_TYPE
 PARSER_VERSION = "fixture-parser-v1"
 POOL_AS_OF = date(2026, 9, 21)
@@ -86,6 +88,7 @@ def _source_run(
     *,
     status: str = SyncRun.Status.SUCCEEDED,
     started_at: datetime | None = None,
+    provider_version: str | None = PROVIDER_VERSION,
 ) -> SyncRun:
     started = started_at or datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
     return SyncRun.objects.create(
@@ -98,6 +101,7 @@ def _source_run(
         finished_at=started if status != SyncRun.Status.RUNNING else None,
         heartbeat_at=started,
         parser_version=PARSER_VERSION,
+        provider_version=provider_version,
     )
 
 
@@ -122,9 +126,10 @@ def _observed_source(
     suffix: str,
     *,
     count: int = 1,
+    provider_version: str | None = PROVIDER_VERSION,
 ) -> tuple[DataSource, SyncRun, tuple[RawDataRecord, ...], tuple[RawDataObservation, ...]]:
     source = _source(suffix)
-    source_run = _source_run(source)
+    source_run = _source_run(source, provider_version=provider_version)
     records: list[RawDataRecord] = []
     observations: list[RawDataObservation] = []
     for index in range(count):
@@ -237,6 +242,39 @@ def test_replay_source_count_must_match_persisted_raw_observations() -> None:
 
 
 @pytest.mark.django_db
+def test_legacy_source_without_provider_version_is_not_replayable() -> None:
+    source, source_run, _records, _observations = _observed_source(
+        "legacy-provider-version",
+        provider_version=None,
+    )
+
+    with pytest.raises(ReplayProviderContextUnavailable, match="provider version"):
+        validate_earnings_calendar_replay_source(
+            source_sync_run=source_run,
+            source=source,
+        )
+
+
+@pytest.mark.django_db
+def test_normalized_observation_cannot_restore_missing_provider_version() -> None:
+    source, source_run, records, _observations = _observed_source(
+        "legacy-normalized-fallback",
+        provider_version=None,
+    )
+    make_calendar_observation(
+        source=source,
+        raw_data_record=records[0],
+        provider_version=PROVIDER_VERSION,
+    )
+
+    with pytest.raises(ReplayProviderContextUnavailable, match="provider version"):
+        validate_earnings_calendar_replay_source(
+            source_sync_run=source_run,
+            source=source,
+        )
+
+
+@pytest.mark.django_db
 def test_successful_source_without_raw_evidence_is_not_replayable() -> None:
     source = _source("empty-success")
     source_run = _source_run(source)
@@ -265,6 +303,7 @@ def test_sync_run_db_constraint_rejects_self_replay_lineage() -> None:
             replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
             replay_input_digest="b" * 64,
             parser_version=PARSER_VERSION,
+            provider_version=PROVIDER_VERSION,
             started_at=now,
             heartbeat_at=now,
         )
@@ -286,6 +325,7 @@ def test_replay_db_constraint_keeps_provider_fetch_count_zero() -> None:
             replay_source_sync_run=source_run,
             replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
             replay_input_digest="b" * 64,
+            provider_version=PROVIDER_VERSION,
             parser_version=PARSER_VERSION,
             fetched_count=1,
             started_at=now,
@@ -346,6 +386,7 @@ def test_replay_db_constraint_requires_complete_replay_metadata() -> None:
             "replay_contract_version": EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
             "replay_input_digest": "b" * 64,
             "parser_version": PARSER_VERSION,
+            "provider_version": PROVIDER_VERSION,
             "started_at": now,
             "heartbeat_at": now,
         }
@@ -373,6 +414,7 @@ def test_generic_replay_start_reloads_persisted_source_and_rejects_scope_bypass(
             replay_source_sync_run=source_run,
             replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
             replay_input_digest="b" * 64,
+            provider_version=PROVIDER_VERSION,
         )
 
     other_source = _source("generic-source-tamper")
@@ -387,6 +429,48 @@ def test_generic_replay_start_reloads_persisted_source_and_rejects_scope_bypass(
             parser_version=PARSER_VERSION,
             run_mode=SyncRun.RunMode.REPLAY,
             replay_source_sync_run=tampered_source_run,
+            replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
+            replay_input_digest="b" * 64,
+            provider_version=PROVIDER_VERSION,
+        )
+
+
+@pytest.mark.django_db
+def test_replay_provider_version_cannot_be_overridden_by_caller() -> None:
+    source, source_run, _records, _observations = _observed_source("provider-override")
+    replay_scope = dict(source_run.scope)
+    replay_scope["window_kind"] = "replay"
+
+    with pytest.raises(ValueError, match="provider version"):
+        start_sync_run_with_result(
+            job_type=JOB_TYPE,
+            source=source,
+            scope=replay_scope,
+            idempotency_key="provider-override",
+            parser_version=PARSER_VERSION,
+            run_mode=SyncRun.RunMode.REPLAY,
+            replay_source_sync_run=source_run,
+            replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
+            replay_input_digest="b" * 64,
+            provider_version="fixture-provider-v2",
+        )
+
+
+@pytest.mark.django_db
+def test_replay_start_requires_persisted_provider_context() -> None:
+    source, source_run, _records, _observations = _observed_source("provider-required")
+    replay_scope = dict(source_run.scope)
+    replay_scope["window_kind"] = "replay"
+
+    with pytest.raises(ValueError, match="provider version"):
+        start_sync_run_with_result(
+            job_type=JOB_TYPE,
+            source=source,
+            scope=replay_scope,
+            idempotency_key="provider-required",
+            parser_version=PARSER_VERSION,
+            run_mode=SyncRun.RunMode.REPLAY,
+            replay_source_sync_run=source_run,
             replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
             replay_input_digest="b" * 64,
         )
@@ -413,6 +497,7 @@ def test_generic_replay_start_rejects_non_replayable_source_status(
             replay_source_sync_run=source_run,
             replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
             replay_input_digest="b" * 64,
+            provider_version=PROVIDER_VERSION,
         )
 
 
@@ -504,6 +589,36 @@ def test_digest_changes_with_payload_and_parser_contract_context() -> None:
 
 
 @pytest.mark.django_db
+def test_provider_version_changes_digest_and_replay_identity() -> None:
+    source, source_run, _records, _observations = _observed_source("provider-digest")
+    first_digest = build_earnings_calendar_replay_input_digest(
+        source_sync_run=source_run,
+        parser_version=PARSER_VERSION,
+    )
+    first_identity = build_earnings_calendar_replay_idempotency_key(
+        source=source,
+        source_sync_run=source_run,
+        replay_input_digest=first_digest,
+        parser_version=PARSER_VERSION,
+    )
+
+    SyncRun.objects.filter(pk=source_run.pk).update(provider_version="fixture-provider-v2")
+    second_digest = build_earnings_calendar_replay_input_digest(
+        source_sync_run=source_run,
+        parser_version=PARSER_VERSION,
+    )
+    second_identity = build_earnings_calendar_replay_idempotency_key(
+        source=source,
+        source_sync_run=source_run,
+        replay_input_digest=second_digest,
+        parser_version=PARSER_VERSION,
+    )
+
+    assert first_digest != second_digest
+    assert first_identity != second_identity
+
+
+@pytest.mark.django_db
 def test_replay_identity_is_deterministic_and_context_sensitive() -> None:
     source, source_run, _records, _observations = _observed_source("identity")
     digest = build_earnings_calendar_replay_input_digest(
@@ -568,6 +683,7 @@ def test_replay_start_links_source_and_keeps_network_fetch_count_zero() -> None:
     assert replay.run_mode == SyncRun.RunMode.REPLAY
     assert replay.scope["window_kind"] == "replay"
     assert replay.replay_source_sync_run_id == source_run.pk
+    assert replay.provider_version == source_run.provider_version
     assert replay.fetched_count == 0
     assert replay.replayed_count == 0
 
@@ -630,6 +746,7 @@ def test_replay_identity_unique_constraint_rejects_idempotency_key_bypass() -> N
             replay_contract_version=replay.replay_contract_version,
             replay_input_digest=replay.replay_input_digest,
             parser_version=replay.parser_version,
+            provider_version=replay.provider_version,
             started_at=now,
             heartbeat_at=now,
         )

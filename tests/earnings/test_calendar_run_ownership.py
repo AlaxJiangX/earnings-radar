@@ -113,6 +113,7 @@ def _start_scheduled(source: DataSource, *, started_at: datetime | None = None) 
         monitoring_pool_hash=POOL_HASH,
         selector_version=SELECTOR_VERSION,
         schedule_bucket="fixture-bucket",
+        provider_version=PROVIDER_VERSION,
         parser_version=FixtureEarningsCalendarParser.parser_version,
         started_at=started_at,
     ).sync_run
@@ -380,6 +381,7 @@ def test_stale_run_is_preserved_and_retry_starts_a_new_run(has_raw: bool) -> Non
     assert retried.created is True
     assert retried.sync_run.pk != old.pk
     assert retried.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert retried.sync_run.provider_version == PROVIDER_VERSION
     assert retried.sync_run.scope["window_kind"] == "retry"
     assert retry_source.calls == [None]
     assert SyncRun.objects.count() == 2
