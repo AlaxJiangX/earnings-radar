@@ -1,8 +1,10 @@
+import re
 import uuid
 from collections.abc import Iterable
 from typing import Any
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import F, Q
 from django.db.models.base import ModelBase
@@ -149,6 +151,10 @@ class SyncRun(models.Model):
         FAILED = "failed", "Failed"
         SKIPPED = "skipped", "Skipped"
 
+    class RunMode(models.TextChoices):
+        INGESTION = "ingestion", "Ingestion"
+        REPLAY = "replay", "Offline replay"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     job_type = models.CharField(max_length=100)
     source = models.ForeignKey(
@@ -159,10 +165,25 @@ class SyncRun(models.Model):
     scope = models.JSONField(default=dict, blank=True)
     idempotency_key = models.CharField(max_length=255)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
+    run_mode = models.CharField(
+        max_length=16,
+        choices=RunMode.choices,
+        default=RunMode.INGESTION,
+    )
+    replay_source_sync_run = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="replay_runs",
+        null=True,
+        blank=True,
+    )
+    replay_contract_version = models.CharField(max_length=100, blank=True, default="")
+    replay_input_digest = models.CharField(max_length=64, blank=True, default="")
     started_at = models.DateTimeField(default=timezone.now)
     finished_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(default=timezone.now)
     fetched_count = models.PositiveBigIntegerField(default=0)
+    replayed_count = models.PositiveBigIntegerField(default=0)
     created_count = models.PositiveBigIntegerField(default=0)
     updated_count = models.PositiveBigIntegerField(default=0)
     skipped_count = models.PositiveBigIntegerField(default=0)
@@ -182,9 +203,22 @@ class SyncRun(models.Model):
                 fields=("source", "job_type", "idempotency_key"),
                 name="audit_sync_run_window_key_unique",
             ),
+            models.UniqueConstraint(
+                fields=(
+                    "source",
+                    "job_type",
+                    "replay_source_sync_run",
+                    "parser_version",
+                    "replay_contract_version",
+                    "replay_input_digest",
+                ),
+                condition=Q(run_mode="replay"),
+                name="audit_sync_run_replay_identity_unique",
+            ),
             models.CheckConstraint(
                 condition=(
                     Q(fetched_count__gte=0)
+                    & Q(replayed_count__gte=0)
                     & Q(created_count__gte=0)
                     & Q(updated_count__gte=0)
                     & Q(skipped_count__gte=0)
@@ -218,10 +252,84 @@ class SyncRun(models.Model):
                 condition=~Q(job_type="") & ~Q(idempotency_key=""),
                 name="audit_sync_run_keys_not_empty",
             ),
+            models.CheckConstraint(
+                condition=Q(run_mode__in=("ingestion", "replay")),
+                name="audit_sync_run_mode_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(run_mode="ingestion")
+                        & (Q(scope__window_kind__isnull=True) | ~Q(scope__window_kind="replay"))
+                        & Q(replay_source_sync_run__isnull=True)
+                        & Q(replay_contract_version="")
+                        & Q(replay_input_digest="")
+                        & Q(replayed_count=0)
+                    )
+                    | (
+                        Q(run_mode="replay")
+                        & Q(scope__window_kind="replay")
+                        & Q(replay_source_sync_run__isnull=False)
+                        & Q(replay_contract_version__regex=r"[^[:space:]]")
+                        & Q(replay_input_digest__regex=r"^[0-9a-f]{64}$")
+                        & Q(parser_version__regex=r"[^[:space:]]")
+                        & Q(fetched_count=0)
+                    )
+                ),
+                name="audit_sync_run_replay_metadata_consistent",
+            ),
+            models.CheckConstraint(
+                condition=Q(replay_source_sync_run__isnull=True)
+                | ~Q(pk=F("replay_source_sync_run")),
+                name="audit_sync_run_replay_source_not_self",
+            ),
         ]
 
     def __str__(self) -> str:
         return f"{self.job_type}: {self.status} ({self.id})"
+
+    def clean(self) -> None:
+        super().clean()
+        is_replay_scope = isinstance(self.scope, dict) and self.scope.get("window_kind") == "replay"
+        if self.run_mode == self.RunMode.INGESTION:
+            if is_replay_scope:
+                raise ValidationError({"scope": "Ingestion runs cannot use replay window_kind."})
+            if self.replay_source_sync_run_id is not None:
+                raise ValidationError(
+                    {"replay_source_sync_run": "Ingestion runs cannot have a replay source."}
+                )
+            if self.replay_contract_version or self.replay_input_digest or self.replayed_count:
+                raise ValidationError("Ingestion runs cannot contain replay metadata or progress.")
+            return
+        if self.run_mode != self.RunMode.REPLAY:
+            raise ValidationError({"run_mode": "Unknown SyncRun mode."})
+        if not is_replay_scope:
+            raise ValidationError({"scope": 'Replay runs require window_kind="replay".'})
+        if self.replay_source_sync_run_id is None:
+            raise ValidationError(
+                {"replay_source_sync_run": "Replay runs require a source SyncRun."}
+            )
+        if self.pk is not None and self.replay_source_sync_run_id == self.pk:
+            raise ValidationError(
+                {"replay_source_sync_run": "A replay run cannot reference itself."}
+            )
+        if not self.replay_contract_version.strip():
+            raise ValidationError(
+                {"replay_contract_version": "Replay runs require a contract version."}
+            )
+        if not re.fullmatch(r"[0-9a-f]{64}", self.replay_input_digest):
+            raise ValidationError(
+                {"replay_input_digest": "Replay input digest must be a SHA-256 hex digest."}
+            )
+        if not self.parser_version.strip():
+            raise ValidationError({"parser_version": "Replay runs require a parser version."})
+        if self.fetched_count:
+            raise ValidationError({"fetched_count": "Replay runs must not fetch provider data."})
+        if self.replay_source_sync_run is not None:
+            if self.source_id != self.replay_source_sync_run.source_id:
+                raise ValidationError("Replay and source SyncRun must use the same DataSource.")
+            if self.job_type != self.replay_source_sync_run.job_type:
+                raise ValidationError("Replay and source SyncRun must use the same job type.")
 
 
 class RawDataRecord(models.Model):

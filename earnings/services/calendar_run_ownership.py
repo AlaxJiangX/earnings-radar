@@ -88,11 +88,23 @@ def calendar_run_ownership(
             )
 
 
-def assert_calendar_run_ownership() -> None:
+def assert_calendar_run_ownership(
+    *,
+    source_id: UUID | None = None,
+    job_type: str | None = None,
+) -> None:
     lease = _CURRENT_LEASE.get()
     if lease is None:
         raise EarningsCalendarRunOwnershipLost("Earnings calendar run has no ownership lease.")
     lease.assert_active()
+    if source_id is not None and lease.source_id != source_id:
+        raise EarningsCalendarRunOwnershipLost(
+            "Earnings calendar ownership lease belongs to a different DataSource."
+        )
+    if job_type is not None and lease.job_type != job_type:
+        raise EarningsCalendarRunOwnershipLost(
+            "Earnings calendar ownership lease belongs to a different job type."
+        )
 
 
 def owned_calendar_run[**P, R](function: Callable[P, R]) -> Callable[P, R]:

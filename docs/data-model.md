@@ -501,10 +501,27 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | `scope` | 受控 JSON，如指数/CIK/日期范围 |
 | `idempotency_key` | 同一计划窗口唯一 nullable |
 | `status` | running / succeeded / partial / failed / skipped |
+| `run_mode` | ingestion / replay；默认 ingestion |
+| `replay_source_sync_run_id` | 可选 PROTECT self-FK；replay 必须指向 terminal ingestion run |
+| `replay_contract_version` | replay 语义版本；非 replay 行为空 |
+| `replay_input_digest` | replay 消费完整 raw manifest 的 SHA-256；非 replay 行为空 |
 | `started_at`, `finished_at`, `heartbeat_at` | UTC |
-| `fetched_count`, `created_count`, `updated_count`, `skipped_count`, `failed_count` | PRD 要求统计 |
+| `fetched_count`, `replayed_count`, `created_count`, `updated_count`, `skipped_count`, `failed_count` | PRD 要求统计；replay 的 `fetched_count` 必须为 0，`replayed_count` 从 replay-linked RawDataObservation 重建 |
 | `error_summary` | 脱敏摘要 |
 | `code_version`, `parser_version` | 可重现性 |
+
+4.2C-6 replay foundation 的约束：
+
+- `run_mode=ingestion` 的行不得携带 replay source、replay contract metadata 或 replay progress；
+- `run_mode=replay` 的行必须具有 `window_kind=replay`、source lineage、非空 parser/contract
+  version、64 位小写 SHA-256 input digest，且 `fetched_count=0`；
+- replay source FK 禁止自引用并使用 `PROTECT`；服务验证 source 与 replay 的 DataSource、
+  job type 相同，replay scope 与 source scope 除 `window_kind` 外完全一致，source 为
+  terminal ingestion run，raw observation count 与 source `fetched_count` 一致；
+- partial unique constraint 固化 replay identity：source、job type、source SyncRun、parser
+  version、contract version 与 input digest 相同不得创建第二条 replay run；
+- historical SyncRun 迁移时全部标记为 ingestion，新增 metadata 为空、`replayed_count=0`，
+  不回填或猜测历史 replay lineage。
 
 ### 10.3 `RawDataRecord`
 
@@ -667,6 +684,7 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | SourceEvidence | evidence_key unique；raw data record + target + field + normalized value + normalizer version |
 | DataChange | change_key unique |
 | AuditRecord | audit_key unique；actor/sync + action + target + before/after + reason + request |
+| SyncRun replay identity | source + job_type + replay_source_sync_run + parser_version + replay_contract_version + replay_input_digest unique（仅 run_mode=replay） |
 
 并发写入必须捕获唯一冲突后读取已存在记录，不能依赖“先查后写”。
 

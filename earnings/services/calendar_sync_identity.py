@@ -78,6 +78,7 @@ class EarningsCalendarWindowKind(StrEnum):
     MANUAL = "manual"
     BACKFILL = "backfill"
     RETRY = "retry"
+    REPLAY = "replay"
 
 
 def build_earnings_calendar_sync_scope(
@@ -480,7 +481,7 @@ def _normalize_window_kind(
         return EarningsCalendarWindowKind(value.strip().lower())
     except ValueError as error:
         raise InvalidEarningsCalendarSyncIdentity(
-            "window_kind must be scheduled, manual, backfill, or retry."
+            "window_kind must be scheduled, manual, backfill, retry, or replay."
         ) from error
 
 

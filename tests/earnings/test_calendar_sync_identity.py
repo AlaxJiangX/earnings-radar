@@ -194,9 +194,10 @@ def test_scope_is_deterministic_and_contains_only_frozen_identity_fields() -> No
         EarningsCalendarWindowKind.MANUAL,
         EarningsCalendarWindowKind.BACKFILL,
         EarningsCalendarWindowKind.RETRY,
+        EarningsCalendarWindowKind.REPLAY,
     ),
 )
-def test_scope_supports_the_four_window_kinds(
+def test_scope_supports_all_window_kinds(
     window_kind: EarningsCalendarWindowKind,
 ) -> None:
     assert _scope(window_kind=window_kind)["window_kind"] == window_kind.value
@@ -319,6 +320,11 @@ def test_manual_key_is_deterministic_and_request_id_changes_identity() -> None:
 def test_manual_key_rejects_scheduled_window_kind() -> None:
     with pytest.raises(InvalidEarningsCalendarSyncIdentity, match="manual, backfill, or retry"):
         _manual_key(window_kind=EarningsCalendarWindowKind.SCHEDULED)
+
+
+def test_manual_key_rejects_replay_window_kind() -> None:
+    with pytest.raises(InvalidEarningsCalendarSyncIdentity, match="manual, backfill, or retry"):
+        _manual_key(window_kind=EarningsCalendarWindowKind.REPLAY)
 
 
 @pytest.mark.django_db
