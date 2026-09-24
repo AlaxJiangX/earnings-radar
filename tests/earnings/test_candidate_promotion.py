@@ -1326,6 +1326,25 @@ class TestStatusSchedulePreservation:
             data_change__rule_version=EARNINGS_CANDIDATE_PROMOTION_RULE_VERSION,
         ).exists()
 
+    def test_promotion_preserves_unknown_fiscal_calendar(self) -> None:
+        event = _make_candidate(
+            fiscal_calendar_type=FiscalCalendarType.UNKNOWN,
+            period_length_weeks=None,
+        )
+
+        result = promote_earnings_event(
+            earnings_event=event,
+            period_end_date=_TARGET_DATE,
+            period_type="Q1",
+            sync_run=make_sync_run("preserve-unknown-fiscal"),
+        )
+
+        event.refresh_from_db()
+        assert result.changed is True
+        assert event.fiscal_calendar_type == FiscalCalendarType.UNKNOWN
+        assert event.period_length_weeks is None
+        assert "fiscal_calendar_type" not in _promotion_data_change_fields(event)
+
 
 @pytest.mark.django_db(transaction=True)
 class TestPromotionConcurrency:

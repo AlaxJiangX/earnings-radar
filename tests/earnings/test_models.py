@@ -110,6 +110,7 @@ class TestEarningsEventCandidate:
         )
         assert ev.period_end_date is None
         assert ev.identity_key is None
+        assert ev.fiscal_calendar_type == "unknown"
 
     def test_candidate_identity_key_null(self) -> None:
         co = _make_company("0000002101", "NullKeyCo")

@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching planning gate 已完成并接受 ADR-013；4.2D-2 implementation 至 4.2F 尚未完成，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching implementation 已完成并通过本轮验证，待 independent pre-merge review；4.2E–4.2F 尚未完成，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -380,7 +380,7 @@
 
 4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main。4.2C Fixture-First Earnings Calendar Ingestion & Replay 已完成：4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch、4.2C-6 replay foundation / schema ratification、4.2C-7 provider context foundation 与 offline replay orchestration implementation 均已通过 verification、CI、merge 和 merge commit 复验。
 
-#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C ✅ COMPLETE；4.2D IN PROGRESS，4.2D-1 COMPLETE；4.2D-2 PLANNED）
+#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C ✅ COMPLETE；4.2D IN PROGRESS，4.2D-1 COMPLETE；4.2D-2 IMPLEMENTED，PRE-MERGE REVIEW PENDING）
 
 正式拆分与实现依据（ADR-010）：
 
@@ -462,11 +462,21 @@ retry/replay 不重选 pool；empty pool 只在输入完整时有效；snapshot/
 exact CIK 或 exact ticker + canonical exchange；unmatched / ambiguous / out-of-pool
 使用 append-only `EarningsReconciliationDecision` 留痕，不创建 candidate。
 
-4.2D-2 Implementation 交付：独立 company matching / candidate creation service、deterministic
-matching input revision、append-only match decision、SourceEvidence/AuditRecord 集成与
-replay/correction idempotency。验收标准：ticker-only 或跨交易所歧义 fail closed；不运行
-selector；不扩大 frozen pool；不提前 promotion；candidate 与 decision 并发幂等、replay 可审计；
-Provider-specific exchange normalization 留给 4.2F adapter。
+4.2D-2 ✅ IMPLEMENTED，待 independent pre-merge review。已实现
+`create_earnings_candidate_for_observation(...)`、frozen snapshot resolution、exact CIK 与
+exact ticker + canonical exchange matching、deterministic matching input / execution / result /
+candidate identity、append-only match decision、SourceEvidence/AuditRecord 集成、
+schedule-service integration、ownership 和短事务并发幂等。验收标准已由 focused tests 与完整
+回归覆盖：ticker-only、partial ticker、company-name/provider-symbol fallback 和跨交易所歧义
+fail closed；不运行 selector、不扩大 frozen pool、不提前 promotion；MATCHED/UNMATCHED/
+AMBIGUOUS/OUT_OF_POOL 映射正确；replay、parser revision 与 late correction 保留旧历史；
+Provider-specific exchange normalization 留给 4.2F adapter。pagination completion 到 run
+terminal finalization 的 lifecycle integration 仍待后续编排接入。
+
+4.2D-2 Fiscal Calendar Repair 已完成：source `fiscal_calendar_type = NULL` 现在映射为显式
+`UNKNOWN`，新 EarningsEvent 缺省值不再使用 `MONTH_BASED`；已有 known month-based /
+52/53-week 值保持不变。历史 `month_based` 行因无法可靠区分显式事实与旧默认值，不做数据
+重写；promotion 继续只保留原值，不把 unknown 转换成 known。
 
 4.2E 交付：exact-only reconciliation、duplicate / collision decision、conflict / review 与
 manual decision authority。验收标准：ADR-010 的 4.2A-02 / 03 / 05 全部有测试；不实现 fuzzy

@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 planning gate 已接受 ADR-013，candidate/company matching implementation 尚未开始。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、reconciliation workflow、SEC Filing 或通知领域模型。
+当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 已按 ADR-013 实现 candidate/company matching core，待 independent pre-merge review。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、reconciliation workflow、SEC Filing 或通知领域模型。
 
 ## 1. 架构目标与边界
 
@@ -169,7 +169,7 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching contract planned）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现，待 independent pre-merge review）
 
 ADR-010 已冻结 4.2 的 provider-neutral 契约。4.2B 已实现
 `EarningsCalendarObservation`、`EarningsReconciliationDecision`、DB 约束、append-only /
@@ -196,9 +196,13 @@ PostgreSQL 并发复用。ADR-013 进一步冻结 candidate/company matching con
 unmatched/ambiguous/out-of-pool 使用 append-only decision 留痕，不创建 candidate；generic
 matcher 不承担 Provider exchange alias mapping；candidate phase 在完整 pagination/normalization
 后、run terminal finalization 前，以现有 `(source, job_type)` ownership 和短 transaction
-执行。以下列表仍是 ratified contract，其中 scheduled entry point 仍使用 caller-supplied
-pool contract，company matching、candidate creation、reconciliation policy 与 live Provider
-仍未实现（余下 4.2D-2-4.2F）：
+执行。4.2D-2 已实现 `create_earnings_candidate_for_observation(...)`、frozen snapshot
+resolution、exact CIK / ticker+exchange matching、deterministic revision/decision/candidate
+identity、append-only decision、SourceEvidence/AuditRecord 与 schedule-service integration；
+public service 在现有 run ownership 内执行，但 pagination completion 到 run finalization 的
+lifecycle integration 仍由后续编排接入。以下列表仍是 ratified contract，其中 scheduled
+entry point 仍使用 caller-supplied pool contract，candidate pre-finalize integration、
+reconciliation policy 与 live Provider 仍未实现（余下 4.2E-4.2F）：
 
 - 分层：`raw -> parse -> EarningsCalendarObservation -> EarningsReconciliationDecision ->
   EarningsEvent`；`provider_key + provider_event_id` 只表示 source identity，不进入 canonical
@@ -251,7 +255,7 @@ IndexMembership 绑定 `SecurityListing`，而不是直接绑定 Company。每�
 
 ### 5.3 财报事件生命周期
 
-财报正式身份由 `company_id + period_end_date + period_type` 确定，并保存稳定的 `identity_key` 与 `identity_rule_version`。年度财报内部统一为 `period_type=FY` 且 `includes_q4=true`，不另建 Q4 正式事件。52/53 周财年使用 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不扩张 period_type。财年标签是展示/来源属性，不参与正式唯一身份。`period_end_date` 未知时只建立候选事件，候选记录必须依赖来源事件标识并等待核对，不能用 `company + fiscal_year + fiscal_period` 冒充正式唯一键。该决策见 `docs/decisions/ADR-001-earnings-event-identity.md`。
+财报正式身份由 `company_id + period_end_date + period_type` 确定，并保存稳定的 `identity_key` 与 `identity_rule_version`。年度财报内部统一为 `period_type=FY` 且 `includes_q4=true`，不另建 Q4 正式事件。52/53 周财年使用 `fiscal_calendar_type` 和 `period_length_weeks` 表达，不扩张 period_type；缺省 fiscal calendar 使用显式 `UNKNOWN`，不得伪造成 `MONTH_BASED`。财年标签是展示/来源属性，不参与正式唯一身份。`period_end_date` 未知时只建立候选事件，候选记录必须依赖来源事件标识并等待核对，不能用 `company + fiscal_year + fiscal_period` 冒充正式唯一键。该决策见 `docs/decisions/ADR-001-earnings-event-identity.md`。
 
 财报发布生命周期只使用 `SCHEDULED_ESTIMATED`、`SCHEDULED_CONFIRMED`、`RELEASED` 和 `CANCELLED`。晚到数据不得无审计地使状态倒退；管理员修正必须写原因和审计记录。预计、确认、实际发布和电话会时间分别保存。
 

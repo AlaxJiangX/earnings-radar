@@ -26,8 +26,15 @@ company_id + period_end_date + period_type
 - `identity_status`：`CANDIDATE` 或 `CANONICAL`；
 - `fiscal_year`：来源/展示属性，不参与正式唯一键；
 - `includes_q4`：年度财报固定为 true，其他期间默认 false；
-- `fiscal_calendar_type`：财务日历类型，例如 `MONTH_BASED`、`WEEK_BASED_52_53` 或 `OTHER`；
+- `fiscal_calendar_type`：财务日历类型，例如 `UNKNOWN`、`MONTH_BASED`、
+  `WEEK_BASED_52_53` 或 `OTHER`；
 - `period_length_weeks`：周制财年的实际周数，通常为 52 或 53，非周制可为空。
+
+`UNKNOWN` 是 absent source fact 的显式表示，也是新 `EarningsEvent` 的模型默认值。
+Normalized observation 的 `fiscal_calendar_type = NULL` 映射为 `UNKNOWN`，不得再用
+`MONTH_BASED` 表示缺省。显式已知值保持不变。历史 `month_based` 行无法可靠区分显式事实与
+旧默认值，因此该修复不改写历史数据；若后续匹配重放发现旧 candidate 与 unknown source
+不一致，必须 fail closed，而不是原地改值。后续修正必须继续通过受控服务并保留审计历史。
 
 CANONICAL 事件必须具有非空 `period_end_date`、`period_type`、`identity_key` 和 `identity_rule_version`，数据库对非空 identity_key 设置唯一约束。
 

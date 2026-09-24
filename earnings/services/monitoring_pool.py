@@ -8,12 +8,20 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import cast
 from uuid import UUID
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 
+from audit.models import SyncRun
 from earnings.models import MonitoringPoolMember, MonitoringPoolSnapshot
+from earnings.services.calendar_sync_identity import (
+    EARNINGS_CALENDAR_SCOPE_FIELDS,
+    EarningsCalendarWindowKind,
+    InvalidEarningsCalendarSyncIdentity,
+    build_earnings_calendar_sync_scope,
+)
 from indexes.models import (
     ALLOWED_CODES,
     NORMATIVE_MEMBERSHIP_STATUSES,
@@ -39,6 +47,12 @@ class UnknownMonitoringPoolSelectorVersion(MonitoringPoolSelectorError):
 
 class MonitoringPoolIntegrityError(RuntimeError):
     """Raised when persisted selector data or source temporal facts are inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class MonitoringPoolSnapshotReference:
+    snapshot: MonitoringPoolSnapshot
+    members: tuple[MonitoringPoolMember, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +84,63 @@ class MonitoringPoolSelectionResult:
     @property
     def member_count(self) -> int:
         return self.snapshot.member_count
+
+
+def resolve_monitoring_pool_snapshot(sync_run: SyncRun) -> MonitoringPoolSnapshotReference:
+    """Resolve and validate the frozen snapshot referenced by a persisted SyncRun."""
+
+    if not isinstance(sync_run, SyncRun) or sync_run._state.adding or sync_run.pk is None:
+        raise InvalidMonitoringPoolSelectorInput("sync_run must be a persisted SyncRun.")
+    current_run = SyncRun.objects.get(pk=sync_run.pk)
+    scope = _validate_scope(current_run.scope)
+    snapshot_matches = list(
+        MonitoringPoolSnapshot.objects.filter(
+            as_of_date=date.fromisoformat(cast(str, scope["monitoring_pool_as_of"])),
+            selector_version=cast(str, scope["selector_version"]),
+            pool_hash=cast(str, scope["monitoring_pool_hash"]),
+        )
+    )
+    if len(snapshot_matches) != 1:
+        raise MonitoringPoolIntegrityError(
+            "SyncRun monitoring-pool contract does not resolve to exactly one snapshot."
+        )
+    snapshot = snapshot_matches[0]
+    members = _load_members(snapshot)
+    validated = _load_validated_snapshot(
+        snapshot,
+        enabled_index_codes=_snapshot_codes(snapshot),
+        input_revision=snapshot.input_revision,
+        members_payload=_serialize_members(members),
+    )
+    return MonitoringPoolSnapshotReference(
+        snapshot=validated.snapshot,
+        members=validated.members,
+    )
+
+
+def _validate_scope(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != set(EARNINGS_CALENDAR_SCOPE_FIELDS):
+        raise MonitoringPoolIntegrityError("SyncRun scope is not canonical.")
+    try:
+        canonical = build_earnings_calendar_sync_scope(
+            provider_key=cast(str, value["provider_key"]),
+            window_kind=EarningsCalendarWindowKind(cast(str, value["window_kind"])),
+            window_start=date.fromisoformat(cast(str, value["window_start"])),
+            window_end=date.fromisoformat(cast(str, value["window_end"])),
+            monitoring_pool_as_of=date.fromisoformat(cast(str, value["monitoring_pool_as_of"])),
+            monitoring_pool_hash=cast(str, value["monitoring_pool_hash"]),
+            selector_version=cast(str, value["selector_version"]),
+        )
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        InvalidEarningsCalendarSyncIdentity,
+    ) as error:
+        raise MonitoringPoolIntegrityError("SyncRun scope is invalid.") from error
+    if canonical != value:
+        raise MonitoringPoolIntegrityError("SyncRun scope is not canonical.")
+    return canonical
 
 
 def select_monitoring_pool(

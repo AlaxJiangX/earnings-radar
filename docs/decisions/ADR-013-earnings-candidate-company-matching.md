@@ -330,8 +330,13 @@ Decision 的 `match_factors` 使用受控 `company_match` namespace，避免与�
 5. 创建 `EarningsEvent(identity_status=candidate)`；
 6. 写 create AuditRecord；
 7. 写 `created_candidate` decision；
-8. fiscal metadata 只使用 observation facts；schedule fact 如存在，必须通过既有 schedule
+8. fiscal metadata 只使用 observation facts；`fiscal_calendar_type = NULL` 必须映射为
+   `UNKNOWN`，不得推断为 `MONTH_BASED`；schedule fact 如存在，必须通过既有 schedule
    service，不直接写日期字段。
+
+`UNKNOWN` 只表示来源未提供该事实，不进入 matching revision、execution key、candidate
+identity 或 canonical event identity。已有显式 fiscal calendar fact 保持不变；历史
+`month_based` 行因无法区分旧默认值与显式事实，不在本 repair 中重写。
 
 对 `UNMATCHED` / `AMBIGUOUS` / `OUT_OF_POOL`，不创建 EarningsEvent 或 SourceEvidence，
 只写 append-only decision 与 AuditRecord。
