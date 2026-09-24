@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成，observation / decision schema foundation 与持久化基元已进入 main；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）为 IN PROGRESS，4.2C-1 parser protocol、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch、4.2C-6 replay foundation schema ratification、4.2C-7 Provider Context Foundation blocker resolution 与 4.2C-7 offline replay orchestration implementation 已完成并通过 verification，待 independent pre-merge review；Stage 4.2D-4.2F 尚未开始，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，selector planning gate 已完成并接受 ADR-012，4.2D-1 Monitoring-Pool Selector Implementation 尚未开始；4.2D-2 至 4.2F 尚未完成，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -378,9 +378,9 @@
 - status / schedule / history 不变；
 - No migration；candidate creation、provider external ID、dedup、merge/split、cross-provider reconciliation、source conflict / precedence 均保持在 4.2 边界。
 
-4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main；4.2C Fixture-First Earnings Calendar Ingestion & Replay 已开始，4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch、4.2C-6 replay foundation / schema ratification、4.2C-7 provider context foundation 与 offline replay orchestration implementation 已实现并通过 verification，待 independent pre-merge review。
+4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main。4.2C Fixture-First Earnings Calendar Ingestion & Replay 已完成：4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch、4.2C-6 replay foundation / schema ratification、4.2C-7 provider context foundation 与 offline replay orchestration implementation 均已通过 verification、CI、merge 和 merge commit 复验。
 
-#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C IN PROGRESS）
+#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C ✅ COMPLETE；4.2D IN PROGRESS，planning complete）
 
 正式拆分与实现依据（ADR-010）：
 
@@ -388,7 +388,8 @@
 4.2A Earnings Calendar Observation / External Identity / Reconciliation Contract Ratification
 4.2B Earnings Calendar Observation & Reconciliation Schema Foundation
 4.2C Fixture-First Earnings Calendar Ingestion & Replay
-4.2D Candidate Creation & Company Matching
+4.2D-1 Monitoring-Pool Selector & Snapshot Foundation
+4.2D-2 Candidate Creation & Company Matching
 4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority
 4.2F Live Earnings Calendar Provider & Sync Command
 ```
@@ -407,7 +408,7 @@ constraint 测试已落地。验收标准已满足：模型与 ADR-010 契约一
 supersedes 语义有数据库测试；未实现 Provider 网络、parser、ingestion、reconciliation 规则
 或 command。
 
-4.2C IN PROGRESS。4.2C-1 已完成：fixture-first parser protocol、synthetic fixture parser 与
+4.2C ✅ COMPLETE。4.2C-1 已完成：fixture-first parser protocol、synthetic fixture parser 与
 parser contract / identity-safety tests 已实现并通过 verification。4.2C-2 已完成：raw-first
 ingestion foundation（raw → parse attempt → normalized observation）已实现并通过 verification，
 覆盖 single payload、failure lineage、empty payload 与 persistence replay 幂等。4.2C-3 已完成：
@@ -431,16 +432,31 @@ ingestion 在 raw writes 前强制 provider context，历史 NULL run fail close
 eligibility；replay digest 纳入 provider version，caller override 与 normalized inference
 均被禁止。4.2C-7 Offline Replay Orchestration 已实现 service entry point、全程 ownership、
 deterministic replay observation/parse/normalized persistence、stale resume、count reconciliation、
-terminal status handling 和 Provider isolation regression tests；当前待 independent pre-merge
-review。4.2C 整体保持 IN PROGRESS，4.2D 未开始。
+terminal status handling 和 Provider isolation regression tests。4.2C-7 已通过 independent
+pre-merge review、CI、merge 和 merge commit 复验；4.2C 整体完成。
 验收标准：普通 CI 无真实网络；同一 fixture 连续处理两次不新增 observation /
 decision / domain row；partial pagination 不宣称完成且不写 domain；缺失 provider ID 不创建
 observation / candidate。
 
-4.2D 交付：`earnings_monitoring_pool(as_of_date)`、`monitoring_pool_hash`、company /
-security matching 与独立 candidate creation service。验收标准：CIK 或唯一
-exchange+ticker 才自动匹配；ticker-only 或跨交易所歧义 fail closed；candidate 先创建再
-promotion；SourceEvidence / AuditRecord / 事务与 replay 测试通过。
+4.2D Planning Gate 已完成并接受 ADR-012。规划结论：selector canonical unit 为 Company；
+Stage 4.2 universe 仅来自 explicit enabled index policy 的 as-of normative
+IndexMembership；`monitoring_pool_as_of` 是 `America/New_York` 业务自然日；历史事实采用
+Hybrid 模型并持久化 immutable snapshot；retry/replay 复用 persisted pool contract，不重选。
+Schema change required = YES，仅限 snapshot/member foundation，本规划阶段不创建 model 或
+migration。
+
+4.2D-1 交付：`earnings_monitoring_pool(as_of_date, selector_version, enabled_index_codes)`、
+canonical member/basis、`monitoring_pool_hash`、`MonitoringPoolSnapshot` /
+`MonitoringPoolMember` 最小 schema 与 scheduled integration。验收标准：同一输入得到相同
+member set/order/hash；listing 与 membership 使用半开 as-of interval；多 listing Company
+去重；late-arriving correction 不改写历史 snapshot；retry/replay 不重选 pool；empty pool
+只在输入完整时有效；Provider isolation、PostgreSQL 一致读、snapshot/hash corruption 和
+并发幂等测试通过。
+
+4.2D-2 交付：company / security matching 与独立 candidate creation service。验收标准：
+CIK 或唯一 exchange+ticker 才自动匹配；ticker-only 或跨交易所歧义 fail closed；candidate
+先创建再 promotion；candidate ingestion 只能消费 run 已冻结的 pool；SourceEvidence /
+AuditRecord / 事务与 replay 测试通过。
 
 4.2E 交付：exact-only reconciliation、duplicate / collision decision、conflict / review 与
 manual decision authority。验收标准：ADR-010 的 4.2A-02 / 03 / 05 全部有测试；不实现 fuzzy
