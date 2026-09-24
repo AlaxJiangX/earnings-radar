@@ -17,7 +17,11 @@ from typing import cast
 
 from audit.models import DataSource, SyncRun
 from audit.security import AuditSecurityError, normalize_json_without_credentials
-from audit.services import SyncRunStartResult, start_sync_run_with_result
+from audit.services import (
+    SyncRunStartContextMismatch,
+    SyncRunStartResult,
+    start_sync_run_with_result,
+)
 from earnings.services.calendar_pagination import EARNINGS_CALENDAR_WINDOW_JOB_TYPE
 from providers.exceptions import ProviderValidationError
 from providers.types import ProviderCapability, validate_provider_key
@@ -223,6 +227,7 @@ def start_scheduled_earnings_calendar_sync_run(
     monitoring_pool_hash: str,
     selector_version: str,
     schedule_bucket: str,
+    provider_version: str,
     code_version: str = "",
     parser_version: str = "",
     started_at: datetime | None = None,
@@ -241,6 +246,11 @@ def start_scheduled_earnings_calendar_sync_run(
     normalized_parser_version = _normalize_optional_version(
         parser_version,
         value_name="parser_version",
+    )
+    normalized_provider_version = _normalize_bounded_text(
+        provider_version,
+        value_name="provider_version",
+        maximum_length=MAX_OPTIONAL_VERSION_LENGTH,
     )
     expected_scope = build_earnings_calendar_sync_scope(
         provider_key=normalized_provider_key,
@@ -261,15 +271,30 @@ def start_scheduled_earnings_calendar_sync_run(
         selector_version=selector_version,
         schedule_bucket=schedule_bucket,
     )
-    result = start_sync_run_with_result(
-        job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
-        source=current_source,
-        scope=expected_scope,
-        idempotency_key=idempotency_key,
-        code_version=normalized_code_version,
-        parser_version=normalized_parser_version,
-        started_at=started_at,
-    )
+    try:
+        result = start_sync_run_with_result(
+            job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+            source=current_source,
+            scope=expected_scope,
+            idempotency_key=idempotency_key,
+            code_version=normalized_code_version,
+            parser_version=normalized_parser_version,
+            started_at=started_at,
+            provider_version=normalized_provider_version,
+            require_provider_version=True,
+        )
+    except SyncRunStartContextMismatch as error:
+        existing = SyncRun.objects.filter(
+            job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+            source=current_source,
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing is None:
+            raise
+        raise EarningsCalendarSyncRunContextMismatch(
+            str(error),
+            sync_run=existing,
+        ) from error
     if result.created:
         return result
 
@@ -281,6 +306,7 @@ def start_scheduled_earnings_calendar_sync_run(
         provider_key=normalized_provider_key,
         code_version=normalized_code_version,
         parser_version=normalized_parser_version,
+        provider_version=normalized_provider_version,
     )
     if existing.status == SyncRun.Status.RUNNING:
         raise EarningsCalendarSyncRunAlreadyRunning(
@@ -306,6 +332,7 @@ def _start_retry_earnings_calendar_sync_run(
     monitoring_pool_hash: str,
     selector_version: str,
     request_id: str,
+    provider_version: str,
     code_version: str = "",
     parser_version: str = "",
     started_at: datetime | None = None,
@@ -324,6 +351,11 @@ def _start_retry_earnings_calendar_sync_run(
     normalized_parser_version = _normalize_optional_version(
         parser_version,
         value_name="parser_version",
+    )
+    normalized_provider_version = _normalize_bounded_text(
+        provider_version,
+        value_name="provider_version",
+        maximum_length=MAX_OPTIONAL_VERSION_LENGTH,
     )
     expected_scope = build_earnings_calendar_sync_scope(
         provider_key=normalized_provider_key,
@@ -345,15 +377,30 @@ def _start_retry_earnings_calendar_sync_run(
         selector_version=selector_version,
         request_id=request_id,
     )
-    result = start_sync_run_with_result(
-        job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
-        source=current_source,
-        scope=expected_scope,
-        idempotency_key=idempotency_key,
-        code_version=normalized_code_version,
-        parser_version=normalized_parser_version,
-        started_at=started_at,
-    )
+    try:
+        result = start_sync_run_with_result(
+            job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+            source=current_source,
+            scope=expected_scope,
+            idempotency_key=idempotency_key,
+            code_version=normalized_code_version,
+            parser_version=normalized_parser_version,
+            started_at=started_at,
+            provider_version=normalized_provider_version,
+            require_provider_version=True,
+        )
+    except SyncRunStartContextMismatch as error:
+        existing = SyncRun.objects.filter(
+            job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+            source=current_source,
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing is None:
+            raise
+        raise EarningsCalendarSyncRunContextMismatch(
+            str(error),
+            sync_run=existing,
+        ) from error
     if result.created:
         return result
 
@@ -365,6 +412,7 @@ def _start_retry_earnings_calendar_sync_run(
         provider_key=normalized_provider_key,
         code_version=normalized_code_version,
         parser_version=normalized_parser_version,
+        provider_version=normalized_provider_version,
     )
     if existing.status == SyncRun.Status.RUNNING:
         raise EarningsCalendarSyncRunAlreadyRunning(
@@ -413,6 +461,7 @@ def _verify_existing_run_context(
     provider_key: str,
     code_version: str,
     parser_version: str,
+    provider_version: str,
 ) -> None:
     existing_scope = sync_run.scope if isinstance(sync_run.scope, dict) else None
     if (
@@ -422,6 +471,7 @@ def _verify_existing_run_context(
         or existing_scope.get("provider_key") != provider_key
         or sync_run.code_version != code_version
         or sync_run.parser_version != parser_version
+        or sync_run.provider_version != provider_version
     ):
         raise EarningsCalendarSyncRunContextMismatch(
             "The existing SyncRun context does not match this scheduled identity.",

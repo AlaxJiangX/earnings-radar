@@ -332,6 +332,10 @@ def _validate_window_context(
         raise InvalidEarningsCalendarWindow(
             "provider_key must match the sync_run source provider_adapter."
         )
+    if current_run.provider_version != normalized_provider_version:
+        raise InvalidEarningsCalendarWindow(
+            "provider_version must match the sync_run persisted provider context."
+        )
     if not isinstance(page_source, EarningsCalendarPageSource):
         raise InvalidEarningsCalendarWindow(
             "page_source must implement EarningsCalendarPageSource."

@@ -52,6 +52,10 @@ class InvalidEarningsCalendarReplay(EarningsCalendarReplayFoundationError):
     """The source, contract, or replay identity is invalid."""
 
 
+class ReplayProviderContextUnavailable(InvalidEarningsCalendarReplay):
+    """The source run lacks persisted provider-version provenance."""
+
+
 class EarningsCalendarReplayContextMismatch(RuntimeError):
     """An existing replay identity has immutable context different from the request."""
 
@@ -102,6 +106,7 @@ def validate_earnings_calendar_replay_source(
         raise InvalidEarningsCalendarReplay(
             "Replay source provider_adapter does not match the persisted scope."
         )
+    _require_provider_version(persisted)
     _validate_source_observations(persisted)
     return persisted
 
@@ -151,6 +156,7 @@ def build_earnings_calendar_replay_input_digest(
     source_run = _load_sync_run(source_sync_run)
     _require_ingestion_source(source_run)
     _validate_earnings_calendar_scope(source_run.scope, allow_replay=False)
+    provider_version = _require_provider_version(source_run)
     normalized_parser_version = _required_text(parser_version, "parser_version", maximum=100)
     normalized_contract_version = _required_text(
         replay_contract_version,
@@ -188,6 +194,7 @@ def build_earnings_calendar_replay_input_digest(
     identity = {
         "contract_version": normalized_contract_version,
         "parser_version": normalized_parser_version,
+        "provider_version": provider_version,
         "source_run_id": str(source_run.pk),
         "source_scope": source_run.scope,
         "evidence": evidence_items,
@@ -324,6 +331,7 @@ def start_earnings_calendar_replay_sync_run(
                 replay_source_sync_run=source_run,
                 replay_contract_version=normalized_contract_version,
                 replay_input_digest=digest,
+                provider_version=source_run.provider_version,
             )
         except SyncRunStartContextMismatch as error:
             raise EarningsCalendarReplayContextMismatch(str(error)) from error
@@ -445,6 +453,7 @@ def _validate_existing_replay_context(
         or sync_run.parser_version != parser_version
         or sync_run.replay_contract_version != replay_contract_version.strip()
         or sync_run.replay_input_digest != replay_input_digest
+        or sync_run.provider_version != source_run.provider_version
         or sync_run.fetched_count != 0
     ):
         raise EarningsCalendarReplayContextMismatch(
@@ -561,6 +570,7 @@ def _require_replay_run(sync_run: SyncRun) -> None:
         sync_run.replay_input_digest
     ):
         raise InvalidEarningsCalendarReplay("Replay SyncRun metadata is incomplete.")
+    _require_provider_version(sync_run)
 
 
 def _require_ingestion_source(source_run: SyncRun) -> None:
@@ -570,3 +580,11 @@ def _require_ingestion_source(source_run: SyncRun) -> None:
         raise InvalidEarningsCalendarReplay(
             "An ingestion source cannot already have replay lineage."
         )
+
+
+def _require_provider_version(source_run: SyncRun) -> str:
+    if not isinstance(source_run.provider_version, str) or not source_run.provider_version.strip():
+        raise ReplayProviderContextUnavailable(
+            "Replay source SyncRun has no persisted provider version."
+        )
+    return source_run.provider_version.strip()

@@ -64,6 +64,8 @@ def start_sync_run(
     replay_source_sync_run: SyncRun | None = None,
     replay_contract_version: str = "",
     replay_input_digest: str = "",
+    provider_version: str | None = None,
+    require_provider_version: bool = False,
 ) -> SyncRun:
     return start_sync_run_with_result(
         job_type=job_type,
@@ -77,6 +79,8 @@ def start_sync_run(
         replay_source_sync_run=replay_source_sync_run,
         replay_contract_version=replay_contract_version,
         replay_input_digest=replay_input_digest,
+        provider_version=provider_version,
+        require_provider_version=require_provider_version,
     ).sync_run
 
 
@@ -93,6 +97,8 @@ def start_sync_run_with_result(
     replay_source_sync_run: SyncRun | None = None,
     replay_contract_version: str = "",
     replay_input_digest: str = "",
+    provider_version: str | None = None,
+    require_provider_version: bool = False,
 ) -> SyncRunStartResult:
     """Start a run and report whether this caller created it.
 
@@ -124,6 +130,15 @@ def start_sync_run_with_result(
         raise ValueError("Replay contract metadata must be strings.")
     normalized_contract_version = replay_contract_version.strip()
     normalized_input_digest = replay_input_digest.strip()
+    if provider_version is not None and not isinstance(provider_version, str):
+        raise ValueError("provider_version must be a string or None.")
+    normalized_provider_version = (
+        provider_version.strip() if isinstance(provider_version, str) else None
+    )
+    if normalized_provider_version == "":
+        normalized_provider_version = None
+    if require_provider_version and normalized_provider_version is None:
+        raise ValueError("provider_version is required for this SyncRun.")
     is_replay_scope = normalized_scope.get("window_kind") == "replay"
     persisted_replay_source: SyncRun | None = None
     stored_parser_version = parser_version
@@ -145,12 +160,15 @@ def start_sync_run_with_result(
             raise ValueError("Replay input digest must be a SHA-256 hex digest.")
         if not isinstance(parser_version, str) or not parser_version.strip():
             raise ValueError("Replay SyncRuns require a parser version.")
+        if normalized_provider_version is None:
+            raise ValueError("Replay SyncRuns require a provider version.")
         stored_parser_version = parser_version.strip()
         persisted_replay_source = _load_replay_source(
             source=source,
             job_type=normalized_job_type,
             scope=normalized_scope,
             replay_source_sync_run=replay_source_sync_run,
+            provider_version=normalized_provider_version,
         )
     timestamp = _aware_timestamp(started_at)
     with transaction.atomic():
@@ -170,6 +188,7 @@ def start_sync_run_with_result(
                         replay_source_sync_run=persisted_replay_source,
                         replay_contract_version=normalized_contract_version,
                         replay_input_digest=normalized_input_digest,
+                        provider_version=normalized_provider_version,
                     ),
                     created=True,
                 )
@@ -191,6 +210,7 @@ def start_sync_run_with_result(
                 replay_source_sync_run=persisted_replay_source,
                 replay_contract_version=normalized_contract_version,
                 replay_input_digest=normalized_input_digest,
+                provider_version=normalized_provider_version,
             )
             return SyncRunStartResult(sync_run=existing, created=False)
 
@@ -325,6 +345,7 @@ def _validate_existing_start_context(
     replay_source_sync_run: SyncRun | None,
     replay_contract_version: str,
     replay_input_digest: str,
+    provider_version: str | None,
 ) -> None:
     if run_mode == SyncRun.RunMode.INGESTION:
         if (
@@ -338,6 +359,10 @@ def _validate_existing_start_context(
             raise SyncRunStartContextMismatch(
                 "Existing ingestion SyncRun contains replay metadata."
             )
+        if provider_version is not None and sync_run.provider_version != provider_version:
+            raise SyncRunStartContextMismatch(
+                "Existing ingestion SyncRun has a different provider version."
+            )
         return
     if (
         sync_run.source_id != source.pk
@@ -349,6 +374,7 @@ def _validate_existing_start_context(
         or sync_run.parser_version != parser_version
         or sync_run.replay_contract_version != replay_contract_version
         or sync_run.replay_input_digest != replay_input_digest
+        or sync_run.provider_version != provider_version
     ):
         raise SyncRunStartContextMismatch("Existing replay SyncRun has different replay context.")
 
@@ -359,6 +385,7 @@ def _load_replay_source(
     job_type: str,
     scope: Mapping[str, object],
     replay_source_sync_run: SyncRun,
+    provider_version: str,
 ) -> SyncRun:
     """Reload and validate the persisted replay source instead of trusting caller memory."""
 
@@ -380,6 +407,10 @@ def _load_replay_source(
         raise ValueError("Replay source SyncRun must belong to the same DataSource.")
     if persisted.job_type != job_type:
         raise ValueError("Replay source SyncRun must use the same job_type.")
+    if not isinstance(persisted.provider_version, str) or not persisted.provider_version.strip():
+        raise ValueError("Replay source SyncRun has no provider version provenance.")
+    if persisted.provider_version.strip() != provider_version:
+        raise ValueError("Replay provider version must match the persisted source version.")
     if not isinstance(persisted.scope, dict):
         raise ValueError("Replay source SyncRun scope must be a JSON object.")
 

@@ -90,6 +90,7 @@ def execute_scheduled_earnings_calendar_window(
             monitoring_pool_hash=monitoring_pool_hash,
             selector_version=selector_version,
             schedule_bucket=schedule_bucket,
+            provider_version=provider_version,
             code_version=code_version,
             parser_version=parser.parser_version,
         )
@@ -149,6 +150,7 @@ def execute_retry_earnings_calendar_window(
             monitoring_pool_hash=cast(str, scope["monitoring_pool_hash"]),
             selector_version=cast(str, scope["selector_version"]),
             request_id=request_id,
+            provider_version=provider_version,
             code_version=code_version,
             parser_version=parser.parser_version,
         )

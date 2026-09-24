@@ -191,6 +191,11 @@ class SyncRun(models.Model):
     error_summary = models.CharField(max_length=2000, blank=True)
     code_version = models.CharField(max_length=100, blank=True)
     parser_version = models.CharField(max_length=100, blank=True)
+    provider_version = models.CharField(  # noqa: DJ001
+        max_length=100,
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         ordering = ("-started_at",)
