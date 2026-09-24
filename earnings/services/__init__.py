@@ -115,6 +115,15 @@ from earnings.services.lifecycle import (
     reinstate_earnings_event,
     transition_earnings_status,
 )
+from earnings.services.monitoring_pool import (
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    InvalidMonitoringPoolSelectorInput,
+    MonitoringPoolIntegrityError,
+    MonitoringPoolSelectionResult,
+    MonitoringPoolSelectorError,
+    UnknownMonitoringPoolSelectorVersion,
+    select_monitoring_pool,
+)
 from earnings.services.promotion import (
     EARNINGS_CANDIDATE_PROMOTION_RULE_VERSION,
     PROMOTION_IDENTITY_FIELDS,
@@ -143,6 +152,7 @@ __all__ = [
     "EARNINGS_CALENDAR_WINDOW_JOB_TYPE",
     "EARNINGS_CANDIDATE_PROMOTION_RULE_VERSION",
     "EARNINGS_DATE_CHANGE_RULE_VERSION",
+    "EARNINGS_MONITORING_POOL_SELECTOR_VERSION",
     "EARNINGS_STATUS_LIFECYCLE_RULE_VERSION",
     "PROMOTION_IDENTITY_FIELDS",
     "MAX_REQUEST_ID_LENGTH",
@@ -218,6 +228,11 @@ __all__ = [
     "InvalidEarningsStatusReinstatement",
     "InvalidEarningsStatusTransition",
     "InvalidEarningsTargetStatus",
+    "InvalidMonitoringPoolSelectorInput",
+    "MonitoringPoolIntegrityError",
+    "MonitoringPoolSelectionResult",
+    "MonitoringPoolSelectorError",
+    "UnknownMonitoringPoolSelectorVersion",
     "cancel_earnings_event",
     "build_earnings_reconciliation_decision_key",
     "build_earnings_calendar_sync_scope",
@@ -231,6 +246,7 @@ __all__ = [
     "promote_earnings_event",
     "record_earnings_calendar_observation",
     "reconcile_earnings_calendar_replayed_count",
+    "select_monitoring_pool",
     "retire_stale_earnings_calendar_replay_run",
     "record_earnings_reconciliation_decision",
     "reinstate_earnings_event",
