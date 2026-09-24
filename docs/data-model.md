@@ -509,12 +509,13 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
 | `fetched_count`, `replayed_count`, `created_count`, `updated_count`, `skipped_count`, `failed_count` | PRD 要求统计；replay 的 `fetched_count` 必须为 0，`replayed_count` 从 replay-linked RawDataObservation 重建 |
 | `error_summary` | 脱敏摘要 |
 | `code_version`, `parser_version` | 可重现性 |
+| `provider_version` | nullable provider contract/version provenance；历史 run 可保持 NULL，新 earnings-calendar ingestion 必须持久化，replay 要求非空 |
 
 4.2C-6 replay foundation 的约束：
 
 - `run_mode=ingestion` 的行不得携带 replay source、replay contract metadata 或 replay progress；
 - `run_mode=replay` 的行必须具有 `window_kind=replay`、source lineage、非空 parser/contract
-  version、64 位小写 SHA-256 input digest，且 `fetched_count=0`；
+  version、非空 provider version、64 位小写 SHA-256 input digest，且 `fetched_count=0`；
 - replay source FK 禁止自引用并使用 `PROTECT`；服务验证 source 与 replay 的 DataSource、
   job type 相同，replay scope 与 source scope 除 `window_kind` 外完全一致，source 为
   terminal ingestion run，raw observation count 与 source `fetched_count` 一致；
@@ -522,6 +523,12 @@ REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核�
   version、contract version 与 input digest 相同不得创建第二条 replay run；
 - historical SyncRun 迁移时全部标记为 ingestion，新增 metadata 为空、`replayed_count=0`，
   不回填或猜测历史 replay lineage。
+- `provider_version` 是 run-level immutable parser context：同一 run 的所有 page 必须一致；
+  历史 NULL 表示 provenance unknown 且 replay-ineligible，不得从 normalized observation 或
+  current provider version 推断。
+- Direct ORM creation of earnings-calendar SyncRuns bypasses these service invariants and is
+  unsupported for production writes. `audit/0009` downgrade removes replay-only semantics and
+  is not a lossless operation for data containing replay runs.
 
 ### 10.3 `RawDataRecord`
 

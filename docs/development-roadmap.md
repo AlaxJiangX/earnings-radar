@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成，observation / decision schema foundation 与持久化基元已进入 main；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）为 IN PROGRESS，4.2C-1 parser protocol、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch 与 4.2C-6 replay foundation schema ratification 已实现并通过 verification，完整 offline replay orchestration 尚未实现；Stage 4.2D-4.2F 尚未开始，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成，observation / decision schema foundation 与持久化基元已进入 main；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）为 IN PROGRESS，4.2C-1 parser protocol、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch、4.2C-6 replay foundation schema ratification 与 4.2C-7 Provider Context Foundation blocker resolution 已实现并通过 verification，完整 offline replay orchestration 尚未实现；Stage 4.2D-4.2F 尚未开始，4.2F live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -425,8 +425,12 @@ contract version、input digest 和独立 `replayed_count`，并实现 determini
 identity、完整 raw manifest digest、pool contract validation、replay-compatible stale
 recovery、append-only parse/normalized revision 复用与同 `(source, job_type)` 锁域回归；
 monitoring pool 只核对 source run 持久化 immutable contract，不提前进入 4.2D selector。
-完整 offline replay orchestration 是下一单一阶段 4.2C-7；4.2C 整体保持 IN PROGRESS，
-4.2D 未开始。验收标准：普通 CI 无真实网络；同一 fixture 连续处理两次不新增 observation /
+4.2C-7 Provider Context Foundation blocker resolution 已完成并通过 targeted verification：
+`SyncRun.provider_version` 作为 run-level immutable provenance 持久化；新 earnings-calendar
+ingestion 在 raw writes 前强制 provider context，历史 NULL run fail closed 且不具备 replay
+eligibility；replay digest 纳入 provider version，caller override 与 normalized inference
+均被禁止。offline replay orchestration 本体仍未实现，4.2C 整体保持 IN PROGRESS，4.2D 未开始。
+验收标准：普通 CI 无真实网络；同一 fixture 连续处理两次不新增 observation /
 decision / domain row；partial pagination 不宣称完成且不写 domain；缺失 provider ID 不创建
 observation / candidate。
 

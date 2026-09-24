@@ -341,6 +341,10 @@ def _validate_ingestion_context(
         raise InvalidEarningsCalendarIngestion(
             "provider_key must match the sync_run source provider_adapter."
         )
+    if current_run.provider_version != normalized_provider_version:
+        raise InvalidEarningsCalendarIngestion(
+            "provider_version must match the sync_run persisted provider context."
+        )
     normalized_parser_version = _require_text(
         parser.parser_version,
         value_name="parser_version",

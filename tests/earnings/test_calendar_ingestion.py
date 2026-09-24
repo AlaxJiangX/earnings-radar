@@ -92,6 +92,7 @@ def _sync_run(source: DataSource, suffix: str) -> SyncRun:
         source=source,
         scope={"fixture": suffix},
         idempotency_key=f"fixture.earnings-calendar-ingestion:{suffix}",
+        provider_version=FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION,
     )
 
 
@@ -310,6 +311,8 @@ def test_successful_ingestion_persists_raw_before_parse_and_materializes_observa
     assert RawDataObservation.objects.count() == 1
     assert RawDataParseAttempt.objects.count() == 1
     assert EarningsCalendarObservation.objects.count() == 2
+    sync_run.refresh_from_db()
+    assert sync_run.provider_version == FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION
 
 
 @pytest.mark.django_db
@@ -353,6 +356,8 @@ def test_empty_payload_succeeds_with_zero_observations() -> None:
     assert result.observations_reused == 0
     assert result.raw_data_record.parser_status == RawDataRecord.ParserStatus.PARSED
     assert EarningsCalendarObservation.objects.count() == 0
+    sync_run.refresh_from_db()
+    assert sync_run.provider_version == FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION
 
 
 @pytest.mark.django_db
@@ -503,6 +508,8 @@ def test_malformed_payload_preserves_raw_and_records_data_error() -> None:
     assert failure.raw_data_record.parser_status == RawDataRecord.ParserStatus.FAILED
     assert failure.raw_data_record.parse_error
     assert EarningsCalendarObservation.objects.count() == 0
+    sync_run.refresh_from_db()
+    assert sync_run.provider_version == FIXTURE_EARNINGS_CALENDAR_PROVIDER_VERSION
 
 
 @pytest.mark.django_db
@@ -701,6 +708,42 @@ def test_provider_key_mismatch_is_rejected_before_raw_persistence() -> None:
             sync_run=sync_run,
             payload=_fixture_bytes("empty_payload.json"),
             provider_key="other-fixture-provider",
+        )
+
+    assert RawDataRecord.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_provider_version_mismatch_is_rejected_before_raw_persistence() -> None:
+    source = _calendar_source("provider-version-mismatch")
+    sync_run = _sync_run(source, "provider-version-mismatch")
+
+    with pytest.raises(InvalidEarningsCalendarIngestion, match="provider context"):
+        _ingest(
+            sync_run=sync_run,
+            payload=_fixture_bytes("empty_payload.json"),
+            provider_version="fixture-v2",
+        )
+
+    assert RawDataRecord.objects.count() == 0
+    assert RawDataObservation.objects.count() == 0
+    assert RawDataParseAttempt.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_missing_run_provider_version_is_rejected_before_raw_persistence() -> None:
+    source = _calendar_source("missing-provider-version")
+    sync_run = start_sync_run(
+        job_type="fixture.earnings-calendar-ingestion",
+        source=source,
+        scope={"fixture": "missing-provider-version"},
+        idempotency_key="fixture.earnings-calendar-ingestion:missing-provider-version",
+    )
+
+    with pytest.raises(InvalidEarningsCalendarIngestion, match="provider context"):
+        _ingest(
+            sync_run=sync_run,
+            payload=_fixture_bytes("empty_payload.json"),
         )
 
     assert RawDataRecord.objects.count() == 0

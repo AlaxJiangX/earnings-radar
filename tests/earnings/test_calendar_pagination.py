@@ -93,6 +93,7 @@ def _window_run(
         source=source,
         scope={"fixture": suffix},
         idempotency_key=f"fixture.earnings-calendar-window:{suffix}",
+        provider_version=PROVIDER_VERSION,
     )
 
 
@@ -731,6 +732,36 @@ def test_provider_version_drift_on_later_page_fails_closed() -> None:
     assert failure.sync_run.fetched_count == 1
     assert failure.sync_run.failed_count == 1
     assert RawDataRecord.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_run_provider_version_mismatch_is_rejected_before_pagination() -> None:
+    source = _calendar_source("run-provider-version-mismatch")
+    sync_run = _window_run(source, "run-provider-version-mismatch")
+    page_source = FixturePageSource(
+        {
+            None: _page(
+                cursor=None,
+                payload=_fixture_bytes("empty_payload.json"),
+                next_cursor=None,
+                is_terminal=True,
+            )
+        }
+    )
+
+    with pytest.raises(InvalidEarningsCalendarWindow, match="provider context"):
+        run_earnings_calendar_window(
+            sync_run=sync_run,
+            page_source=page_source,
+            parser=FixtureEarningsCalendarParser(),
+            provider_key=PROVIDER_KEY,
+            provider_version="fixture-v2",
+        )
+
+    assert page_source.calls == []
+    sync_run.refresh_from_db()
+    assert sync_run.provider_version == PROVIDER_VERSION
+    assert RawDataRecord.objects.count() == 0
 
 
 @pytest.mark.django_db

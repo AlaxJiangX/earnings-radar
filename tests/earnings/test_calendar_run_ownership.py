@@ -48,6 +48,7 @@ from earnings.services import (
     EarningsCalendarSyncRunRetryRequired,
     EarningsCalendarWindowFailure,
     EarningsCalendarWindowResult,
+    InvalidEarningsCalendarSyncIdentity,
     calendar_run_ownership,
     execute_retry_earnings_calendar_window,
     execute_scheduled_earnings_calendar_window,
@@ -113,6 +114,7 @@ def _start_scheduled(source: DataSource, *, started_at: datetime | None = None) 
         monitoring_pool_hash=POOL_HASH,
         selector_version=SELECTOR_VERSION,
         schedule_bucket="fixture-bucket",
+        provider_version=PROVIDER_VERSION,
         parser_version=FixtureEarningsCalendarParser.parser_version,
         started_at=started_at,
     ).sync_run
@@ -380,6 +382,7 @@ def test_stale_run_is_preserved_and_retry_starts_a_new_run(has_raw: bool) -> Non
     assert retried.created is True
     assert retried.sync_run.pk != old.pk
     assert retried.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert retried.sync_run.provider_version == PROVIDER_VERSION
     assert retried.sync_run.scope["window_kind"] == "retry"
     assert retry_source.calls == [None]
     assert SyncRun.objects.count() == 2
@@ -467,6 +470,28 @@ def test_retry_pool_hash_mismatch_fails_before_new_run() -> None:
             provider_version=PROVIDER_VERSION,
         )
 
+    assert SyncRun.objects.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_retry_missing_provider_version_fails_before_new_run() -> None:
+    source = _calendar_source("retry-missing-provider-version")
+    old = _start_scheduled(source)
+    mark_sync_run_failed(old.pk, error_summary="Fixture failure.")
+    page_source = FixturePageSource({None: _terminal_page()})
+
+    with pytest.raises(InvalidEarningsCalendarSyncIdentity, match="provider_version"):
+        execute_retry_earnings_calendar_window(
+            previous_run=old,
+            request_id="missing-provider-version-retry",
+            expected_pool_hash=POOL_HASH,
+            page_source=page_source,
+            parser=FixtureEarningsCalendarParser(),
+            provider_version="",
+        )
+
+    assert page_source.calls == []
+    assert RawDataRecord.objects.count() == 0
     assert SyncRun.objects.count() == 1
 
 

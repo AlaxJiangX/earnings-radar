@@ -120,6 +120,7 @@ SHA256(canonical_json({
   job_type,
   source_sync_run_id,
   logical_window,
+  provider_version,
   parser_version,
   replay_contract_version,
   replay_input_digest
@@ -202,7 +203,8 @@ normalized 和失败记录必须指向 replay observation 或其 raw record，�
 3. replay request 的 monitoring pool as-of/hash/selector version 与 source run 持久化
    immutable scope 完全一致；Option A 不重算 selector；
 4. 所有 source raw observations 与 records 完整、hash 一致、来源链可解析；
-5. replay identity 输入已规范化，run mode、parser version 和 contract version 非空；
+5. replay identity 输入已规范化，run mode、provider version、parser version 和 contract
+   version 非空；
 6. replay persistence foundation（第 18 节）已完成；
 7. provider/network adapter 在 replay path 不可被调用。
 
@@ -277,6 +279,7 @@ Replay 不允许通过更细的锁域换取吞吐；normalized duplicate 只能�
 | `replay_input_digest` | 证明一次 replay 消费的完整 raw manifest | 非空字符串，默认空串 | 历史 rows 为空串，表示不适用 | replay 必须为 64 位小写 SHA-256 hex |
 | `replayed_count` | 从 replay-linked RawDataObservation 重建的独立进度 | 非负整数，默认 0 | 历史 rows 为 0，表示无 replay progress | non-negative check；不与 `fetched_count` 混用 |
 | `parser_version` | 固定 parse context；现有字段 | 非空字符串 | ingestion 语义不变 | replay-only check 要求非空 |
+| `provider_version` | 固定 provider contract/version provenance | nullable；历史 ingestion 为 NULL | migration 前行保持 unknown/NULL，不具备 replay eligibility | replay 必须非空；新 earnings-calendar ingestion 由 service 强制写入 |
 
 Replay identity 另有 partial unique constraint，覆盖 source、job type、source SyncRun、parser
 version、contract version 和 input digest。即使调用方伪造不同 `idempotency_key`，数据库仍会
@@ -378,3 +381,23 @@ PASS — replay foundation is ready for offline replay orchestration
 ```
 
 4.2C 整体继续保持 IN PROGRESS；4.2D 保持 NOT STARTED。
+
+## 23. Provider Context Amendment
+
+4.2C-7 blocker resolution 补充以下不可变规则：
+
+- `provider_version` 是 run-level parser context。pagination 已要求同一 SyncRun 的所有 page
+  provider version 一致；不得把它复制成 RawDataRecord 级 provenance。
+- 新 earnings-calendar ingestion 必须在任何 raw evidence 写入前持久化 provider version；
+  缺失时 fail closed。
+- migration 前的历史 SyncRun 保持 `provider_version = NULL`，表示 provenance unknown；
+  这类 run 不允许 offline replay。不得使用 current/default provider version 回填。
+- replay 只能读取 source run 已持久化的 provider version，并复制到 replay run；caller
+  override、current-version fallback 和从 normalized observation 反推均禁止。
+- provider version 属于 parser context，必须纳入 replay input digest。不同 provider version
+  必须产生不同 digest，并通过 digest 产生不同 replay identity。
+- direct ORM creation bypasses domain service invariants and is unsupported for production
+  earnings-calendar SyncRuns. New supported ingestion paths must use the domain start services.
+- `audit/0009` 的 reverse migration 会移除 replay-only 字段；包含 replay semantics 的 production
+  data 不得把 downgrade 到 `audit 0008` 视为无损操作。正常 forward migration
+  `0009 → 0010` 不受影响。
