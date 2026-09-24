@@ -159,6 +159,21 @@ def test_enabled_index_codes_are_normalized_sorted_and_deduped() -> None:
 
 
 @pytest.mark.django_db
+def test_enabled_index_policy_change_changes_revision_when_members_are_stable() -> None:
+    company = _company("policy-revision")
+    listing = _listing(company, "policy-revision")
+    _membership(index=_market_index("SP500"), listing=listing)
+
+    first = _select(enabled_index_codes=("SP500",))
+    second = _select(enabled_index_codes=("SP500", "NASDAQ100"))
+
+    assert first.member_count == second.member_count == 1
+    assert first.input_revision != second.input_revision
+    assert first.monitoring_pool_hash != second.monitoring_pool_hash
+    assert first.snapshot.pk != second.snapshot.pk
+
+
+@pytest.mark.django_db
 def test_member_order_uses_company_uuid_not_insertion_order() -> None:
     high_id = uuid.UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
     low_id = uuid.UUID("00000000-0000-4000-8000-000000000001")
@@ -473,6 +488,7 @@ def test_temporal_correction_creates_new_snapshot_without_mutating_old_one() -> 
     assert second.snapshot.pk != first.snapshot.pk
     assert second.input_revision != first.input_revision
     assert second.monitoring_pool_hash != first.monitoring_pool_hash
+    assert MonitoringPoolSnapshot.objects.count() == 2
     first.snapshot.refresh_from_db()
     assert first.snapshot.member_count == 1
     assert [
@@ -481,6 +497,31 @@ def test_temporal_correction_creates_new_snapshot_without_mutating_old_one() -> 
             "ordinal"
         )
     ] == [company.pk]
+
+
+@pytest.mark.django_db
+def test_listing_interval_change_changes_input_revision() -> None:
+    company = _company("listing-revision")
+    listing = _listing(
+        company,
+        "listing-revision",
+        effective_from=date(2026, 1, 1),
+        effective_to=date(2027, 1, 1),
+    )
+    _membership(
+        index=_market_index("SP500"),
+        listing=listing,
+        effective_from=date(2026, 1, 1),
+        effective_to=date(2027, 1, 1),
+    )
+    first = _select()
+
+    SecurityListing.objects.filter(pk=listing.pk).update(effective_to=date(2027, 6, 1))
+    second = _select()
+
+    assert second.snapshot.pk != first.snapshot.pk
+    assert second.input_revision != first.input_revision
+    assert second.monitoring_pool_hash != first.monitoring_pool_hash
 
 
 @pytest.mark.django_db
@@ -636,6 +677,26 @@ def test_corrupted_input_revision_is_rejected_on_reuse() -> None:
         )
 
     with pytest.raises(MonitoringPoolIntegrityError, match="input revision"):
+        _select()
+
+
+@pytest.mark.django_db
+def test_corrupted_pool_hash_is_rejected_on_reuse() -> None:
+    company = _company("corrupted-hash")
+    _membership(
+        index=_market_index("SP500"),
+        listing=_listing(company, "corrupted-hash"),
+    )
+    result = _select()
+    table = MonitoringPoolSnapshot._meta.db_table
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f'UPDATE "{table}" SET pool_hash = %s WHERE id = %s',
+            ["b" * 64, result.snapshot.pk],
+        )
+
+    with pytest.raises(MonitoringPoolIntegrityError, match="hash mismatch"):
         _select()
 
 
