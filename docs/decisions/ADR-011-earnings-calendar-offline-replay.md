@@ -401,3 +401,17 @@ PASS — replay foundation is ready for offline replay orchestration
 - `audit/0009` 的 reverse migration 会移除 replay-only 字段；包含 replay semantics 的 production
   data 不得把 downgrade 到 `audit 0008` 视为无损操作。正常 forward migration
   `0009 → 0010` 不受影响。
+
+## 24. 4.2C-7 Implementation Status
+
+Offline replay orchestration implementation 已落地：
+
+- 唯一 public entry point 在完整 `(source, job_type)` ownership 内重新加载并验证 source；
+- replay-side RawDataObservation 只引用已有 RawDataRecord；
+- ParseAttempt append-only，parser 使用 source persisted `provider_version`；
+- normalized persistence 复用现有唯一键并支持 parser-version revision；
+- `replayed_count` 在 finalize 前从 DB facts reconcile；
+- stale RUNNING replay 可在同一 identity 上安全 resume；
+- Provider isolation 与 PostgreSQL concurrency/crash tests 已覆盖。
+
+本实现不新增 schema、不调用 Provider，当前等待 independent pre-merge review。

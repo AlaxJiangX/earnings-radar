@@ -69,6 +69,12 @@ class RawDataIngestResult:
     observation_created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class RawDataObservationReferenceResult:
+    observation: RawDataObservation
+    created: bool
+
+
 def build_request_fingerprint(
     *,
     method: str,
@@ -172,6 +178,59 @@ def record_raw_data_observation(
             observation=observation,
             record_created=record_created,
             observation_created=observation_created,
+        )
+
+
+def record_replay_raw_data_observation(
+    *,
+    sync_run: SyncRun,
+    raw_data_record: RawDataRecord,
+    observed_at: datetime | None = None,
+) -> RawDataObservationReferenceResult:
+    """Reference one persisted raw record from a running replay SyncRun."""
+
+    if sync_run._state.adding or sync_run.pk is None:
+        raise InvalidRawDataRequest("sync_run must be saved before use.")
+    if raw_data_record._state.adding or raw_data_record.pk is None:
+        raise InvalidRawDataRequest("raw_data_record must be saved before use.")
+    observed_timestamp = _aware_timestamp(observed_at)
+
+    with transaction.atomic():
+        current_run = (
+            SyncRun.objects.select_for_update().select_related("source").get(pk=sync_run.pk)
+        )
+        if current_run.run_mode != SyncRun.RunMode.REPLAY:
+            raise InvalidRawDataRequest("Replay observation requires a replay SyncRun.")
+        if current_run.status != SyncRun.Status.RUNNING:
+            raise InvalidRawDataRequest("Replay observation requires a running SyncRun.")
+        if current_run.replay_source_sync_run_id is None:
+            raise InvalidRawDataRequest("Replay SyncRun has no source lineage.")
+        try:
+            current_record = RawDataRecord.objects.select_related("source").get(
+                pk=raw_data_record.pk
+            )
+        except RawDataRecord.DoesNotExist as error:
+            raise InvalidRawDataRequest("raw_data_record no longer exists.") from error
+        if current_record.source_id != current_run.source_id:
+            raise InvalidRawDataRequest(
+                "raw_data_record must belong to the replay SyncRun DataSource."
+            )
+        if not RawDataObservation.objects.filter(
+            sync_run_id=current_run.replay_source_sync_run_id,
+            raw_data_record_id=current_record.pk,
+        ).exists():
+            raise InvalidRawDataRequest(
+                "raw_data_record was not observed by the replay source SyncRun."
+            )
+
+        observation, created = RawDataObservation.objects.get_or_create(
+            sync_run=current_run,
+            raw_data_record=current_record,
+            defaults={"observed_at": observed_timestamp},
+        )
+        return RawDataObservationReferenceResult(
+            observation=observation,
+            created=created,
         )
 
 

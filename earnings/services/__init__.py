@@ -55,6 +55,14 @@ from earnings.services.calendar_replay_foundation import (
     validate_earnings_calendar_replay_pool_contract,
     validate_earnings_calendar_replay_source,
 )
+from earnings.services.calendar_replay_orchestration import (
+    EarningsCalendarOfflineReplayResult,
+    EarningsCalendarReplayDigestMismatch,
+    EarningsCalendarReplayExecutionFailure,
+    EarningsCalendarReplayOrchestrationError,
+    EarningsCalendarReplayPersistenceFailure,
+    execute_earnings_calendar_offline_replay,
+)
 from earnings.services.calendar_run_ownership import (
     EarningsCalendarRunBusy,
     EarningsCalendarRunOwnershipLost,
@@ -164,6 +172,11 @@ __all__ = [
     "EarningsCalendarReplayContextMismatch",
     "EarningsCalendarReplayCountMismatch",
     "EarningsCalendarReplayFoundationError",
+    "EarningsCalendarOfflineReplayResult",
+    "EarningsCalendarReplayDigestMismatch",
+    "EarningsCalendarReplayExecutionFailure",
+    "EarningsCalendarReplayOrchestrationError",
+    "EarningsCalendarReplayPersistenceFailure",
     "EarningsCalendarReplayStartResult",
     "EarningsCalendarRunBusy",
     "EarningsCalendarRunCountMismatch",
@@ -228,6 +241,7 @@ __all__ = [
     "calendar_run_ownership",
     "execute_retry_earnings_calendar_window",
     "execute_scheduled_earnings_calendar_window",
+    "execute_earnings_calendar_offline_replay",
     "start_scheduled_earnings_calendar_sync_run",
     "start_earnings_calendar_replay_sync_run",
     "validate_earnings_calendar_replay_pool_contract",
