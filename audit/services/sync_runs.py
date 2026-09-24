@@ -27,6 +27,10 @@ class InvalidSyncRunCount(ValueError):
     pass
 
 
+class SyncRunStartContextMismatch(ValueError):
+    """An existing idempotent SyncRun has different replay/start context."""
+
+
 class InvalidSyncRunTimestamp(ValueError):
     pass
 
@@ -179,6 +183,7 @@ def start_sync_run_with_result(
                 job_type=normalized_job_type,
                 scope=normalized_scope,
                 run_mode=normalized_run_mode,
+                parser_version=parser_version,
                 replay_source_sync_run=replay_source_sync_run,
                 replay_contract_version=normalized_contract_version,
                 replay_input_digest=normalized_input_digest,
@@ -312,6 +317,7 @@ def _validate_existing_start_context(
     job_type: str,
     scope: Mapping[str, object],
     run_mode: SyncRun.RunMode,
+    parser_version: str,
     replay_source_sync_run: SyncRun | None,
     replay_contract_version: str,
     replay_input_digest: str,
@@ -325,7 +331,9 @@ def _validate_existing_start_context(
             or sync_run.replay_contract_version
             or sync_run.replay_input_digest
         ):
-            raise ValueError("Existing ingestion SyncRun contains replay metadata.")
+            raise SyncRunStartContextMismatch(
+                "Existing ingestion SyncRun contains replay metadata."
+            )
         return
     if (
         sync_run.source_id != source.pk
@@ -334,7 +342,8 @@ def _validate_existing_start_context(
         or sync_run.run_mode != run_mode
         or replay_source_sync_run is None
         or sync_run.replay_source_sync_run_id != replay_source_sync_run.pk
+        or sync_run.parser_version != parser_version
         or sync_run.replay_contract_version != replay_contract_version
         or sync_run.replay_input_digest != replay_input_digest
     ):
-        raise ValueError("Existing replay SyncRun has different replay context.")
+        raise SyncRunStartContextMismatch("Existing replay SyncRun has different replay context.")

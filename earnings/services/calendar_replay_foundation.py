@@ -22,7 +22,7 @@ from django.utils import timezone
 
 from audit.models import DataSource, RawDataObservation, SyncRun
 from audit.security import AuditSecurityError, normalize_json_without_credentials
-from audit.services import start_sync_run_with_result
+from audit.services import SyncRunStartContextMismatch, start_sync_run_with_result
 from earnings.services.calendar_pagination import EARNINGS_CALENDAR_WINDOW_JOB_TYPE
 from earnings.services.calendar_run_ownership import (
     EarningsCalendarRunBusy,
@@ -308,19 +308,22 @@ def start_earnings_calendar_replay_sync_run(
         source_id=source.pk,
         job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
     ):
-        result = start_sync_run_with_result(
-            job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
-            source=source,
-            scope=replay_scope,
-            idempotency_key=idempotency_key,
-            code_version=code_version,
-            parser_version=effective_parser_version,
-            started_at=started_at,
-            run_mode=SyncRun.RunMode.REPLAY,
-            replay_source_sync_run=source_run,
-            replay_contract_version=normalized_contract_version,
-            replay_input_digest=digest,
-        )
+        try:
+            result = start_sync_run_with_result(
+                job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+                source=source,
+                scope=replay_scope,
+                idempotency_key=idempotency_key,
+                code_version=code_version,
+                parser_version=effective_parser_version,
+                started_at=started_at,
+                run_mode=SyncRun.RunMode.REPLAY,
+                replay_source_sync_run=source_run,
+                replay_contract_version=normalized_contract_version,
+                replay_input_digest=digest,
+            )
+        except SyncRunStartContextMismatch as error:
+            raise EarningsCalendarReplayContextMismatch(str(error)) from error
         if not result.created:
             _validate_existing_replay_context(
                 result.sync_run,
