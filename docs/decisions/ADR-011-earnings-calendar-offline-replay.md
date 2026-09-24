@@ -414,4 +414,6 @@ Offline replay orchestration implementation 已落地：
 - stale RUNNING replay 可在同一 identity 上安全 resume；
 - Provider isolation 与 PostgreSQL concurrency/crash tests 已覆盖。
 
-本实现不新增 schema、不调用 Provider，当前等待 independent pre-merge review。
+本实现不新增 schema、不调用 Provider，已完成 independent pre-merge review、CI、merge 与
+merge commit 上的复验。4.2C-7 与整体 4.2C 已完成；后续 selector/replay 边界由 ADR-012
+继续保持 `persisted-contract-only`。

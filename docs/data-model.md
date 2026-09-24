@@ -356,6 +356,42 @@ append-only decision history，结构化保存 review / collision / mapping / de
 - loser EarningsEvent MUST 保持 candidate，不删除、不覆盖、不 copy 历史；
 - loser MUST NOT 进入未来公开 canonical selector。
 
+### 6.5 `MonitoringPoolSnapshot` / `MonitoringPoolMember`（4.2D-1 planned）
+
+> ADR-012 已冻结 selector contract；以下 schema 尚未实现，不得描述为 current fact。
+
+Stage 4.2 monitoring pool 的 canonical unit 是 Company。Snapshot 是 historical run fact；
+不得用 current index policy 或 later correction 回写。
+
+| `MonitoringPoolSnapshot` 字段 | 说明 |
+|---|---|
+| `id` | UUID PK |
+| `as_of_date` | `America/New_York` 业务自然日 |
+| `selector_version` | 例如 `earnings-monitoring-pool-v1` |
+| `enabled_index_codes` | canonical JSON array |
+| `input_revision` | canonical selector input manifest SHA-256 |
+| `pool_hash` | canonical output/input envelope SHA-256 |
+| `member_count` | 非负整数 |
+| `created_at` | UTC |
+
+| `MonitoringPoolMember` 字段 | 说明 |
+|---|---|
+| `snapshot_id` | FK snapshot，PROTECT |
+| `company_id` | FK Company，PROTECT |
+| `ordinal` | Company UUID canonical order |
+| `basis` | `index_code + security_listing_id + effective_from + effective_to` canonical JSON |
+
+约束：
+
+- snapshot `(as_of_date, selector_version, pool_hash)` unique；
+- member `(snapshot, company)` 与 `(snapshot, ordinal)` unique；
+- snapshot/member append-only；hash 或 input revision reload mismatch 时 fail closed；
+- Provider query identity 不属于本 schema；其 provider-specific projection 在 4.2F 定义。
+
+Selector 使用 `effective_from <= as_of < effective_to`，按 Company 去重。同一输入必须得到
+相同 member order、input revision 和 pool hash。Late-arriving correction 可以形成新的
+snapshot revision，但不能覆盖既有 run fact。
+
 ## 7. SEC 文件
 
 ### 7.1 `Filing`
@@ -691,6 +727,8 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | SourceEvidence | evidence_key unique；raw data record + target + field + normalized value + normalizer version |
 | DataChange | change_key unique |
 | AuditRecord | audit_key unique；actor/sync + action + target + before/after + reason + request |
+| MonitoringPoolSnapshot（4.2D-1 planned） | as_of + selector_version + pool_hash unique；append-only |
+| MonitoringPoolMember（4.2D-1 planned） | snapshot + company unique；snapshot + ordinal unique |
 | SyncRun replay identity | source + job_type + replay_source_sync_run + parser_version + replay_contract_version + replay_input_digest unique（仅 run_mode=replay） |
 
 并发写入必须捕获唯一冲突后读取已存在记录，不能依赖“先查后写”。
@@ -714,6 +752,10 @@ Stage 4.2A 已由 ADR-010 冻结、不再属于待确认的决策：
 - sync window / backfill / empty calendar 语义；
 - no destructive merge、loser 保留与 canonical collision 处理；
 - monitoring pool、scope、pagination 与 replay identity。
+
+ADR-012 进一步冻结 4.2D selector：canonical unit 为 Company；Stage 4.2 universe 仅来自
+explicit enabled index policy 的 as-of normative IndexMembership；历史结果采用 Hybrid
+snapshot；retry/replay 不重选。Snapshot schema 仍为 planned，当前尚未实现。
 
 以下数据决策仍待确认：
 

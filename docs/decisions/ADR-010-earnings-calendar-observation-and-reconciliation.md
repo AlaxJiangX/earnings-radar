@@ -371,11 +371,12 @@ SyncRun scope MUST 保存：
 
 MUST NOT 在 scope 保存完整 company ID 列表。
 
-Replay MUST：
+Replay MUST NOT 悄悄使用"今天的实时池"。
 
-- 使用原 run 的 as-of 重新计算 pool；
-- hash 不一致时 integrity failure；
-- MUST NOT 悄悄使用"今天的实时池"。
+本节早期草案中的 "Replay 使用原 run 的 as-of 重新计算 pool" 已由后续 ADR-011 的
+Option A 取代：offline replay 只验证 source run 已持久化的 pool contract，不重新运行
+selector。ADR-012 进一步区分了非 replay 的 historical reconstruction 与 authoritative
+snapshot；4.2D selector 不得改变 replay 的 persisted-contract-only 语义。
 
 Stage 5 未来 ONLY 扩展 selector 为 `index monitoring pool OR active WatchlistItem`，MUST NOT
 改变 4.2 调用方契约。
