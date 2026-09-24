@@ -378,7 +378,7 @@
 - status / schedule / history 不变；
 - No migration；candidate creation、provider external ID、dedup、merge/split、cross-provider reconciliation、source conflict / precedence 均保持在 4.2 边界。
 
-4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main；4.2C Fixture-First Earnings Calendar Ingestion & Replay 已开始，4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch 与 4.2C-6 replay foundation / schema ratification 已实现并通过 verification；完整 offline replay orchestration 尚未实现。
+4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main；4.2C Fixture-First Earnings Calendar Ingestion & Replay 已开始，4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch、4.2C-6 replay foundation / schema ratification、4.2C-7 provider context foundation 与 offline replay orchestration implementation 已实现并通过 verification，待 independent pre-merge review。
 
 #### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C IN PROGRESS）
 
