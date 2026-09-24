@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from django.db import connection
+from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 
 MIGRATE_FROM = ("audit", "0008_extend_audit_targets_for_reconciliation_decision")
@@ -49,6 +49,22 @@ def test_replay_foundation_migration_preserves_historical_ingestion_rows() -> No
         assert migrated.fetched_count == 0
         assert migrated.scope == {"fixture": "historical"}
         assert migrated.job_type == "migration.fixture"
+
+        with pytest.raises(IntegrityError), transaction.atomic():
+            NewSyncRun.objects.create(
+                job_type="migration.fixture",
+                source_id=source.pk,
+                scope={"window_kind": "replay"},
+                idempotency_key="migration.invalid-replay",
+                run_mode="replay",
+                replay_source_sync_run_id=sync_run.pk,
+                replay_contract_version="1",
+                replay_input_digest="a" * 64,
+                parser_version="fixture-parser-v1",
+                fetched_count=1,
+                started_at=observed_at,
+                heartbeat_at=observed_at,
+            )
 
         executor = MigrationExecutor(connection)
         executor.migrate([MIGRATE_FROM])

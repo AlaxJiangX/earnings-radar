@@ -21,6 +21,7 @@ from audit.services import (
     InvalidSyncRunCount,
     mark_sync_run_succeeded,
     record_raw_data_parse_attempt,
+    start_sync_run_with_result,
     update_sync_run_counts,
 )
 from earnings.calendar_parsing import FixtureEarningsCalendarParser
@@ -33,6 +34,7 @@ from earnings.services import (
     EarningsCalendarReplayContextMismatch,
     EarningsCalendarReplayCountMismatch,
     EarningsCalendarRunBusy,
+    EarningsCalendarRunOwnershipLost,
     InvalidEarningsCalendarReplay,
     build_earnings_calendar_replay_idempotency_key,
     build_earnings_calendar_replay_input_digest,
@@ -45,6 +47,7 @@ from earnings.services import (
     validate_earnings_calendar_replay_pool_contract,
     validate_earnings_calendar_replay_source,
 )
+from earnings.services import calendar_replay_foundation as replay_foundation
 from tests.earnings.helpers import make_calendar_observation
 
 PROVIDER_KEY = "fixture-calendar-provider"
@@ -291,6 +294,129 @@ def test_replay_db_constraint_keeps_provider_fetch_count_zero() -> None:
 
 
 @pytest.mark.django_db
+def test_sync_run_db_constraints_reject_invalid_mode_and_ingestion_replay_metadata() -> None:
+    source, source_run, _records, _observations = _observed_source("db-invalid-ingestion")
+    now = timezone.now()
+
+    invalid_rows: tuple[dict[str, object], ...] = (
+        {"run_mode": "invalid"},
+        {"scope": _scope(window_kind="replay")},
+        {"replay_source_sync_run": source_run},
+        {"replay_contract_version": EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION},
+        {"replay_input_digest": "a" * 64},
+        {"replayed_count": 1},
+    )
+    for index, overrides in enumerate(invalid_rows):
+        values: dict[str, object] = {
+            "job_type": JOB_TYPE,
+            "source": source,
+            "scope": _scope(),
+            "idempotency_key": f"invalid-ingestion-{index}",
+            "run_mode": SyncRun.RunMode.INGESTION,
+            "started_at": now,
+            "heartbeat_at": now,
+        }
+        values.update(overrides)
+        with pytest.raises(IntegrityError), transaction.atomic():
+            SyncRun.objects.create(**values)
+
+
+@pytest.mark.django_db
+def test_replay_db_constraint_requires_complete_replay_metadata() -> None:
+    source, source_run, _records, _observations = _observed_source("db-invalid-replay")
+    now = timezone.now()
+
+    invalid_rows: tuple[dict[str, object], ...] = (
+        {"replay_source_sync_run": None},
+        {"replay_contract_version": ""},
+        {"replay_input_digest": ""},
+        {"replay_input_digest": "not-a-digest"},
+        {"parser_version": ""},
+        {"parser_version": "   "},
+        {"fetched_count": 1},
+    )
+    for index, overrides in enumerate(invalid_rows):
+        values: dict[str, object] = {
+            "job_type": JOB_TYPE,
+            "source": source,
+            "scope": _scope(window_kind="replay"),
+            "idempotency_key": f"invalid-replay-{index}",
+            "run_mode": SyncRun.RunMode.REPLAY,
+            "replay_source_sync_run": source_run,
+            "replay_contract_version": EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
+            "replay_input_digest": "b" * 64,
+            "parser_version": PARSER_VERSION,
+            "started_at": now,
+            "heartbeat_at": now,
+        }
+        values.update(overrides)
+        with pytest.raises(IntegrityError), transaction.atomic():
+            SyncRun.objects.create(**values)
+
+
+@pytest.mark.django_db
+def test_generic_replay_start_reloads_persisted_source_and_rejects_scope_bypass() -> None:
+    source, source_run, _records, _observations = _observed_source("generic-scope")
+    replay_scope = dict(source_run.scope)
+    replay_scope["window_kind"] = "replay"
+    wrong_scope = dict(replay_scope)
+    wrong_scope["monitoring_pool_hash"] = "f" * 64
+
+    with pytest.raises(ValueError, match="must match"):
+        start_sync_run_with_result(
+            job_type=JOB_TYPE,
+            source=source,
+            scope=wrong_scope,
+            idempotency_key="generic-scope-mismatch",
+            parser_version=PARSER_VERSION,
+            run_mode=SyncRun.RunMode.REPLAY,
+            replay_source_sync_run=source_run,
+            replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
+            replay_input_digest="b" * 64,
+        )
+
+    other_source = _source("generic-source-tamper")
+    tampered_source_run = SyncRun.objects.get(pk=source_run.pk)
+    tampered_source_run.source_id = other_source.pk
+    with pytest.raises(ValueError, match="same DataSource"):
+        start_sync_run_with_result(
+            job_type=JOB_TYPE,
+            source=other_source,
+            scope=replay_scope,
+            idempotency_key="generic-source-mismatch",
+            parser_version=PARSER_VERSION,
+            run_mode=SyncRun.RunMode.REPLAY,
+            replay_source_sync_run=tampered_source_run,
+            replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
+            replay_input_digest="b" * 64,
+        )
+
+
+@pytest.mark.parametrize("status", (SyncRun.Status.RUNNING, SyncRun.Status.SKIPPED))
+@pytest.mark.django_db
+def test_generic_replay_start_rejects_non_replayable_source_status(
+    status: str,
+) -> None:
+    source = _source(f"generic-status-{status}")
+    source_run = _source_run(source, status=status)
+    replay_scope = dict(source_run.scope)
+    replay_scope["window_kind"] = "replay"
+
+    with pytest.raises(ValueError, match="terminal and replayable"):
+        start_sync_run_with_result(
+            job_type=JOB_TYPE,
+            source=source,
+            scope=replay_scope,
+            idempotency_key=f"generic-status-{status}",
+            parser_version=PARSER_VERSION,
+            run_mode=SyncRun.RunMode.REPLAY,
+            replay_source_sync_run=source_run,
+            replay_contract_version=EARNINGS_CALENDAR_REPLAY_CONTRACT_VERSION,
+            replay_input_digest="b" * 64,
+        )
+
+
+@pytest.mark.django_db
 def test_digest_is_order_independent_and_requires_the_complete_manifest() -> None:
     source, source_run, _records, observations = _observed_source("digest", count=2)
     first_observation, second_observation = observations
@@ -324,6 +450,17 @@ def test_digest_is_order_independent_and_requires_the_complete_manifest() -> Non
             parser_version=PARSER_VERSION,
             observations=[first_observation, first_observation, second_observation],
         )
+
+
+@pytest.mark.django_db
+def test_digest_evidence_identity_excludes_raw_record_uuid() -> None:
+    _source_value, source_run, _records, observations = _observed_source("digest-row-id")
+
+    item = replay_foundation._build_evidence_item(source_run, observations[0])
+
+    assert "raw_data_record_id" not in item
+    assert item["request_fingerprint"]
+    assert item["content_hash"]
 
 
 @pytest.mark.django_db
@@ -686,10 +823,11 @@ def test_stale_replay_recovery_preserves_source_and_rebuilds_count() -> None:
     RawDataObservation.objects.create(sync_run=replay, raw_data_record=records[0])
     source_before = SyncRun.objects.filter(pk=source_run.pk).values().get()
 
-    recovered = retire_stale_earnings_calendar_replay_run(
-        replay,
-        cutoff=timezone.now() - timedelta(minutes=1),
-    )
+    with calendar_run_ownership(source_id=source.pk, job_type=JOB_TYPE):
+        recovered = retire_stale_earnings_calendar_replay_run(
+            replay,
+            cutoff=timezone.now() - timedelta(minutes=1),
+        )
 
     assert recovered.status == SyncRun.Status.PARTIAL
     assert recovered.replayed_count == 1
@@ -709,8 +847,28 @@ def test_stale_replay_recovery_fails_closed_on_impossible_count() -> None:
     RawDataObservation.objects.create(sync_run=replay, raw_data_record=records[0])
     SyncRun.objects.filter(pk=replay.pk).update(replayed_count=2)
 
-    with pytest.raises(EarningsCalendarReplayCountMismatch):
+    with calendar_run_ownership(source_id=source.pk, job_type=JOB_TYPE):
+        with pytest.raises(EarningsCalendarReplayCountMismatch):
+            retire_stale_earnings_calendar_replay_run(
+                replay,
+                cutoff=timezone.now() - timedelta(minutes=1),
+            )
+
+
+@pytest.mark.django_db
+def test_stale_replay_recovery_requires_matching_ownership() -> None:
+    source, source_run, _records, _observations = _observed_source("stale-no-lock")
+    replay = _replay_run(
+        source,
+        source_run,
+        started_at=timezone.now() - timedelta(hours=2),
+    )
+
+    with pytest.raises(EarningsCalendarRunOwnershipLost):
         retire_stale_earnings_calendar_replay_run(
             replay,
             cutoff=timezone.now() - timedelta(minutes=1),
         )
+
+    replay.refresh_from_db()
+    assert replay.status == SyncRun.Status.RUNNING

@@ -260,6 +260,7 @@ class SyncRun(models.Model):
                 condition=(
                     (
                         Q(run_mode="ingestion")
+                        & (Q(scope__window_kind__isnull=True) | ~Q(scope__window_kind="replay"))
                         & Q(replay_source_sync_run__isnull=True)
                         & Q(replay_contract_version="")
                         & Q(replay_input_digest="")
@@ -271,7 +272,7 @@ class SyncRun(models.Model):
                         & Q(replay_source_sync_run__isnull=False)
                         & Q(replay_contract_version__regex=r"[^[:space:]]")
                         & Q(replay_input_digest__regex=r"^[0-9a-f]{64}$")
-                        & ~Q(parser_version="")
+                        & Q(parser_version__regex=r"[^[:space:]]")
                         & Q(fetched_count=0)
                     )
                 ),

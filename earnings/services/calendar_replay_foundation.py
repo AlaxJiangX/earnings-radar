@@ -26,6 +26,7 @@ from audit.services import SyncRunStartContextMismatch, start_sync_run_with_resu
 from earnings.services.calendar_pagination import EARNINGS_CALENDAR_WINDOW_JOB_TYPE
 from earnings.services.calendar_run_ownership import (
     EarningsCalendarRunBusy,
+    assert_calendar_run_ownership,
     calendar_run_ownership,
 )
 from earnings.services.calendar_sync_identity import (
@@ -174,12 +175,14 @@ def build_earnings_calendar_replay_input_digest(
             )
         evidence = list(evidence_queryset.filter(pk__in=requested_ids))
     evidence_items = [_build_evidence_item(source_run, observation) for observation in evidence]
+    # RawDataRecord's UUID is row identity; the DB-unique request/content pair is the
+    # stable evidence identity used by replay.
     evidence_items.sort(
         key=lambda item: (
             cast(str, item["request_fingerprint"]),
             cast(str, item["content_hash"]),
             cast(str, item["source_url"]),
-            cast(str, item["raw_data_record_id"]),
+            cast(int, item["payload_size_bytes"]),
         )
     )
     identity = {
@@ -385,6 +388,10 @@ def retire_stale_earnings_calendar_replay_run(
     with transaction.atomic():
         current = SyncRun.objects.select_for_update().get(pk=sync_run.pk)
         _require_replay_run(current)
+        assert_calendar_run_ownership(
+            source_id=current.source_id,
+            job_type=current.job_type,
+        )
         if current.status != SyncRun.Status.RUNNING:
             return current
         if current.heartbeat_at > cutoff:
@@ -502,7 +509,6 @@ def _build_evidence_item(source_run: SyncRun, observation: RawDataObservation) -
             "Raw payload hash does not match persisted content_hash."
         )
     return {
-        "raw_data_record_id": str(record.pk),
         "request_fingerprint": record.request_fingerprint,
         "source_url": record.source_url,
         "content_hash": record.content_hash,

@@ -17,6 +17,9 @@ from audit.security import (
 
 MAX_ERROR_SUMMARY_LENGTH = 2000
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_REPLAYABLE_SOURCE_STATUSES = frozenset(
+    {SyncRun.Status.SUCCEEDED, SyncRun.Status.PARTIAL, SyncRun.Status.FAILED}
+)
 
 
 class InvalidSyncRunTransition(RuntimeError):
@@ -102,6 +105,8 @@ def start_sync_run_with_result(
     normalized_key = idempotency_key.strip()
     if not normalized_job_type or not normalized_key:
         raise ValueError("job_type and idempotency_key must not be empty.")
+    if not isinstance(source, DataSource) or source._state.adding or source.pk is None:
+        raise ValueError("source must be a saved DataSource.")
     try:
         normalized_scope = normalize_json_without_credentials(
             dict(scope or {}),
@@ -120,6 +125,8 @@ def start_sync_run_with_result(
     normalized_contract_version = replay_contract_version.strip()
     normalized_input_digest = replay_input_digest.strip()
     is_replay_scope = normalized_scope.get("window_kind") == "replay"
+    persisted_replay_source: SyncRun | None = None
+    stored_parser_version = parser_version
     if normalized_run_mode == SyncRun.RunMode.INGESTION and (
         is_replay_scope
         or replay_source_sync_run is not None
@@ -132,22 +139,19 @@ def start_sync_run_with_result(
             raise ValueError('Replay SyncRuns require scope window_kind="replay".')
         if replay_source_sync_run is None:
             raise ValueError("Replay SyncRuns require a source SyncRun.")
-        if (
-            replay_source_sync_run._state.adding
-            or replay_source_sync_run.pk is None
-            or replay_source_sync_run.run_mode != SyncRun.RunMode.INGESTION
-        ):
-            raise ValueError("Replay source SyncRun must be a saved ingestion run.")
-        if replay_source_sync_run.source_id != source.pk:
-            raise ValueError("Replay source SyncRun must belong to the same DataSource.")
-        if replay_source_sync_run.job_type != normalized_job_type:
-            raise ValueError("Replay source SyncRun must use the same job_type.")
         if not normalized_contract_version or len(normalized_contract_version) > 100:
             raise ValueError("Replay SyncRuns require replay contract metadata.")
         if not _SHA256_HEX_RE.fullmatch(normalized_input_digest):
             raise ValueError("Replay input digest must be a SHA-256 hex digest.")
         if not isinstance(parser_version, str) or not parser_version.strip():
             raise ValueError("Replay SyncRuns require a parser version.")
+        stored_parser_version = parser_version.strip()
+        persisted_replay_source = _load_replay_source(
+            source=source,
+            job_type=normalized_job_type,
+            scope=normalized_scope,
+            replay_source_sync_run=replay_source_sync_run,
+        )
     timestamp = _aware_timestamp(started_at)
     with transaction.atomic():
         try:
@@ -161,9 +165,9 @@ def start_sync_run_with_result(
                         started_at=timestamp,
                         heartbeat_at=timestamp,
                         code_version=code_version,
-                        parser_version=parser_version,
+                        parser_version=stored_parser_version,
                         run_mode=normalized_run_mode,
-                        replay_source_sync_run=replay_source_sync_run,
+                        replay_source_sync_run=persisted_replay_source,
                         replay_contract_version=normalized_contract_version,
                         replay_input_digest=normalized_input_digest,
                     ),
@@ -183,8 +187,8 @@ def start_sync_run_with_result(
                 job_type=normalized_job_type,
                 scope=normalized_scope,
                 run_mode=normalized_run_mode,
-                parser_version=parser_version,
-                replay_source_sync_run=replay_source_sync_run,
+                parser_version=stored_parser_version,
+                replay_source_sync_run=persisted_replay_source,
                 replay_contract_version=normalized_contract_version,
                 replay_input_digest=normalized_input_digest,
             )
@@ -347,3 +351,40 @@ def _validate_existing_start_context(
         or sync_run.replay_input_digest != replay_input_digest
     ):
         raise SyncRunStartContextMismatch("Existing replay SyncRun has different replay context.")
+
+
+def _load_replay_source(
+    *,
+    source: DataSource,
+    job_type: str,
+    scope: Mapping[str, object],
+    replay_source_sync_run: SyncRun,
+) -> SyncRun:
+    """Reload and validate the persisted replay source instead of trusting caller memory."""
+
+    if replay_source_sync_run._state.adding or replay_source_sync_run.pk is None:
+        raise ValueError("Replay source SyncRun must be saved.")
+    try:
+        persisted = SyncRun.objects.get(pk=replay_source_sync_run.pk)
+    except SyncRun.DoesNotExist as error:
+        raise ValueError("Replay source SyncRun does not exist.") from error
+
+    if (
+        persisted.run_mode != SyncRun.RunMode.INGESTION
+        or persisted.replay_source_sync_run_id is not None
+    ):
+        raise ValueError("Replay source SyncRun must be an ingestion run.")
+    if persisted.status not in _REPLAYABLE_SOURCE_STATUSES:
+        raise ValueError("Replay source SyncRun must be terminal and replayable.")
+    if persisted.source_id != source.pk:
+        raise ValueError("Replay source SyncRun must belong to the same DataSource.")
+    if persisted.job_type != job_type:
+        raise ValueError("Replay source SyncRun must use the same job_type.")
+    if not isinstance(persisted.scope, dict):
+        raise ValueError("Replay source SyncRun scope must be a JSON object.")
+
+    expected_scope = dict(persisted.scope)
+    expected_scope["window_kind"] = "replay"
+    if dict(scope) != expected_scope:
+        raise ValueError("Replay scope must match the persisted source SyncRun scope.")
+    return persisted
