@@ -16,6 +16,7 @@ from typing import NoReturn, Protocol, runtime_checkable
 from audit.models import DataSource, SyncRun
 from audit.security import ProviderRequestContextDescriptor
 from audit.services import (
+    build_request_fingerprint,
     mark_sync_run_failed,
     mark_sync_run_partial,
     mark_sync_run_succeeded,
@@ -26,6 +27,11 @@ from earnings.services.calendar_ingestion import (
     EarningsCalendarIngestionError,
     EarningsCalendarIngestionResult,
     ingest_earnings_calendar_payload,
+)
+from earnings.services.calendar_run_ownership import (
+    EarningsCalendarRunOwnershipLost,
+    assert_calendar_run_ownership,
+    owned_calendar_run,
 )
 
 EARNINGS_CALENDAR_WINDOW_JOB_TYPE = "earnings.calendar_window"
@@ -122,6 +128,7 @@ class _WindowContext:
     max_pages: int
 
 
+@owned_calendar_run
 def run_earnings_calendar_window(
     *,
     sync_run: SyncRun,
@@ -143,13 +150,16 @@ def run_earnings_calendar_window(
     )
     pages: list[EarningsCalendarWindowPageResult] = []
     seen_cursors: set[str] = set()
+    seen_request_fingerprints: set[str] = set()
     request_cursor: str | None = None
     page_index = 1
 
     def count_persisted_page() -> None:
+        assert_calendar_run_ownership()
         update_sync_run_counts(context.sync_run.pk, fetched_delta=1)
 
     while True:
+        assert_calendar_run_ownership()
         if page_index > context.max_pages:
             cause = EarningsCalendarPaginationError(
                 f"Maximum page count {context.max_pages} exceeded."
@@ -173,11 +183,26 @@ def run_earnings_calendar_window(
 
         try:
             page = page_source.fetch_page(request_cursor)
+            assert_calendar_run_ownership()
             next_cursor = _validate_page_envelope(
                 page,
                 request_cursor=request_cursor,
                 context=context,
             )
+            request_fingerprint = (
+                page.request_descriptor.fingerprint
+                if page.request_descriptor is not None
+                else build_request_fingerprint(
+                    method=page.request_method,
+                    source_url=page.source_url,
+                    request_identity=page.request_identity,
+                )
+            )
+            if request_fingerprint in seen_request_fingerprints:
+                raise EarningsCalendarPaginationError(
+                    "Distinct pages must not share one persisted request identity."
+                )
+            seen_request_fingerprints.add(request_fingerprint)
         except EarningsCalendarPaginationError as error:
             _raise_window_failure(
                 context=context,
@@ -185,6 +210,8 @@ def run_earnings_calendar_window(
                 page_index=page_index,
                 cause=error,
             )
+        except EarningsCalendarRunOwnershipLost:
+            raise
         except Exception as error:
             _raise_window_failure(
                 context=context,
@@ -228,6 +255,7 @@ def run_earnings_calendar_window(
         pages.append(page_result)
 
         if page.is_terminal:
+            assert_calendar_run_ownership()
             finalized = mark_sync_run_succeeded(context.sync_run.pk)
             return EarningsCalendarWindowResult(
                 sync_run=finalized,
@@ -383,6 +411,7 @@ def _raise_window_failure(
     page_index: int,
     cause: Exception,
 ) -> NoReturn:
+    assert_calendar_run_ownership()
     summary = _failure_summary(page_index=page_index, cause=cause)
     update_sync_run_counts(context.sync_run.pk, failed_delta=1)
     if pages:

@@ -295,6 +295,89 @@ def start_scheduled_earnings_calendar_sync_run(
     )
 
 
+def _start_retry_earnings_calendar_sync_run(
+    *,
+    source: DataSource,
+    provider_key: str,
+    window_start: date,
+    window_end: date,
+    monitoring_pool_as_of: date,
+    monitoring_pool_hash: str,
+    selector_version: str,
+    request_id: str,
+    code_version: str = "",
+    parser_version: str = "",
+    started_at: datetime | None = None,
+) -> SyncRunStartResult:
+    """Start a new retry identity for one previously failed logical window."""
+
+    normalized_provider_key = _normalize_provider_key(provider_key)
+    current_source = _load_enabled_earnings_calendar_source(
+        source,
+        provider_key=normalized_provider_key,
+    )
+    normalized_code_version = _normalize_optional_version(
+        code_version,
+        value_name="code_version",
+    )
+    normalized_parser_version = _normalize_optional_version(
+        parser_version,
+        value_name="parser_version",
+    )
+    expected_scope = build_earnings_calendar_sync_scope(
+        provider_key=normalized_provider_key,
+        window_kind=EarningsCalendarWindowKind.RETRY,
+        window_start=window_start,
+        window_end=window_end,
+        monitoring_pool_as_of=monitoring_pool_as_of,
+        monitoring_pool_hash=monitoring_pool_hash,
+        selector_version=selector_version,
+    )
+    idempotency_key = build_manual_earnings_calendar_idempotency_key(
+        source_key=current_source.key,
+        provider_key=normalized_provider_key,
+        window_kind=EarningsCalendarWindowKind.RETRY,
+        window_start=window_start,
+        window_end=window_end,
+        monitoring_pool_as_of=monitoring_pool_as_of,
+        monitoring_pool_hash=monitoring_pool_hash,
+        selector_version=selector_version,
+        request_id=request_id,
+    )
+    result = start_sync_run_with_result(
+        job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
+        source=current_source,
+        scope=expected_scope,
+        idempotency_key=idempotency_key,
+        code_version=normalized_code_version,
+        parser_version=normalized_parser_version,
+        started_at=started_at,
+    )
+    if result.created:
+        return result
+
+    existing = result.sync_run
+    _verify_existing_run_context(
+        sync_run=existing,
+        source=current_source,
+        scope=expected_scope,
+        provider_key=normalized_provider_key,
+        code_version=normalized_code_version,
+        parser_version=normalized_parser_version,
+    )
+    if existing.status == SyncRun.Status.RUNNING:
+        raise EarningsCalendarSyncRunAlreadyRunning(
+            "An earnings calendar retry with this identity is already running.",
+            sync_run=existing,
+        )
+    if existing.status == SyncRun.Status.SUCCEEDED:
+        return SyncRunStartResult(sync_run=existing, created=False)
+    raise EarningsCalendarSyncRunRetryRequired(
+        "The existing earnings calendar retry did not succeed; use a new request identity.",
+        sync_run=existing,
+    )
+
+
 def _load_enabled_earnings_calendar_source(
     source: DataSource,
     *,
