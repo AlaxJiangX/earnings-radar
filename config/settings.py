@@ -31,11 +31,21 @@ DJANGO_ENV = os.getenv("DJANGO_ENV", "development").strip().lower()
 DEBUG = env_bool("DJANGO_DEBUG", default=DJANGO_ENV == "development")
 
 _local_environments = frozenset({"development", "test"})
+if DJANGO_ENV not in _local_environments and DEBUG:
+    raise ImproperlyConfigured("DJANGO_DEBUG must be disabled outside development and test.")
 
 _development_secret = "unsafe-development-only-key"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", _development_secret)
-if not DEBUG and SECRET_KEY == _development_secret:
-    raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set outside development.")
+_development_secrets = {
+    _development_secret,
+    "unsafe-local-development-key",  # Docker Compose default
+    "replace-with-a-local-development-key",  # .env.example placeholder
+}
+if (
+    DJANGO_ENV not in _local_environments
+    and (not SECRET_KEY.strip() or SECRET_KEY in _development_secrets)
+) or (not DEBUG and SECRET_KEY == _development_secret):
+    raise ImproperlyConfigured("DJANGO_SECRET_KEY must use a non-development value.")
 
 _development_audit_ip_hash_key = "unsafe-development-and-test-only-audit-ip-hash-key"
 _audit_ip_hash_key_placeholder = "replace-with-a-local-audit-ip-hash-key"
