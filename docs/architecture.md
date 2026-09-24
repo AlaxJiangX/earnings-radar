@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D selector planning gate 已接受 ADR-012，selector/snapshot 尚未实现。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、reconciliation workflow、SEC Filing 或通知领域模型。
+当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D Planning Gate 已接受 ADR-012，4.2D-1 selector/snapshot core 已实现并通过 verification，待独立 pre-merge review；scheduled command integration 与 company matching/candidate 尚未实现。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、reconciliation workflow、SEC Filing 或通知领域模型。
 
 ## 1. 架构目标与边界
 
@@ -169,7 +169,7 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D selector contract planned）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现）
 
 ADR-010 已冻结 4.2 的 provider-neutral 契约。4.2B 已实现
 `EarningsCalendarObservation`、`EarningsReconciliationDecision`、DB 约束、append-only /
@@ -188,9 +188,11 @@ revision 复用；Option A 只核对 source run 持久化 pool contract，不调
 NULL replay 拒绝，并把 provider context 纳入 replay digest；offline replay orchestration
 已完成 merge 与 merge commit 复验。ADR-012 已冻结 4.2D selector contract：selector 选择
 Company，使用 explicit enabled index policy 的 as-of normative membership，持久化 hybrid
-snapshot，并保持 retry/replay 只复用 persisted contract。以下列表是 ratified contract；
-其中 selector/snapshot、company matching、candidate creation、reconciliation policy 与
-live Provider 仍未实现（余下 4.2D-4.2F）：
+snapshot，并保持 retry/replay 只复用 persisted contract。4.2D-1 已实现 selector
+service、immutable snapshot/member schema、canonical input revision、pool hash 与
+PostgreSQL 并发复用；以下列表是 ratified contract，其中 scheduled entry point 仍使用
+caller-supplied pool contract，company matching、candidate creation、reconciliation policy
+与 live Provider 仍未实现（余下 4.2D-2-4.2F）：
 
 - 分层：`raw -> parse -> EarningsCalendarObservation -> EarningsReconciliationDecision ->
   EarningsEvent`；`provider_key + provider_event_id` 只表示 source identity，不进入 canonical
@@ -207,8 +209,8 @@ live Provider 仍未实现（余下 4.2D-4.2F）：
   空日历是成功响应；
 - monitoring pool：`earnings_monitoring_pool(as_of_date)` + `monitoring_pool_hash`，scope
   保存 as-of / hash / selector version；4.2C replay 只验证原 scope contract，selector 实现
-  仍属于 4.2D；ADR-012 另要求 immutable `MonitoringPoolSnapshot` /
-  `MonitoringPoolMember`、canonical basis 与 `input_revision`；
+  已由 4.2D-1 提供；immutable `MonitoringPoolSnapshot` / `MonitoringPoolMember`、canonical
+  basis 与 `input_revision` 已落地；scheduled command 自动调用 selector 仍待后续 integration；
 - pagination：一个 SyncRun 一个 logical window，多页 raw / observation / parse attempt；
   pagination 未完成前默认不做该 window 的 domain writes；
 - live gate：4.2F 前必须完成 provider / license checklist，4.2A-4.2E 全部 fixture-first。

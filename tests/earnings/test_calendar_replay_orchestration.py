@@ -215,6 +215,32 @@ def test_offline_replay_success_reuses_persisted_raw_evidence(
 
 
 @pytest.mark.django_db(transaction=True)
+def test_offline_replay_does_not_call_monitoring_pool_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, source_run = _source_run_with_payloads((_fixture_bytes("complete_payload.json"),))
+
+    def fail_selector(**kwargs: object) -> None:
+        del kwargs
+        raise AssertionError("Offline replay must not call the monitoring-pool selector.")
+
+    monkeypatch.setattr(
+        "earnings.services.monitoring_pool.select_monitoring_pool",
+        fail_selector,
+    )
+    monkeypatch.setattr("earnings.services.select_monitoring_pool", fail_selector)
+
+    result = execute_earnings_calendar_offline_replay(
+        source=source,
+        source_sync_run=source_run,
+        parser=FixtureEarningsCalendarParser(),
+    )
+
+    assert result.executed is True
+    assert result.sync_run.status == SyncRun.Status.SUCCEEDED
+
+
+@pytest.mark.django_db(transaction=True)
 def test_offline_replay_same_identity_reuses_terminal_result() -> None:
     source, source_run = _source_run_with_payloads((_fixture_bytes("complete_payload.json"),))
 

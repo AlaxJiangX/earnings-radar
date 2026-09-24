@@ -752,3 +752,91 @@ class EarningsReconciliationDecision(AppendOnlyAuditModel):
 
     def __str__(self) -> str:
         return f"{self.observation_id}:{self.decision_type}:{self.status}"
+
+
+class MonitoringPoolSnapshot(AppendOnlyAuditModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    as_of_date = models.DateField()
+    selector_version = models.CharField(max_length=100)
+    enabled_index_codes = models.JSONField(default=list)
+    input_revision = models.CharField(max_length=64, editable=False)
+    pool_hash = models.CharField(max_length=64, editable=False)
+    member_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-as_of_date", "selector_version", "pool_hash")
+        indexes = [
+            models.Index(fields=("as_of_date", "selector_version")),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(selector_version__regex=r"[^[:space:]]"),
+                name="earnings_pool_snapshot_selector_version_not_empty",
+            ),
+            models.CheckConstraint(
+                condition=~Q(enabled_index_codes=[]),
+                name="earnings_pool_snapshot_enabled_indexes_not_empty",
+            ),
+            models.CheckConstraint(
+                condition=Q(input_revision__regex=r"^[0-9a-f]{64}$"),
+                name="earnings_pool_snapshot_input_revision_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(pool_hash__regex=r"^[0-9a-f]{64}$"),
+                name="earnings_pool_snapshot_hash_valid",
+            ),
+            models.UniqueConstraint(
+                fields=("as_of_date", "selector_version", "pool_hash"),
+                name="earnings_pool_snapshot_identity_unique",
+            ),
+            models.UniqueConstraint(
+                fields=("as_of_date", "selector_version", "input_revision"),
+                name="earnings_pool_snapshot_revision_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.as_of_date}:{self.selector_version}:{self.pool_hash[:12]}"
+
+
+class MonitoringPoolMember(AppendOnlyAuditModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    snapshot = models.ForeignKey(
+        MonitoringPoolSnapshot,
+        on_delete=models.PROTECT,
+        related_name="members",
+    )
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.PROTECT,
+        related_name="monitoring_pool_members",
+    )
+    ordinal = models.PositiveIntegerField()
+    basis = models.JSONField(default=list)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("snapshot", "ordinal")
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(basis=[]),
+                name="earnings_pool_member_basis_not_empty",
+            ),
+            models.UniqueConstraint(
+                fields=("snapshot", "company"),
+                name="earnings_pool_member_company_unique",
+            ),
+            models.UniqueConstraint(
+                fields=("snapshot", "ordinal"),
+                name="earnings_pool_member_ordinal_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.snapshot_id}:{self.ordinal}:{self.company_id}"

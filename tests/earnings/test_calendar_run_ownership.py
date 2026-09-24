@@ -394,6 +394,39 @@ def test_stale_run_is_preserved_and_retry_starts_a_new_run(has_raw: bool) -> Non
 
 
 @pytest.mark.django_db(transaction=True)
+def test_retry_does_not_call_monitoring_pool_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _calendar_source("retry-selector-isolation")
+    previous = _start_scheduled(source)
+    mark_sync_run_failed(previous.pk, error_summary="Fixture retry source failed.")
+    previous.refresh_from_db()
+    page_source = FixturePageSource({None: _terminal_page()})
+
+    def fail_selector(**kwargs: object) -> None:
+        del kwargs
+        raise AssertionError("Retry must not rerun the monitoring-pool selector.")
+
+    monkeypatch.setattr(
+        "earnings.services.monitoring_pool.select_monitoring_pool",
+        fail_selector,
+    )
+    monkeypatch.setattr("earnings.services.select_monitoring_pool", fail_selector)
+
+    retried = execute_retry_earnings_calendar_window(
+        previous_run=previous,
+        request_id="retry-selector-isolation",
+        expected_pool_hash=POOL_HASH,
+        page_source=page_source,
+        parser=FixtureEarningsCalendarParser(),
+        provider_version=PROVIDER_VERSION,
+    )
+
+    assert retried.created is True
+    assert retried.sync_run.status == SyncRun.Status.SUCCEEDED
+
+
+@pytest.mark.django_db(transaction=True)
 @override_settings(EARNINGS_CALENDAR_STALE_AFTER_SECONDS=60)
 def test_stale_run_with_count_exceeding_raw_facts_requires_manual_review() -> None:
     source = _calendar_source("stale-count-mismatch")
