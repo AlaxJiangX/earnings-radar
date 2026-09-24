@@ -236,6 +236,7 @@ def run_earnings_calendar_window(
                 encoding=page.encoding,
                 request_descriptor=page.request_descriptor,
                 on_raw_persisted=count_persisted_page,
+                verify_run_ownership=assert_calendar_run_ownership,
             )
         except Exception as error:
             _raise_window_failure(

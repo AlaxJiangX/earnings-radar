@@ -8,11 +8,17 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pytest
-from django.db import close_old_connections, connection, connections
+from django.db import close_old_connections, connection, connections, transaction
 from django.test import override_settings
 from django.utils import timezone
 
-from audit.models import DataSource, RawDataObservation, RawDataRecord, SyncRun
+from audit.models import (
+    DataSource,
+    RawDataObservation,
+    RawDataParseAttempt,
+    RawDataRecord,
+    SyncRun,
+)
 from audit.services import (
     InvalidSyncRunTransition,
     mark_sync_run_failed,
@@ -21,8 +27,16 @@ from audit.services import (
     record_raw_data_observation,
     update_sync_run_counts,
 )
-from earnings.calendar_parsing import FixtureEarningsCalendarParser
-from earnings.models import EarningsEvent, EarningsReconciliationDecision
+from earnings.calendar_parsing import (
+    EarningsCalendarParseResult,
+    EarningsCalendarPayloadError,
+    FixtureEarningsCalendarParser,
+)
+from earnings.models import (
+    EarningsCalendarObservation,
+    EarningsEvent,
+    EarningsReconciliationDecision,
+)
 from earnings.services import (
     EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
     EarningsCalendarExecutionResult,
@@ -259,6 +273,37 @@ def test_different_source_or_job_type_can_acquire_in_parallel(different_job: boo
 
 
 @pytest.mark.django_db(transaction=True)
+def test_session_lock_survives_rollback_and_releases_after_exception() -> None:
+    source = _calendar_source("rollback-lock")
+    results: list[object] = []
+
+    with calendar_run_ownership(source_id=source.pk, job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE):
+        with pytest.raises(RuntimeError, match="fixture rollback"):
+            with transaction.atomic():
+                raise RuntimeError("fixture rollback")
+        contender = threading.Thread(
+            target=_in_thread,
+            args=(
+                lambda: _try_own_calendar_run(source),
+                results,
+            ),
+        )
+        contender.start()
+        contender.join(timeout=10)
+        assert not contender.is_alive()
+        assert len(results) == 1
+        assert isinstance(results[0], EarningsCalendarRunBusy)
+
+    with calendar_run_ownership(source_id=source.pk, job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE):
+        pass
+
+
+def _try_own_calendar_run(source: DataSource) -> None:
+    with calendar_run_ownership(source_id=source.pk, job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE):
+        pass
+
+
+@pytest.mark.django_db(transaction=True)
 def test_succeeded_scheduled_key_reuses_run_without_fetch() -> None:
     source = _calendar_source("completed-key")
     first = _execute_scheduled(source, FixturePageSource({None: _terminal_page()}))
@@ -272,6 +317,18 @@ def test_succeeded_scheduled_key_reuses_run_without_fetch() -> None:
     assert second.window_result is None
     assert unused_source.calls == []
     assert SyncRun.objects.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_provider_failure_releases_run_ownership() -> None:
+    source = _calendar_source("provider-error-release")
+
+    with pytest.raises(EarningsCalendarWindowFailure):
+        _execute_scheduled(source, FixturePageSource({}))
+
+    assert SyncRun.objects.get().status == SyncRun.Status.FAILED
+    with calendar_run_ownership(source_id=source.pk, job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE):
+        pass
 
 
 @pytest.mark.django_db(transaction=True)
@@ -348,6 +405,8 @@ def test_stale_run_with_count_exceeding_raw_facts_requires_manual_review() -> No
     assert old.status == SyncRun.Status.RUNNING
     assert old.fetched_count == 1
     assert SyncRun.objects.count() == 1
+    with calendar_run_ownership(source_id=source.pk, job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE):
+        pass
 
 
 @pytest.mark.django_db(transaction=True)
@@ -465,6 +524,77 @@ def test_lost_database_session_does_not_finalize_run() -> None:
     assert unchanged.status == SyncRun.Status.RUNNING
     assert unchanged.fetched_count == 0
     assert RawDataObservation.objects.filter(sync_run=sync_run).count() == 0
+    with calendar_run_ownership(source_id=source.pk, job_type=EARNINGS_CALENDAR_WINDOW_JOB_TYPE):
+        pass
+
+
+@pytest.mark.django_db(transaction=True)
+def test_parser_connection_loss_stops_normalized_persistence() -> None:
+    source = _calendar_source("parser-lost-session")
+    sync_run = _window_run(source, "parser-lost-session")
+    page = _page(
+        cursor=None,
+        payload=_fixture_bytes("complete_payload.json"),
+        next_cursor=None,
+        is_terminal=True,
+    )
+
+    class ClosingParser(FixtureEarningsCalendarParser):
+        def parse(
+            self,
+            raw_content: bytes,
+            *,
+            provider_key: str,
+            provider_version: str,
+        ) -> EarningsCalendarParseResult:
+            result = super().parse(
+                raw_content, provider_key=provider_key, provider_version=provider_version
+            )
+            connection.close()
+            return result
+
+    with pytest.raises(EarningsCalendarRunOwnershipLost):
+        run_earnings_calendar_window(
+            sync_run=sync_run,
+            page_source=FixturePageSource({None: page}),
+            parser=ClosingParser(),
+            provider_key=PROVIDER_KEY,
+            provider_version=PROVIDER_VERSION,
+        )
+
+    assert EarningsCalendarObservation.objects.count() == 0
+    assert SyncRun.objects.get(pk=sync_run.pk).status == SyncRun.Status.RUNNING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_parser_failure_after_connection_loss_does_not_write_parse_attempt() -> None:
+    source = _calendar_source("parser-error-lost-session")
+    sync_run = _window_run(source, "parser-error-lost-session")
+    page = _terminal_page()
+
+    class FailingClosingParser(FixtureEarningsCalendarParser):
+        def parse(
+            self,
+            raw_content: bytes,
+            *,
+            provider_key: str,
+            provider_version: str,
+        ) -> EarningsCalendarParseResult:
+            connection.close()
+            raise EarningsCalendarPayloadError("fixture parse failure")
+
+    with pytest.raises(EarningsCalendarRunOwnershipLost):
+        run_earnings_calendar_window(
+            sync_run=sync_run,
+            page_source=FixturePageSource({None: page}),
+            parser=FailingClosingParser(),
+            provider_key=PROVIDER_KEY,
+            provider_version=PROVIDER_VERSION,
+        )
+
+    assert RawDataObservation.objects.filter(sync_run=sync_run).count() == 1
+    assert RawDataParseAttempt.objects.count() == 0
+    assert SyncRun.objects.get(pk=sync_run.pk).status == SyncRun.Status.RUNNING
 
 
 @pytest.mark.django_db(transaction=True)

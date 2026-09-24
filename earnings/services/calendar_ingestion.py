@@ -129,6 +129,7 @@ def ingest_earnings_calendar_payload(
     encoding: str = "utf-8",
     request_descriptor: ProviderRequestContextDescriptor | None = None,
     on_raw_persisted: Callable[[], None] | None = None,
+    verify_run_ownership: Callable[[], None] | None = None,
 ) -> EarningsCalendarIngestionResult:
     """Persist raw lineage, parse one payload, and materialize observations.
 
@@ -137,6 +138,8 @@ def ingest_earnings_calendar_payload(
     scope/idempotency.  ``on_raw_persisted`` is invoked after raw lineage is
     committed and before the parser runs, so callers can record page-level
     counts without exposing raw-data internals.
+    ``verify_run_ownership`` lets the window owner fail closed after parser code
+    and before any later persistence if its database session was replaced.
     """
 
     context = _validate_ingestion_context(
@@ -146,6 +149,7 @@ def ingest_earnings_calendar_payload(
         provider_key=provider_key,
         provider_version=provider_version,
         on_raw_persisted=on_raw_persisted,
+        verify_run_ownership=verify_run_ownership,
     )
 
     ingest_result = record_raw_data_observation(
@@ -174,6 +178,8 @@ def ingest_earnings_calendar_payload(
             provider_version=context.provider_version,
         )
     except UnsupportedEarningsCalendarIdentityError as error:
+        if verify_run_ownership is not None:
+            verify_run_ownership()
         failure_write = _record_unsupported_identity(
             context=context,
             raw_record=raw_record,
@@ -187,6 +193,8 @@ def ingest_earnings_calendar_payload(
             parse_attempt=failure_write.parse_attempt,
         ) from None
     except EarningsCalendarParserContextError as error:
+        if verify_run_ownership is not None:
+            verify_run_ownership()
         message = _safe_reason(error, default="Earnings calendar parser context is invalid.")
         failure_write = _record_system_failure(
             context=context,
@@ -201,6 +209,8 @@ def ingest_earnings_calendar_payload(
             parse_attempt=failure_write.parse_attempt,
         ) from None
     except EarningsCalendarPayloadError as error:
+        if verify_run_ownership is not None:
+            verify_run_ownership()
         message = _safe_reason(error, default="Earnings calendar payload is malformed.")
         failure_write = _record_payload_failure(
             context=context,
@@ -215,6 +225,8 @@ def ingest_earnings_calendar_payload(
             parse_attempt=failure_write.parse_attempt,
         ) from None
     except Exception as error:
+        if verify_run_ownership is not None:
+            verify_run_ownership()
         message = f"Unexpected earnings calendar parser error ({type(error).__name__})."
         failure_write = _record_system_failure(
             context=context,
@@ -229,9 +241,14 @@ def ingest_earnings_calendar_payload(
             parse_attempt=failure_write.parse_attempt,
         ) from None
 
+    if verify_run_ownership is not None:
+        verify_run_ownership()
+
     try:
         _validate_parse_result(parse_result=parse_result, context=context)
     except EarningsCalendarIngestionIntegrityError as error:
+        if verify_run_ownership is not None:
+            verify_run_ownership()
         failure_write = _record_system_failure(
             context=context,
             raw_record=raw_record,
@@ -245,6 +262,8 @@ def ingest_earnings_calendar_payload(
             parse_attempt=failure_write.parse_attempt,
         ) from None
 
+    if verify_run_ownership is not None:
+        verify_run_ownership()
     updated_record = mark_raw_data_parsed(
         raw_record.pk,
         parser_version=context.parser_version,
@@ -254,6 +273,8 @@ def ingest_earnings_calendar_payload(
         raw_observation=raw_observation,
         parser_version=context.parser_version,
     )
+    if verify_run_ownership is not None:
+        verify_run_ownership()
     observations, observations_created, observations_reused = _persist_observations(
         context=context,
         raw_record=raw_record,
@@ -283,6 +304,7 @@ def _validate_ingestion_context(
     provider_key: str,
     provider_version: str,
     on_raw_persisted: Callable[[], None] | None,
+    verify_run_ownership: Callable[[], None] | None,
 ) -> _IngestionContext:
     if sync_run._state.adding or sync_run.pk is None:
         raise InvalidEarningsCalendarIngestion("sync_run must be saved before use.")
@@ -302,6 +324,8 @@ def _validate_ingestion_context(
         raise InvalidEarningsCalendarIngestion("parser must implement EarningsCalendarParser.")
     if on_raw_persisted is not None and not callable(on_raw_persisted):
         raise InvalidEarningsCalendarIngestion("on_raw_persisted must be callable or None.")
+    if verify_run_ownership is not None and not callable(verify_run_ownership):
+        raise InvalidEarningsCalendarIngestion("verify_run_ownership must be callable or None.")
 
     normalized_provider_key = _require_text(
         provider_key,
