@@ -783,6 +783,15 @@ def test_same_execution_reuses_decision_candidate_and_revision() -> None:
     assert EarningsEvent.objects.count() == 1
     assert EarningsReconciliationDecision.objects.count() == 1
     assert SourceEvidence.objects.count() == 1
+    assert (
+        AuditRecord.objects.filter(
+            sync_run=scenario.run,
+            target_type=AuditRecord.TargetType.EARNINGS_EVENT,
+            target_id=first.candidate.pk,
+            action=AuditRecord.Action.CREATE,
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db
@@ -848,8 +857,29 @@ def test_matching_input_revision_is_order_independent_and_version_sensitive() ->
         listing_matches=facts.listing_matches,
         matcher_version="earnings-company-match-v2",
     )
+    semantically_identical_snapshot = MonitoringPoolSnapshot(
+        id=uuid.uuid4(),
+        as_of_date=facts.snapshot.as_of_date,
+        selector_version=facts.snapshot.selector_version,
+        enabled_index_codes=list(facts.snapshot.enabled_index_codes),
+        input_revision=facts.snapshot.input_revision,
+        pool_hash=facts.snapshot.pool_hash,
+        member_count=facts.snapshot.member_count,
+    )
+    different_pk_revision = candidate_matching_module._build_matching_input_revision(
+        sync_run=run,
+        observation=observation,
+        snapshot=semantically_identical_snapshot,
+        hints=facts.hints,
+        pool_companies=facts.pool_companies,
+        pool_listings=facts.pool_listings,
+        cik_companies=facts.cik_companies,
+        listing_matches=facts.listing_matches,
+        matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
+    )
 
     assert facts.matching_input_revision == reversed_revision
+    assert facts.matching_input_revision == different_pk_revision
     assert next_version_revision != facts.matching_input_revision
 
 

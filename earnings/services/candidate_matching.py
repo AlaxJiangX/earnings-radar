@@ -500,7 +500,6 @@ def _build_matching_input_revision(
             "exchange": hints.exchange,
         },
         "snapshot": {
-            "id": str(snapshot.pk),
             "as_of": snapshot.as_of_date.isoformat(),
             "selector_version": snapshot.selector_version,
             "pool_hash": snapshot.pool_hash,
