@@ -420,7 +420,10 @@ RUNNING run 兼容性已实现并通过 verification。4.2C-5 ✅ COMPLETE：Pos
 运行所有权、同源同任务的重叠及不重叠窗口串行、stale RUNNING 恢复、failed / partial 新
 SyncRun 重试并从窗口起点重新抓取、原 pool hash 校验、确定性 page request identity 与真实
 PostgreSQL 并发回归测试；retry 不复活旧运行，失去所有权后停止后续写入。真正的 offline
-replay 仍需独立契约，4.2C 整体保持 IN PROGRESS，4.2D 未开始。验收标准：普通 CI 无真实网络；同一 fixture 连续处理两次不新增 observation /
+replay 实现仍受契约接受与 foundation gate 阻塞。4.2C-6 Replay Planning Gate 已完成为文档审计：
+`docs/decisions/ADR-011-earnings-calendar-offline-replay.md` 给出正式 Contract，结论为
+BLOCKED；在 replay lineage、独立 replay 计数和 monitoring-pool selector/hash 决策与能力
+落地前，不得实现 offline replay。4.2C 整体保持 IN PROGRESS，4.2D 未开始。验收标准：普通 CI 无真实网络；同一 fixture 连续处理两次不新增 observation /
 decision / domain row；partial pagination 不宣称完成且不写 domain；缺失 provider ID 不创建
 observation / candidate。
 
