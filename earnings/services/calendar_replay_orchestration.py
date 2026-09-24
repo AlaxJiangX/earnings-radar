@@ -26,9 +26,9 @@ from audit.services import (
     mark_sync_run_partial,
     mark_sync_run_succeeded,
     record_raw_data_parse_attempt,
-    record_replay_raw_data_observation,
     update_sync_run_counts,
 )
+from audit.services.raw_data import record_replay_raw_data_observation
 from earnings.calendar_parsing import (
     EarningsCalendarParser,
     EarningsCalendarParserContextError,

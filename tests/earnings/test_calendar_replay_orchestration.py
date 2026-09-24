@@ -22,11 +22,11 @@ from audit.services import (
     mark_sync_run_partial,
     mark_sync_run_succeeded,
     record_raw_data_parse_attempt,
-    record_replay_raw_data_observation,
     start_sync_run,
     start_sync_run_with_result,
     update_sync_run_counts,
 )
+from audit.services.raw_data import record_replay_raw_data_observation
 from earnings.calendar_parsing import (
     EarningsCalendarParseResult,
     FixtureEarningsCalendarParser,
@@ -48,12 +48,12 @@ from earnings.services import (
     execute_earnings_calendar_offline_replay,
     execute_scheduled_earnings_calendar_window,
     ingest_earnings_calendar_payload,
-    persist_earnings_calendar_parse_result,
     reconcile_earnings_calendar_replayed_count,
     start_earnings_calendar_replay_sync_run,
 )
 from earnings.services import calendar_replay_orchestration as replay_orchestration
 from earnings.services.calendar import EarningsCalendarObservationIntegrityError
+from earnings.services.calendar_ingestion import persist_earnings_calendar_parse_result
 from tests.earnings.test_calendar_pagination import (
     FETCHED_AT,
     PROVIDER_KEY,
@@ -299,6 +299,25 @@ def test_offline_replay_parser_failure_is_partial_without_normalized_rows() -> N
     replay_observation = RawDataObservation.objects.get(sync_run=result.sync_run)
     replay_attempt = RawDataParseAttempt.objects.get(observation=replay_observation)
     assert replay_attempt.status == RawDataParseAttempt.Status.DATA_ERROR
+
+
+@pytest.mark.django_db(transaction=True)
+def test_replay_of_partial_source_remains_partial_after_successful_evidence_replay() -> None:
+    source, source_run = _source_run_with_payloads(
+        (_fixture_bytes("complete_payload.json"),),
+        status=SyncRun.Status.PARTIAL,
+    )
+
+    result = execute_earnings_calendar_offline_replay(
+        source=source,
+        source_sync_run=source_run,
+        parser=FixtureEarningsCalendarParser(),
+    )
+
+    assert result.sync_run.status == SyncRun.Status.PARTIAL
+    assert result.parse_failures == 0
+    assert result.sync_run.replayed_count == 1
+    assert result.sync_run.fetched_count == 0
 
 
 @pytest.mark.django_db(transaction=True)
@@ -690,3 +709,50 @@ def test_scheduled_ingestion_rejects_fresh_running_replay_run() -> None:
 
     assert page_source.calls == []
     assert SyncRun.objects.get(pk=replay.pk).status == SyncRun.Status.RUNNING
+
+
+@pytest.mark.django_db(transaction=True)
+def test_scheduled_stale_gate_terminalizes_replay_with_replay_semantics() -> None:
+    source, source_run = _source_run_with_payloads((_fixture_bytes("complete_payload.json"),))
+    replay = start_earnings_calendar_replay_sync_run(
+        source=source,
+        source_sync_run=source_run,
+        parser_version=FixtureEarningsCalendarParser.parser_version,
+        started_at=timezone.now() - timedelta(hours=2),
+    ).sync_run
+    source_observation = RawDataObservation.objects.get(sync_run=source_run)
+    record_replay_raw_data_observation(
+        sync_run=replay,
+        raw_data_record=source_observation.raw_data_record,
+    )
+    page_source = FixturePageSource(
+        {
+            None: _page(
+                cursor=None,
+                payload=_fixture_bytes("empty_payload.json"),
+                next_cursor=None,
+                is_terminal=True,
+            )
+        }
+    )
+
+    scheduled = execute_scheduled_earnings_calendar_window(
+        source=source,
+        page_source=page_source,
+        parser=FixtureEarningsCalendarParser(),
+        provider_key=PROVIDER_KEY,
+        provider_version=PROVIDER_VERSION,
+        window_start=WINDOW_START,
+        window_end=WINDOW_END,
+        monitoring_pool_as_of=POOL_AS_OF,
+        monitoring_pool_hash=POOL_HASH,
+        selector_version=SELECTOR_VERSION,
+        schedule_bucket=SCHEDULE_BUCKET,
+    )
+
+    replay.refresh_from_db()
+    assert replay.status == SyncRun.Status.PARTIAL
+    assert replay.fetched_count == 0
+    assert replay.replayed_count == 1
+    assert replay.failed_count == 1
+    assert scheduled.sync_run.status == SyncRun.Status.SUCCEEDED

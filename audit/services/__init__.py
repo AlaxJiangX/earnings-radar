@@ -18,7 +18,6 @@ from audit.services.raw_data import (
     PayloadTooLarge,
     RawDataIngestResult,
     RawDataIntegrityError,
-    RawDataObservationReferenceResult,
     RawDataParseIntegrityError,
     RawDataParseWriteResult,
     build_request_fingerprint,
@@ -28,7 +27,6 @@ from audit.services.raw_data import (
     mark_raw_data_unsupported,
     record_raw_data_observation,
     record_raw_data_parse_attempt,
-    record_replay_raw_data_observation,
 )
 from audit.services.source_evidence import (
     InvalidEvidenceReference,
@@ -72,7 +70,6 @@ __all__ = [
     "PayloadTooLarge",
     "RawDataIngestResult",
     "RawDataIntegrityError",
-    "RawDataObservationReferenceResult",
     "RawDataParseIntegrityError",
     "RawDataParseWriteResult",
     "SensitiveAuditRecordValue",
@@ -93,7 +90,6 @@ __all__ = [
     "mark_sync_run_succeeded",
     "record_raw_data_parse_attempt",
     "record_raw_data_observation",
-    "record_replay_raw_data_observation",
     "record_data_change",
     "record_source_evidence",
     "resolve_source_evidence_reference",
