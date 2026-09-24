@@ -399,7 +399,7 @@ Selector 使用 `effective_from <= as_of < effective_to`，按 Company 去重。
 相同 member order、input revision 和 pool hash。Late-arriving correction 可以形成新的
 snapshot revision，但不能覆盖既有 run fact。
 
-### 6.6 Earnings Candidate / Company Matching（4.2D-2 已实现，待 independent pre-merge review）
+### 6.6 Earnings Candidate / Company Matching（4.2D-2 已实现并 merge）
 
 > ADR-013 已冻结 4.2D-2 matching contract；本轮已实现 core service 与 persistence flow。
 
