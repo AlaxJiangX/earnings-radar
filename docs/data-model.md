@@ -394,6 +394,38 @@ Selector 使用 `effective_from <= as_of < effective_to`，按 Company 去重。
 相同 member order、input revision 和 pool hash。Late-arriving correction 可以形成新的
 snapshot revision，但不能覆盖既有 run fact。
 
+### 6.6 Earnings Candidate / Company Matching（4.2D-2 planned）
+
+> ADR-013 已冻结 4.2D-2 matching contract；以下行为尚未实现，不代表 current fact。
+
+Candidate 复用现有 `EarningsEvent` row，不新增 `EarningsCandidate` 表：
+
+```text
+EarningsEvent(identity_status=candidate)
+```
+
+Matching 只在 frozen `MonitoringPoolSnapshot.members` 的 Company 范围内进行，匹配日期固定为
+`monitoring_pool_as_of`。V1 只允许 exact CIK 或 exact ticker + canonical exchange。
+`provider_symbol` 与 company name 只作 evidence，不参与自动匹配，不使用 fuzzy matching。
+Snapshot member basis 授权 Company；listing evidence 可以使用该 Company 在 as-of 有效的
+SecurityListing，但不会扩大 Company pool。
+
+匹配结果使用现有 append-only `EarningsReconciliationDecision`：
+
+- `MATCHED` -> `created_candidate` / `resolved` / target candidate；
+- `UNMATCHED` -> `no_match` / `rejected` / no candidate；
+- `AMBIGUOUS` -> `review_required` / `open` / no candidate；
+- `OUT_OF_POOL` -> `ignored` / `rejected` / no candidate。
+
+`match_factors.company_match` 保存 matcher version、matching input revision、snapshot
+identity、规范化的 matching hints、匹配策略、matching date 和 SecurityListing evidence。
+`match_execution_key` 用于所有 matching outcome；`match_result_key` 用于 append-only
+decision identity；只有 `MATCHED` 才由 observation、snapshot semantic identity、matcher
+version、matching input revision、matched Company 和 listing evidence 派生 deterministic
+candidate identity。非匹配结果没有 Candidate UUID。
+
+该规划不新增 schema、不创建 migration、不改变 MonitoringPoolSnapshot 或 EarningsEvent 字段。
+
 ## 7. SEC 文件
 
 ### 7.1 `Filing`
