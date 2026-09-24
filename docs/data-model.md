@@ -394,9 +394,9 @@ Selector 使用 `effective_from <= as_of < effective_to`，按 Company 去重。
 相同 member order、input revision 和 pool hash。Late-arriving correction 可以形成新的
 snapshot revision，但不能覆盖既有 run fact。
 
-### 6.6 Earnings Candidate / Company Matching（4.2D-2 planned）
+### 6.6 Earnings Candidate / Company Matching（4.2D-2 已实现，待 independent pre-merge review）
 
-> ADR-013 已冻结 4.2D-2 matching contract；以下行为尚未实现，不代表 current fact。
+> ADR-013 已冻结 4.2D-2 matching contract；本轮已实现 core service 与 persistence flow。
 
 Candidate 复用现有 `EarningsEvent` row，不新增 `EarningsCandidate` 表：
 
@@ -424,7 +424,12 @@ decision identity；只有 `MATCHED` 才由 observation、snapshot semantic iden
 version、matching input revision、matched Company 和 listing evidence 派生 deterministic
 candidate identity。非匹配结果没有 Candidate UUID。
 
-该规划不新增 schema、不创建 migration、不改变 MonitoringPoolSnapshot 或 EarningsEvent 字段。
+实现入口为 `create_earnings_candidate_for_observation(...)`。它从 persisted SyncRun scope
+解析 frozen snapshot，不重新运行 selector；使用现有 `(source, job_type)` ownership 执行短
+transaction，并通过既有 schedule service 写入 observation 中存在的 release/session facts。
+pagination completion 到 run finalization 的 lifecycle integration 仍待后续编排接入。
+
+该实现不新增 schema、不创建 migration、不改变 MonitoringPoolSnapshot 或 EarningsEvent 字段。
 
 ## 7. SEC 文件
 
@@ -791,6 +796,12 @@ ADR-012 进一步冻结 4.2D selector：canonical unit 为 Company；Stage 4.2 u
 explicit enabled index policy 的 as-of normative IndexMembership；历史结果采用 Hybrid
 snapshot；retry/replay 不重选。4.2D-1 已实现 snapshot schema、selector core、canonical
 input revision、pool hash 与并发幂等；scheduled command integration 尚未实现。
+
+ADR-013 进一步冻结 4.2D-2 matching：只允许 exact CIK 或 exact ticker + canonical
+exchange，matching date 固定为 frozen snapshot as-of；MATCHED 创建 candidate，其他结果只写
+append-only decision。4.2D-2 core 已实现 deterministic revision、decision/candidate
+identity、SourceEvidence/AuditRecord 和 replay/correction 幂等；run lifecycle integration
+仍待 caller 在 normalization 完整后、terminal finalization 前调用。
 
 以下数据决策仍待确认：
 
