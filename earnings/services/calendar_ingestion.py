@@ -245,7 +245,12 @@ def ingest_earnings_calendar_payload(
         verify_run_ownership()
 
     try:
-        _validate_parse_result(parse_result=parse_result, context=context)
+        validate_earnings_calendar_parse_result(
+            parse_result=parse_result,
+            provider_key=context.provider_key,
+            provider_version=context.provider_version,
+            parser_version=context.parser_version,
+        )
     except EarningsCalendarIngestionIntegrityError as error:
         if verify_run_ownership is not None:
             verify_run_ownership()
@@ -275,10 +280,15 @@ def ingest_earnings_calendar_payload(
     )
     if verify_run_ownership is not None:
         verify_run_ownership()
-    observations, observations_created, observations_reused = _persist_observations(
-        context=context,
-        raw_record=raw_record,
-        parse_result=parse_result,
+    observations, observations_created, observations_reused = (
+        persist_earnings_calendar_parse_result(
+            source=context.sync_run.source,
+            provider_key=context.provider_key,
+            provider_version=context.provider_version,
+            parser_version=context.parser_version,
+            raw_record=raw_record,
+            parse_result=parse_result,
+        )
     )
     return EarningsCalendarIngestionResult(
         sync_run=context.sync_run,
@@ -358,10 +368,12 @@ def _validate_ingestion_context(
     )
 
 
-def _validate_parse_result(
+def validate_earnings_calendar_parse_result(
     *,
     parse_result: EarningsCalendarParseResult,
-    context: _IngestionContext,
+    provider_key: str,
+    provider_version: str,
+    parser_version: str,
 ) -> None:
     if not isinstance(parse_result, EarningsCalendarParseResult):
         raise EarningsCalendarIngestionIntegrityError(
@@ -369,15 +381,15 @@ def _validate_parse_result(
         )
     if not isinstance(parse_result.records, tuple):
         raise EarningsCalendarIngestionIntegrityError("Parser result records must be a tuple.")
-    if parse_result.provider_key != context.provider_key:
+    if parse_result.provider_key != provider_key:
         raise EarningsCalendarIngestionIntegrityError(
             "Parser result provider_key does not match the ingestion context."
         )
-    if parse_result.provider_version != context.provider_version:
+    if parse_result.provider_version != provider_version:
         raise EarningsCalendarIngestionIntegrityError(
             "Parser result provider_version does not match the ingestion context."
         )
-    if parse_result.parser_version != context.parser_version:
+    if parse_result.parser_version != parser_version:
         raise EarningsCalendarIngestionIntegrityError(
             "Parser result parser_version does not match the parser identity."
         )
@@ -389,7 +401,7 @@ def _validate_parse_result(
             raise EarningsCalendarIngestionIntegrityError(
                 "Parser result contains an invalid normalized record."
             )
-        if record.parser_version != context.parser_version:
+        if record.parser_version != parser_version:
             raise EarningsCalendarIngestionIntegrityError(
                 "Normalized record parser_version does not match the parser identity."
             )
@@ -499,9 +511,12 @@ def _load_parse_attempt(
         ) from error
 
 
-def _persist_observations(
+def persist_earnings_calendar_parse_result(
     *,
-    context: _IngestionContext,
+    source: DataSource,
+    provider_key: str,
+    provider_version: str,
+    parser_version: str,
     raw_record: RawDataRecord,
     parse_result: EarningsCalendarParseResult,
 ) -> tuple[tuple[EarningsCalendarObservation, ...], int, int]:
@@ -510,11 +525,11 @@ def _persist_observations(
     reused_count = 0
     for record in parse_result.records:
         write_result = record_earnings_calendar_observation(
-            source=context.sync_run.source,
+            source=source,
             raw_data_record=raw_record,
-            provider_key=context.provider_key,
-            provider_version=context.provider_version,
-            parser_version=context.parser_version,
+            provider_key=provider_key,
+            provider_version=provider_version,
+            parser_version=parser_version,
             provider_event_id=record.provider_event_id,
             raw_position=record.raw_position,
             cik=record.cik,

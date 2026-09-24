@@ -163,34 +163,8 @@ def build_earnings_calendar_replay_input_digest(
         "replay_contract_version",
         maximum=100,
     )
-    evidence_queryset = RawDataObservation.objects.select_related("raw_data_record").filter(
-        sync_run_id=source_run.pk
-    )
-    persisted_ids = set(evidence_queryset.values_list("pk", flat=True))
-    if observations is None:
-        evidence = list(evidence_queryset)
-    else:
-        requested_ids = [
-            _saved_uuid(observation, value_name="observations") for observation in observations
-        ]
-        if len(requested_ids) != len(set(requested_ids)):
-            raise InvalidEarningsCalendarReplay("Replay observations must be unique.")
-        if set(requested_ids) != persisted_ids:
-            raise InvalidEarningsCalendarReplay(
-                "Replay digest must cover every persisted source observation."
-            )
-        evidence = list(evidence_queryset.filter(pk__in=requested_ids))
+    evidence = _load_ordered_evidence(source_run, observations=observations)
     evidence_items = [_build_evidence_item(source_run, observation) for observation in evidence]
-    # RawDataRecord's UUID is row identity; the DB-unique request/content pair is the
-    # stable evidence identity used by replay.
-    evidence_items.sort(
-        key=lambda item: (
-            cast(str, item["request_fingerprint"]),
-            cast(str, item["content_hash"]),
-            cast(str, item["source_url"]),
-            cast(int, item["payload_size_bytes"]),
-        )
-    )
     identity = {
         "contract_version": normalized_contract_version,
         "parser_version": normalized_parser_version,
@@ -205,6 +179,23 @@ def build_earnings_calendar_replay_input_digest(
         raise InvalidEarningsCalendarReplay(str(error)) from None
     serialized = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(serialized.encode("ascii")).hexdigest()
+
+
+def load_earnings_calendar_replay_evidence(
+    *,
+    source_sync_run: SyncRun | uuid.UUID,
+) -> tuple[RawDataObservation, ...]:
+    """Load the canonical, hash-validated raw evidence manifest for replay."""
+
+    source_run = _load_sync_run(source_sync_run)
+    _require_ingestion_source(source_run)
+    _validate_earnings_calendar_scope(source_run.scope, allow_replay=False)
+    _require_provider_version(source_run)
+    _validate_source_observations(source_run)
+    evidence = _load_ordered_evidence(source_run)
+    for observation in evidence:
+        _build_evidence_item(source_run, observation)
+    return evidence
 
 
 def build_earnings_calendar_replay_idempotency_key(
@@ -267,6 +258,7 @@ def start_earnings_calendar_replay_sync_run(
     selector_version: str | None = None,
     code_version: str = "",
     started_at: datetime | None = None,
+    resume_stale_before: datetime | None = None,
 ) -> EarningsCalendarReplayStartResult:
     """Create or reuse a lineage-linked replay run; no provider or parser work is performed."""
 
@@ -274,6 +266,8 @@ def start_earnings_calendar_replay_sync_run(
         source_sync_run=source_sync_run,
         source=source,
     )
+    if resume_stale_before is not None and timezone.is_naive(resume_stale_before):
+        raise InvalidEarningsCalendarReplay("resume_stale_before must be timezone-aware.")
     source_scope = _validate_earnings_calendar_scope(source_run.scope, allow_replay=False)
     if monitoring_pool_as_of is None:
         monitoring_pool_as_of = date.fromisoformat(cast(str, source_scope["monitoring_pool_as_of"]))
@@ -345,7 +339,9 @@ def start_earnings_calendar_replay_sync_run(
                 replay_contract_version=normalized_contract_version,
                 replay_input_digest=digest,
             )
-            if result.sync_run.status == SyncRun.Status.RUNNING:
+            if result.sync_run.status == SyncRun.Status.RUNNING and (
+                resume_stale_before is None or result.sync_run.heartbeat_at > resume_stale_before
+            ):
                 raise EarningsCalendarRunBusy("This offline replay identity is already running.")
     return EarningsCalendarReplayStartResult(
         sync_run=result.sync_run,
@@ -502,6 +498,39 @@ def _validate_source_observations(source_run: SyncRun) -> None:
         raise InvalidEarningsCalendarReplay(
             "A successful source run requires persisted raw evidence."
         )
+
+
+def _load_ordered_evidence(
+    source_run: SyncRun,
+    *,
+    observations: Iterable[RawDataObservation] | None = None,
+) -> tuple[RawDataObservation, ...]:
+    evidence_queryset = RawDataObservation.objects.select_related("raw_data_record").filter(
+        sync_run_id=source_run.pk
+    )
+    persisted_ids = set(evidence_queryset.values_list("pk", flat=True))
+    if observations is None:
+        evidence = list(evidence_queryset)
+    else:
+        requested_ids = [
+            _saved_uuid(observation, value_name="observations") for observation in observations
+        ]
+        if len(requested_ids) != len(set(requested_ids)):
+            raise InvalidEarningsCalendarReplay("Replay observations must be unique.")
+        if set(requested_ids) != persisted_ids:
+            raise InvalidEarningsCalendarReplay(
+                "Replay digest must cover every persisted source observation."
+            )
+        evidence = list(evidence_queryset.filter(pk__in=requested_ids))
+    evidence.sort(
+        key=lambda observation: (
+            observation.raw_data_record.request_fingerprint,
+            observation.raw_data_record.content_hash,
+            observation.raw_data_record.source_url,
+            observation.raw_data_record.payload_size_bytes,
+        )
+    )
+    return tuple(evidence)
 
 
 def _build_evidence_item(source_run: SyncRun, observation: RawDataObservation) -> dict[str, object]:
