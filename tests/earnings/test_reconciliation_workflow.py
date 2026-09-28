@@ -21,6 +21,7 @@ from earnings.models import (
     FiscalCalendarType,
     IdentityStatus,
 )
+from earnings.services.date_changes import update_earnings_schedule
 from earnings.services.promotion import EarningsPromotionCollision
 from earnings.services.reconciliation import record_earnings_reconciliation_decision
 from earnings.services.reconciliation_workflow import (
@@ -332,6 +333,72 @@ class TestAutomaticReconciliation:
             "canonical_collision_event_id"
         ] == str(existing_canonical_id)
         assert candidate.identity_status == IdentityStatus.CANDIDATE
+
+    def test_open_review_requires_manual_resolution_before_automation_continues(self) -> None:
+        company = make_company("open-review-block")
+        first, observation, _lineage = _candidate(
+            "open-review-block-a",
+            company=company,
+            estimated_release_date=date(2026, 4, 22),
+        )
+        second, _second_observation, _ = _candidate(
+            "open-review-block-b",
+            company=company,
+            estimated_release_date=date(2026, 4, 23),
+        )
+
+        opened = reconcile_earnings_candidate(
+            earnings_event=first,
+            sync_run=make_sync_run("open-review-block-open"),
+        )
+        assert opened.outcome is EarningsReconciliationOutcome.REVIEW_REQUIRED
+        assert opened.decision.status == "open"
+
+        update_earnings_schedule(
+            earnings_event=second,
+            changes={"estimated_release": date(2026, 4, 22)},
+            sync_run=make_sync_run("open-review-block-fix"),
+        )
+
+        blocked = reconcile_earnings_candidate(
+            earnings_event=first,
+            sync_run=make_sync_run("open-review-block-blocked"),
+        )
+
+        assert blocked.outcome is EarningsReconciliationOutcome.REVIEW_REQUIRED
+        assert blocked.decision.decision_type == "review_required"
+        assert blocked.decision.status == "open"
+        assert blocked.decision.target_event_id is None
+        assert blocked.decision.supersedes_id == opened.decision.pk
+        assert blocked.conflict_codes == ("OPEN_REVIEW",)
+        assert blocked.promoted is False
+        first.refresh_from_db()
+        assert first.identity_status == IdentityStatus.CANDIDATE
+
+        replay = reconcile_earnings_candidate(
+            earnings_event=first,
+            sync_run=make_sync_run("open-review-block-replay"),
+        )
+        assert replay.decision.pk == blocked.decision.pk
+        assert replay.decision_created is False
+
+        actor = make_user("open-review-block")
+        resolved = resolve_earnings_reconciliation_manually(
+            observation=observation,
+            decision_type="matched_candidate",
+            target_event=second,
+            actor_user=actor,
+            reason="Manual review binds the two observations to one exact event.",
+            request_id="open-review-block-manual",
+        )
+        assert resolved.decision.supersedes_id == blocked.decision.pk
+
+        after_manual = reconcile_earnings_candidate(
+            earnings_event=first,
+            sync_run=make_sync_run("open-review-block-after-manual"),
+        )
+        assert after_manual.blocked_by_manual_authority is True
+        assert after_manual.decision.pk == resolved.decision.pk
 
     def test_unknown_and_known_are_compatible_and_known_fact_is_retained(self) -> None:
         company = make_company("unknown-compatible")

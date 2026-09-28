@@ -189,6 +189,53 @@ def reconcile_earnings_candidate(
                 decision=existing,
             )
 
+        # ADR-014 sections 5 and 7: an open review is cleared only by a manual
+        # resolved decision. Automation therefore cannot supersede the subject's
+        # own open review with a resolved outcome once the facts turn compatible.
+        if (
+            subject_context.effective_decision.status == "open"
+            and outcome is not EarningsReconciliationOutcome.REVIEW_REQUIRED
+        ):
+            pending_codes = (*sorted(conflict_codes), "OPEN_REVIEW")
+            pending_factors = _build_match_factors(
+                subject_context=subject_context,
+                contexts=contexts,
+                canonical=canonical,
+                outcome=EarningsReconciliationOutcome.REVIEW_REQUIRED,
+                winner=None,
+                compatibility=compatibility,
+                conflict_codes=pending_codes,
+                input_revision=input_revision,
+                execution_key=execution_key,
+            )
+            decision, created = _write_automatic_decision(
+                observation=observation,
+                sync_run=current_run,
+                decision_type="review_required",
+                status="open",
+                target_event=None,
+                match_factors=pending_factors,
+                reason=(
+                    "An open reconciliation review must be resolved by a manual "
+                    "decision before automation continues."
+                ),
+                predecessor=subject_context.effective_decision,
+                execution_key=execution_key,
+            )
+            return EarningsReconciliationResult(
+                subject=current,
+                observation=observation,
+                outcome=EarningsReconciliationOutcome.REVIEW_REQUIRED,
+                reconciliation_input_revision=input_revision,
+                reconciliation_execution_key=execution_key,
+                decision=decision,
+                winner=None,
+                candidate_ids=tuple(item.event.pk for item in contexts),
+                conflict_codes=pending_codes,
+                decision_created=created,
+                promoted=False,
+            )
+
         match_factors = _build_match_factors(
             subject_context=subject_context,
             contexts=contexts,
