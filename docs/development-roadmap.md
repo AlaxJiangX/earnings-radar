@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Planning Contract 已接受 ADR-014，implementation 尚未开始；4.2F 尚未开始，live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；4.2F 尚未开始，live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -380,7 +380,7 @@
 
 4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main。4.2C Fixture-First Earnings Calendar Ingestion & Replay 已完成：4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch、4.2C-6 replay foundation / schema ratification、4.2C-7 provider context foundation 与 offline replay orchestration implementation 均已通过 verification、CI、merge 和 merge commit 复验。
 
-#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C ✅ COMPLETE；4.2D IN PROGRESS，4.2D-1 COMPLETE；4.2D-2 COMPLETE；4.2E PLANNING COMPLETE，IMPLEMENTATION NOT STARTED）
+#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C ✅ COMPLETE；4.2D IN PROGRESS，4.2D-1 COMPLETE；4.2D-2 COMPLETE；4.2E ✅ COMPLETE）
 
 正式拆分与实现依据（ADR-010）：
 
@@ -486,12 +486,16 @@ decision 使用现有 append-only decision、actor/reason/request/covered_fields
 review_required 阻止 promotion，winner promotion 仍复用 ADR-009。Contract 不新增 schema，
 不接入 runtime orchestration。
 
-4.2E Implementation（尚未开始）交付 exact-only reconciliation service、deterministic
-reconciliation input revision / execution identity、candidate grouping、duplicate / conflict /
-review decisions、manual authority 和 promotion orchestration。验收标准：ADR-010 的
-4.2A-02 / 03 / 05 全部有测试；不实现 fuzzy auto-merge；无破坏性 merge；loser 历史完整；
-人工 decision 不被后续自动同步覆盖；review_required 可查询、可重放；并发 manual decision
-不产生无共同前驱的 decision branch；identity conflict / canonical collision fail closed。
+4.2E ✅ COMPLETE（PR #43，merge `55c36a7`，合并后定向复验通过）。已实现 exact-only
+reconciliation service、deterministic candidate grouping、`DEFINITE_DUPLICATE` /
+`NOT_DUPLICATE` / `REVIEW_REQUIRED`、completeness vector 与 UUID tie-break、append-only
+manual authority / supersession / replay 幂等、真实 PostgreSQL 并发串行化、deterministic
+reconciliation input revision / execution key、ADR-009 promotion orchestration 与 canonical
+collision fail closed。Open review 只能由新的 manual resolved decision 取代，自动化不得绕过
+subject 自身 open review；未做 destructive merge，loser / SourceEvidence / decision history
+保留。验收标准已满足：ADR-010 的 4.2A-02 / 03 / 05 均有测试；不实现 fuzzy auto-merge；
+review_required 可查询、可重放；并发 manual decision 不产生无共同前驱的 decision branch；
+identity conflict / canonical collision fail closed。
 
 4.2F 交付：license gate 通过后的 live Provider adapter 与 `earnings.calendar_window` sync
 command。验收标准：provider / license checklist 完成；普通 CI 仍不访问真实网络；受控 smoke
