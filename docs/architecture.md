@@ -169,7 +169,7 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E planning contract 已接受，implementation 未开始）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge）
 
 ADR-010 已冻结 4.2 的 provider-neutral 契约。4.2B 已实现
 `EarningsCalendarObservation`、`EarningsReconciliationDecision`、DB 约束、append-only /
@@ -200,9 +200,13 @@ matcher 不承担 Provider exchange alias mapping；candidate phase 在完整 pa
 resolution、exact CIK / ticker+exchange matching、deterministic revision/decision/candidate
 identity、append-only decision、SourceEvidence/AuditRecord 与 schedule-service integration；
 public service 在现有 run ownership 内执行，但 pagination completion 到 run finalization 的
-lifecycle integration 仍由后续编排接入。以下列表仍是 ratified contract，其中 scheduled
-entry point 仍使用 caller-supplied pool contract，candidate pre-finalize integration、
-reconciliation policy 与 live Provider 仍未实现（余下 4.2E-4.2F）：
+lifecycle integration 仍由后续编排接入。4.2E 已实现 `reconcile_earnings_candidate(...)`、
+append-only manual authority、deterministic reconciliation revision / execution identity、
+ADR-009 promotion orchestration 与 canonical collision fail closed；open review 只能由新的
+manual resolved decision 取代，自动化不得自行清除 subject open review。以下列表仍是 ratified
+contract，其中 scheduled entry point 仍使用 caller-supplied pool contract，candidate
+pre-finalize integration 与 live Provider 仍未实现（4.2E service 已完成，runtime
+orchestration 与 4.2F 仍待后续）：
 
 - 分层：`raw -> parse -> EarningsCalendarObservation -> EarningsReconciliationDecision ->
   EarningsEvent`；`provider_key + provider_event_id` 只表示 source identity，不进入 canonical
