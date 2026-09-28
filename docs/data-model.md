@@ -330,8 +330,8 @@ replay 与 reconciliation。
 ### 6.4 `EarningsReconciliationDecision`（4.2B 已实现）
 
 > 本节描述已进入 main 的 4.2B schema foundation。本表当前可由 decision persistence
-> primitive 写入；decision creation policy、matching、conflict / review 与 manual authority
-> workflow 仍属于 4.2D-4.2E。
+> primitive 写入；4.2E reconciliation / dedup / conflict / review / manual authority
+> contract 已由 ADR-014 接受，service implementation 仍待后续阶段。
 
 append-only decision history，结构化保存 review / collision / mapping / dedup / conflict 事实。
 结构化 match factors MUST NOT 被塞进 AuditRecord JSON。

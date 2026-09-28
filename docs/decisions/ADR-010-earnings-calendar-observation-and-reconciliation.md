@@ -345,7 +345,8 @@ MUST：
 
 此外：
 
-- candidate 的 fiscal metadata ONLY 来自 parser facts；缺失 MUST 保持 NULL；
+- candidate 的 fiscal metadata ONLY 来自 parser facts；缺失 source fact MUST 使用领域
+  `UNKNOWN` 表示，不得推断为具体 calendar value（后续 4.2D-2 fiscal repair 已确认该语义）；
 - candidate creation 重放 MUST 由 observation / decision 唯一键防重，MUST NOT 创建第二个
   candidate。
 
