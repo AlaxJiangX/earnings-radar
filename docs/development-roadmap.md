@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID，但 live Provider 仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync，两者仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -504,6 +504,29 @@ exact issuer + period facts 确定性生成；但仍需先重跑 Provider / Lice
 Provider 的 access、retention、display、derived data 和 replay 权利。验收标准：
 provider / license checklist 完成；普通 CI 仍不访问真实网络；受控 smoke test、超时 /
 限速 / partial / 幂等重跑与新鲜度记录通过。license gate 未完成时本阶段 BLOCKED。
+
+4.2F 已按 ADR-017 拆分为两个执行切片，避免把 reference visibility 与 canonical
+coverage 混在同一阶段：
+
+- 4.2F-A Zero Data Cost Reference Calendar：在 Mode A license 下，把 persisted raw
+  calendar payload 只读投影为 reference rows，按 frozen `MonitoringPoolSnapshot` 过滤并在
+  UI 标注 estimated / reference；不创建 observation、decision、candidate 或
+  `EarningsEvent`，不需要 schema change；provider absence 不触发删除或取消；
+- 4.2F-B Canonical Provider-Grade Live Sync：上文 live Provider adapter 与
+  `earnings.calendar_window` sync 范围，继续遵守 ADR-010 / ADR-015 的 canonical 契约。
+
+状态：4.2F-A = PLANNED / NOT STARTED（仍受 Mode A license gate 约束）；
+4.2F-B = BLOCKED / NOT STARTED（等待 canonical-grade Provider / license）。两者均未实现。
+
+两个切片都保持 license gate；详细验收标准在各自 planning gate 中定义。
+
+4.2F Focused Gate（Alpha Vantage Free）已执行，结论为 REJECTED（ADR-016）：
+`EARNINGS_CALENDAR` 只有 symbol / name / reportDate / fiscalDateEnding / estimate /
+currency / timeOfTheDay，没有 CIK、exchange 或 normalized period_type；horizon 仅有
+forward 3 / 6 / 12 months，不能覆盖默认 `past_correction_days=30`；免费 ToS 只授予
+personal, non-commercial use，且未明示 caching / persistence / derived / display /
+replay 权利。ADR-015 internal identity、窗口契约与保留契约因此均无法满足，4.2F 保持
+BLOCKED，等待新的 Provider / License Gate 结论；本轮不实现 Provider，也不选择替代来源。
 
 整体验收标准：
 

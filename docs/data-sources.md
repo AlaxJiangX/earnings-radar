@@ -44,6 +44,13 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 | Russell 2000 | [FTSE Russell Index Notices](https://www.lseg.com/en/ftse-russell/index-resources/notices)、[Russell 2000 页面](https://www.lseg.com/en/ftse-russell/indices/russell-2000-index)、获许可供应商、受控人工导入 | 候选；部分完整公告可能需要订阅，成分数据使用与再分发许可未确认 |
 | 财报日历 | [Nasdaq Earnings Calendar](https://www.nasdaq.com/market-activity/earnings)、[Finnhub Earnings Calendar API](https://finnhub.io/docs/api/introduction)、[Alpha Vantage Earnings Calendar](https://www.alphavantage.co/documentation/)、[FMP Earnings Calendar](https://site.financialmodelingprep.com/developer/docs/stable) | 功能候选；任何免费层、网页或 API 的生产使用、缓存、历史保留、公开展示和开源自托管授权均未确认 |
 
+> 2026-09-29 更新：财报日历候选中的 Alpha Vantage Free 已完成 4.2F focused
+> provider / license gate，结论为 REJECTED：`EARNINGS_CALENDAR` 缺 CIK / exchange /
+> normalized period_type，horizon 仅 forward 3 / 6 / 12 months，免费条款只覆盖个人非商用
+> 且未明示 retention / derived / display / replay 权利（见
+> `docs/decisions/ADR-016-alpha-vantage-free-provider-gate.md`）。其余候选在本轮未评估，
+> 最终 provider 选择仍待产品确认。
+
 ### 2.2 每个候选必须人工验证的许可问题
 
 - 是否允许服务器端自动访问，以及必须使用的认证、User-Agent、速率和并发限制；
