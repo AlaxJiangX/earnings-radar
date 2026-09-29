@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 已按 ADR-013 实现并 merge candidate/company matching core，且通过 merge 后定向复验。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、reconciliation workflow、SEC Filing 或通知领域模型。
+当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 已按 ADR-013 实现并 merge candidate/company matching core，且通过 merge 后定向复验；阶段 4.2E reconciliation workflow 已实现并通过 PR #43 merge。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、Live earnings sync command、SEC Filing 或通知领域模型。
 
 ## 1. 架构目标与边界
 
@@ -118,7 +118,9 @@ Provider 适配器不得写入业务表或 audit 表；它返回结构化原始�
 MVP Provider 类型：
 
 1. `EarningsCalendarProvider`：未来预计财报和初步发布时间段；4.2F 的真实实现 MUST 提供稳定
-   `provider_event_id`，无法提供者不得进入 live contract（ADR-010）；
+   source event identity。Provider-native ID 可用时保留；不可用时允许由 ADR-015 规定的
+   deterministic internal identity 生成，但 exact issuer 与 period facts 缺失时必须 fail
+   closed；
 2. `InvestorRelationsProvider`：有限重点公司范围内的官方确认、电话会和新闻稿；
 3. `SecEdgarProvider`：CIK 映射及指定表单的最新提交；
 4. `IndexConstituentProvider`：指数快照、公告日期和生效日期（具体来源待确认）。
@@ -169,9 +171,10 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge；ADR-015 source identity 已接受，4.2F 仍待 license gate）
 
-ADR-010 已冻结 4.2 的 provider-neutral 契约。4.2B 已实现
+ADR-010 已冻结 4.2 的 provider-neutral 契约；ADR-015 进一步确认 source event identity
+可以由系统确定性生成，Provider-native ID 保持可选 lineage evidence。4.2B 已实现
 `EarningsCalendarObservation`、`EarningsReconciliationDecision`、DB 约束、append-only /
 replay / concurrency 测试及 AuditRecord target 扩展（earnings migrations 0004 / 0005、audit
 migration 0008）。4.2C-1 已实现 provider-neutral parser protocol 与 synthetic fixture
@@ -209,8 +212,8 @@ pre-finalize integration 与 live Provider 仍未实现（4.2E service 已完成
 orchestration 与 4.2F 仍待后续）：
 
 - 分层：`raw -> parse -> EarningsCalendarObservation -> EarningsReconciliationDecision ->
-  EarningsEvent`；`provider_key + provider_event_id` 只表示 source identity，不进入 canonical
-  identity；
+  EarningsEvent`；source event identity（provider-native 或 ADR-015 internal identity）只表示
+  source lineage，不进入 canonical identity；
 - 自动 reconciliation：V1 只允许 exact match；任何需要相似度阈值的场景 MUST 进入 review，
   不存在 fuzzy auto-merge；
 - 字段权限：第三方 calendar 自动写权限仅限 `estimated_release` / `release_session`，且必须
@@ -232,8 +235,9 @@ orchestration 与 4.2F 仍待后续）：
 完整决策见 `docs/decisions/ADR-010-earnings-calendar-observation-and-reconciliation.md`、
 `docs/decisions/ADR-011-earnings-calendar-offline-replay.md`、
 `docs/decisions/ADR-012-monitoring-pool-selector.md`、
-`docs/decisions/ADR-013-earnings-candidate-company-matching.md` 与
-`docs/decisions/ADR-014-earnings-reconciliation-dedup-conflict-review.md`。
+`docs/decisions/ADR-013-earnings-candidate-company-matching.md`、
+`docs/decisions/ADR-014-earnings-reconciliation-dedup-conflict-review.md` 与
+`docs/decisions/ADR-015-system-owned-source-event-identity.md`。
 
 ## 5. 领域流程
 

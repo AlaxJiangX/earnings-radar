@@ -242,7 +242,7 @@ Company 不直接拥有 IndexMembership。公司级指数归属由其全部有�
 `UNKNOWN`；显式 month-based 与 52/53-week 值保持不变。历史 `month_based` 行无法可靠区分
 显式事实和旧默认值，因此 repair migration 不重写历史数据。
 
-当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider 的外部事件标识和来源证据去重，不能使用 `company + fiscal_year + period_type` 作为正式身份。4.1D 通过 ADR-009 的 promotion 在同一个 EarningsEvent row 上补齐 canonical identity facts（`period_end_date`、`period_type`、派生的 `includes_q4` / `identity_key` / `identity_rule_version`），将 `identity_status` 原子变为 canonical。Promotion 是 completion 而非 correction：不修改 `company` 或 fiscal metadata，不改变 status、schedule 和既有历史；已有不同的 `period_end_date` / `period_type` 或 existing canonical collision 时 fail closed，不做 candidate dedup、merge/split 或自动合并。每个真实 identity 字段变化写 DataChange，一次 promotion 写一条 operation-level AuditRecord；`EarningsEvent.source_evidence` 保持原值。跨 Provider 的候选去重、合并与拆分属于 4.2，其 contract 已由 ADR-010 冻结：external ID 仅存在于 observation / reconciliation 层，V1 只做 exact-only automatic match，不做 destructive merge，canonical collision 写 decision 并保留 loser。详细决策见 ADR-001、ADR-007、ADR-009 与 ADR-010。
+当 `period_end_date` 未知时，只能创建 CANDIDATE 事件：它依赖 Provider-native 外部事件标识和来源证据去重；若没有 native ID，则只有稳定 period facts 完整时 ADR-015 internal identity 才可用，否则只能保留 raw lineage，不能使用 `company + fiscal_year + period_type` 作为正式身份。4.1D 通过 ADR-009 的 promotion 在同一个 EarningsEvent row 上补齐 canonical identity facts（`period_end_date`、`period_type`、派生的 `includes_q4` / `identity_key` / `identity_rule_version`），将 `identity_status` 原子变为 canonical。Promotion 是 completion 而非 correction：不修改 `company` 或 fiscal metadata，不改变 status、schedule 和既有历史；已有不同的 `period_end_date` / `period_type` 或 existing canonical collision 时 fail closed，不做 candidate dedup、merge/split 或自动合并。每个真实 identity 字段变化写 DataChange，一次 promotion 写一条 operation-level AuditRecord；`EarningsEvent.source_evidence` 保持原值。跨 Provider 的候选去重、合并与拆分属于 4.2，其 contract 已由 ADR-010 冻结：source identity 仅存在于 observation / reconciliation 层，V1 只做 exact-only automatic match，不做 destructive merge，canonical collision 写 decision 并保留 loser。详细决策见 ADR-001、ADR-007、ADR-009、ADR-010 与 ADR-015。
 
 EarningsEvent.status 只回答“财报安排/发布到了哪一步”，不回答 SEC 文件是否提交。正常 transition matrix、terminal semantics、correction 和 reinstatement 见 ADR-008。`cancelled` 表示整个 logical EarningsEvent 被明确取消或证实不成立，不表示电话会取消或普通日期变化；Provider absence 不能触发 cancellation。
 
@@ -299,11 +299,11 @@ EarningsDateChange 不保存 `old_status/new_status`、`event_status_at_change`�
 
 ### 6.3 `EarningsCalendarObservation`（4.2B 已实现）
 
-> 本节描述已进入 main 的 4.2B schema foundation。本表当前可由 observation persistence
-> primitive 写入；normalized ingestion / parser / replay workflow 仍属于 4.2C。
+> 本节描述已进入 main 的 4.2B schema foundation。本表由 observation persistence
+> primitive 写入；normalized ingestion / parser / replay workflow 已由 4.2C 实现并 merge。
 
-provider-neutral normalized revision，保存 provider external identity 与 raw lineage，支撑
-replay 与 reconciliation。
+provider-neutral normalized revision，保存 source event identity（Provider-native 或
+ADR-015 internal identity）与 raw lineage，支撑 replay 与 reconciliation。
 
 | 字段 | 说明 |
 |---|---|
@@ -311,7 +311,7 @@ replay 与 reconciliation。
 | `source_id` | FK DataSource，PROTECT；必须与 RawDataRecord source 一致 |
 | `raw_data_record_id` | FK RawDataRecord，PROTECT |
 | `provider_key`, `provider_version`, `parser_version` | 来源与解析版本 |
-| `provider_event_id` | 非空 stable source identity；不进入 EarningsEvent identity |
+| `provider_event_id` | 非空 source event identity 的物理存储；值可以是 Provider-native ID，或 `internal:v1:<sha256>` 形式的系统确定性 identity；不进入 EarningsEvent canonical identity |
 | `raw_position` | 原始页内 1-based 记录位置 |
 | company hints | `cik` / `ticker` / `exchange` / `provider_symbol` / `company_name` |
 | fiscal facts | `fiscal_label_raw` / `fiscal_year` / `period_end_date` nullable / normalized `period_type` nullable / `fiscal_calendar_type` / `period_length_weeks` |
@@ -324,7 +324,10 @@ replay 与 reconciliation。
 - index `(source, provider_event_id)`；
 - append-only：不允许 update / delete；
 - primitive 校验 `source` 与 `RawDataRecord.source` 一致，且 `source.provider_adapter == provider_key`；
-- 缺失 stable provider_event_id 的记录 MUST NOT 写入本表；
+- Provider-native ID 存在时允许写入本表，即使 period facts 不完整；
+- Provider-native ID 缺失时，只有 exact CIK 或 exact exchange+ticker 与
+  `period_end_date` + normalized `period_type` 同时存在，才能生成 internal identity 并写入
+  本表；输入不完整时只保留 raw / parse lineage；
 - 本表不决定 canonical identity，也不直接写 EarningsEvent。
 
 ### 6.4 `EarningsReconciliationDecision`（4.2B 已实现）
@@ -761,7 +764,7 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | IndexChangeEvent | aggregation_key unique |
 | EarningsEvent | 非空 identity_key unique；规则为 company + period_end_date + period_type，带版本 |
 | EarningsDateChange | data_change unique；领域历史 append-only |
-| EarningsCalendarObservation（4.2B 已实现） | raw_data_record + parser_version + provider_event_id unique；按 source + provider_event_id 建索引 |
+| EarningsCalendarObservation（4.2B 已实现） | raw_data_record + parser_version + source event identity（物理列 `provider_event_id`）unique；按 source + source event identity 建索引 |
 | EarningsReconciliationDecision（4.2B 已实现） | deterministic decision_key unique；append-only；supersedes 链 |
 | Filing | accession_number unique |
 | WatchlistItem | user + company unique |
@@ -790,7 +793,8 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 
 Stage 4.2A 已由 ADR-010 冻结、不再属于待确认的决策：
 
-- provider external identity 分层、missing ID 处理与 provider-level 要求；
+- source event identity 分层、missing identity 处理与 provider-level 要求；ADR-015 进一步确认
+  Provider-native ID 可选，系统可从 exact issuer + period facts 生成 internal identity；
 - exact-only cross-provider automatic matching，不实现 fuzzy threshold；
 - 4.2 third-party calendar 字段权限与 append-only manual decision authority；
 - sync window / backfill / empty calendar 语义；
