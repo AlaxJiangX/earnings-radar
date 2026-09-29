@@ -216,6 +216,9 @@ SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 
 
 任一项未知时只能使用 fixture 或受控开发 smoke test，不能进入生产同步。
 
+4.2F-A reference-only 用途的 Mode A 判定标准（PASS / FAIL / UNKNOWN）与权利清单见
+ADR-018；条款沉默一律视为未授权。
+
 ## 9. 失败保护与验收
 
 - 指数快照为空或成分数量异常下降时，停止差异落库，不批量生成 REMOVED；

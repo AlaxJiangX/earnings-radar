@@ -434,6 +434,9 @@ CANCELLED
 预计
 ```
 
+第三方日历分为 reference / estimated 展示层与 canonical EarningsEvent 晋级层；
+reference 行只用于预计展示，不创建或修改 canonical 事件（ADR-017 / ADR-018）。
+
 ### 7.2 公司 Investor Relations 网站
 
 用途：
@@ -981,6 +984,9 @@ NVDA 将于明日美股盘后发布财报
 - 检测日期变化；
 - 更新可信度；
 - 记录来源。
+
+说明：创建 / 更新事件只适用于满足 exact canonical identity 的行；reference / estimated
+行只做展示，不创建或修改 EarningsEvent（ADR-017 / ADR-018）。
 
 ### 12.3 SEC 文件同步
 
