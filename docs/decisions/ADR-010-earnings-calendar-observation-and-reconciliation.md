@@ -1,9 +1,15 @@
 # ADR-010：财报日历 Observation、External Identity 与 Reconciliation 契约
 
-- 状态：已接受
+- 状态：已接受（第 2 节 source event identity 规则由 ADR-015 部分修订）
 - 日期：2026-09-20
 - 决策者：产品负责人
 - 影响阶段：4.2A、4.2B、4.2C、4.2D、4.2E、4.2F
+
+> 修订说明：ADR-015 `System-Owned Source Event Identity` 已接受。第 2 节中
+> “`provider_event_id` MUST 是由上游提供的稳定字符串”的要求已被部分修订：
+> source event identity 仍必须存在，但允许系统从稳定 issuer + period facts 生成
+> internal identity。本节以下原文保留为历史决策记录；canonical identity、
+> exact-only reconciliation、no destructive merge 和 license gate 不变。
 
 ## 背景
 

@@ -23,7 +23,7 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 |---|---|---|---|---|
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
 | SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument、FilingEarningsLink 候选 | 官方来源；访问策略待实现前核对 |
-| 财报日历 | 合法第三方 API | 预计日期、时段、财年/期间、稳定供应商事件 ID | EarningsCalendarObservation → reconciliation → 预计安排（4.2B planned，ADR-010） | **供应商与许可待产品确认（4.2F 前）** |
+| 财报日历 | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native 或 ADR-015 internal） | EarningsCalendarObservation → reconciliation → 预计安排（4.2B planned，ADR-010 / ADR-015） | **供应商与许可待产品确认（4.2F 前）** |
 | IR 官方确认 | 公司 IR 页面或有限 IR Provider | 正式日期、电话会、新闻稿链接 | 确认状态、发布日期、来源证据 | 首批公司清单与抓取方式待确认 |
 | S&P 500 | 官方公告、合法 API 或受控导入 | 证券/ticker、公告日、生效日、成分快照 | SecurityListing 级 IndexMembership、IndexChangeLeg | **来源与许可待产品确认** |
 | Nasdaq 100 | 官方公告、合法 API 或受控导入 | 同上 | 同上 | **来源与许可待产品确认** |
@@ -43,6 +43,13 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 | Nasdaq 100 | Nasdaq Global Index Watch/官方公告、获许可供应商、受控人工导入 | 候选；GIW/API 权限、下载自动化、缓存和再展示许可均未确认 |
 | Russell 2000 | [FTSE Russell Index Notices](https://www.lseg.com/en/ftse-russell/index-resources/notices)、[Russell 2000 页面](https://www.lseg.com/en/ftse-russell/indices/russell-2000-index)、获许可供应商、受控人工导入 | 候选；部分完整公告可能需要订阅，成分数据使用与再分发许可未确认 |
 | 财报日历 | [Nasdaq Earnings Calendar](https://www.nasdaq.com/market-activity/earnings)、[Finnhub Earnings Calendar API](https://finnhub.io/docs/api/introduction)、[Alpha Vantage Earnings Calendar](https://www.alphavantage.co/documentation/)、[FMP Earnings Calendar](https://site.financialmodelingprep.com/developer/docs/stable) | 功能候选；任何免费层、网页或 API 的生产使用、缓存、历史保留、公开展示和开源自托管授权均未确认 |
+
+> 2026-09-29 更新：财报日历候选中的 Alpha Vantage Free 已完成 4.2F focused
+> provider / license gate，结论为 REJECTED：`EARNINGS_CALENDAR` 缺 CIK / exchange /
+> normalized period_type，horizon 仅 forward 3 / 6 / 12 months，免费条款只覆盖个人非商用
+> 且未明示 retention / derived / display / replay 权利（见
+> `docs/decisions/ADR-016-alpha-vantage-free-provider-gate.md`）。其余候选在本轮未评估，
+> 最终 provider 选择仍待产品确认。
 
 ### 2.2 每个候选必须人工验证的许可问题
 
@@ -74,9 +81,12 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 - 空响应、异常缩减和 schema 变化的保护策略；
 - 可用于 smoke test 的最小安全范围。
 
-财报日历 Provider MUST 提供稳定、非空的 `provider_event_id`；无法提供者 MUST NOT 进入 4.2F
-live contract（ADR-010）。缺失 ID 的单条记录仍保存 raw lineage，但不得创建 normalized
-observation、candidate 或自动 reconciliation。
+财报日历 Provider MUST 提供稳定 source event identity。Provider-native ID 可用时 MUST 保留；
+不可用时，adapter/parser MAY 由 ADR-015 规定的 exact issuer identity（CIK 或
+exchange+ticker）与 `period_end_date` + normalized `period_type` 生成 deterministic internal
+identity。内部生成值 MUST 使用 `internal:v1:` 命名空间，不得伪装为 Provider-native ID。
+identity 必需事实缺失时，单条记录仍保存 raw lineage，但不得创建 normalized observation、
+candidate 或自动 reconciliation；license gate 仍然独立生效。
 
 Provider 只返回安全的结构化原始结果，不直接创建 SyncRun、RawDataRecord、RawDataObservation，也不写 Company、SecurityListing、IndexMembership、EarningsEvent、Filing 或通知。未来同步编排 Service 负责创建 SyncRun、调用 Provider、通过 `audit.services` 保存原始记录和观察关系；领域服务再负责核对、事务、变更历史和通知。
 
@@ -119,11 +129,13 @@ HTTP 基础层使用必须注入的 transport 协议，当前不提供真实网�
 ### 4.2 财报事件
 
 - 正式身份由 `company_id + period_end_date + period_type` 生成；
-- `provider_key + provider_event_id` 只是 source identity，MUST NOT 进入 canonical identity；
-- provider 外部事件 ID MUST 稳定；缺失时必须保留 raw / parse lineage，但不得创建
+- source event identity（Provider-native 或 ADR-015 internal identity）只是 source lineage，
+  MUST NOT 进入 canonical identity；
+- Provider-native ID 可用时必须保留；不可用时，只有在 exact issuer identity 与完整 period
+  facts 存在时才能生成 internal identity，否则必须保留 raw / parse lineage，但不得创建
   `EarningsCalendarObservation`、EarningsEvent candidate 或自动 reconciliation；
 - 候选事件不得仅凭 fiscal_year/fiscal_period 变为正式事件；
-- V1 只允许 exact-only automatic match：同 source + 同 external ID，或 company +
+- V1 只允许 exact-only automatic match：同 source + 同 source event identity，或 company +
   `period_end_date` + normalized `period_type` 精确一致；
 - release date proximity、fiscal label 相似度和 company name 相似度只能作为 review evidence，
   MUST NOT 成为 identity；
