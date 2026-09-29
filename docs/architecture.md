@@ -171,7 +171,7 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge；ADR-015 source identity 已接受，4.2F 仍待 license gate）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge；ADR-015 source identity 已接受；ADR-017/018 已冻结 4.2F-A reference 层契约，4.2F-A 待 Mode A license gate，4.2F-B 仍待 license gate）
 
 ADR-010 已冻结 4.2 的 provider-neutral 契约；ADR-015 进一步确认 source event identity
 可以由系统确定性生成，Provider-native ID 保持可选 lineage evidence。4.2B 已实现
@@ -232,12 +232,24 @@ orchestration 与 4.2F 仍待后续）：
   pagination 未完成前默认不做该 window 的 domain writes；
 - live gate：4.2F 前必须完成 provider / license checklist，4.2A-4.2E 全部 fixture-first。
 
+4.2F-A（Zero Data Cost reference calendar）与上述 canonical 契约物理分层（ADR-017 /
+ADR-018）：reference rows 停在 `RawDataRecord + RawDataObservation + RawDataParseAttempt`，
+由只读 selector 在 persisted raw 上确定性投影，不创建 `EarningsCalendarObservation`、
+decision、candidate 或 `EarningsEvent`；只使用 frozen `MonitoringPoolSnapshot` 的 basis
+listings 做 exact symbol -> Company 匹配，歧义 fail closed；reference 层使用 forward-only
+窗口（默认 90 天，无 correction 语义），canonical 的 90 forward + 30 correction 窗口仍
+只属于 4.2F-B。4.2F-A 不需要 schema / migration，且必须通过独立的 Mode A provider /
+license checklist。
+
 完整决策见 `docs/decisions/ADR-010-earnings-calendar-observation-and-reconciliation.md`、
 `docs/decisions/ADR-011-earnings-calendar-offline-replay.md`、
 `docs/decisions/ADR-012-monitoring-pool-selector.md`、
 `docs/decisions/ADR-013-earnings-candidate-company-matching.md`、
-`docs/decisions/ADR-014-earnings-reconciliation-dedup-conflict-review.md` 与
-`docs/decisions/ADR-015-system-owned-source-event-identity.md`。
+`docs/decisions/ADR-014-earnings-reconciliation-dedup-conflict-review.md`、
+`docs/decisions/ADR-015-system-owned-source-event-identity.md`、
+`docs/decisions/ADR-016-alpha-vantage-free-provider-gate.md`、
+`docs/decisions/ADR-017-zero-data-cost-reference-calendar.md` 与
+`docs/decisions/ADR-018-reference-calendar-4.2f-a-contract.md`。
 
 ## 5. 领域流程
 

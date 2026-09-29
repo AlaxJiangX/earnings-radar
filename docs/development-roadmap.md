@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync，两者仍受 license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；Alpha Vantage Free 的 Mode A reference license gate（ADR-019）结论为 BLOCKED — PROVIDER CLARIFICATION REQUIRED，实现未开始；4.2F-B 仍受 canonical-grade license gate 阻塞；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -515,10 +515,20 @@ coverage 混在同一阶段：
 - 4.2F-B Canonical Provider-Grade Live Sync：上文 live Provider adapter 与
   `earnings.calendar_window` sync 范围，继续遵守 ADR-010 / ADR-015 的 canonical 契约。
 
-状态：4.2F-A = PLANNED / NOT STARTED（仍受 Mode A license gate 约束）；
+状态：4.2F-A = PLANNING GATE COMPLETE / CONTRACT RATIFIED（ADR-018）；
+MODE A LICENSE GATE = BLOCKED — PROVIDER CLARIFICATION REQUIRED（Alpha Vantage Free，
+ADR-019）；IMPLEMENTATION NOT STARTED，下一步为取得书面澄清或评估下一个 Mode A candidate；
 4.2F-B = BLOCKED / NOT STARTED（等待 canonical-grade Provider / license）。两者均未实现。
 
-两个切片都保持 license gate；详细验收标准在各自 planning gate 中定义。
+4.2F-A planning gate 已冻结 reference parser / projection contract、forward-only reference
+window、frozen pool exact matching、reference identity、freshness / replay 语义与 Mode A
+checklist（ADR-018）；schema / migration = NO / NO。Alpha Vantage Free 的 Mode A license
+gate（ADR-019）结论为 BLOCKED — PROVIDER CLARIFICATION REQUIRED：个人访问与私有展示有
+明确授权，但 raw 持久化、历史保留与 offline replay 未被 ToS 明示；取得书面澄清前不得
+进入 production ingestion。
+
+两个切片都保持 license gate；4.2F-A 的契约与验收边界见 ADR-018，4.2F-B 的详细验收
+标准仍在其 planning gate 中定义。
 
 4.2F Focused Gate（Alpha Vantage Free）已执行，结论为 REJECTED（ADR-016）：
 `EARNINGS_CALENDAR` 只有 symbol / name / reportDate / fiscalDateEnding / estimate /

@@ -50,6 +50,10 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 > 且未明示 retention / derived / display / replay 权利（见
 > `docs/decisions/ADR-016-alpha-vantage-free-provider-gate.md`）。其余候选在本轮未评估，
 > 最终 provider 选择仍待产品确认。
+>
+> 同日 4.2F-A Mode A reference-only license gate（ADR-019）结论为 BLOCKED —
+> PROVIDER CLARIFICATION REQUIRED：个人访问与私有展示有明确授权，但 raw 持久化、
+> 历史保留与 offline replay 未获明示；取得书面澄清前不得进入 production ingestion。
 
 ### 2.2 每个候选必须人工验证的许可问题
 
@@ -215,6 +219,9 @@ SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 
 - 终止服务后的数据删除或替换方案。
 
 任一项未知时只能使用 fixture 或受控开发 smoke test，不能进入生产同步。
+
+4.2F-A reference-only 用途的 Mode A 判定标准（PASS / FAIL / UNKNOWN）与权利清单见
+ADR-018；条款沉默一律视为未授权。
 
 ## 9. 失败保护与验收
 
