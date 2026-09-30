@@ -371,6 +371,15 @@ forward_horizon_days = 90（可配置）
 past_correction_days = 不适用
 ```
 
+4.2F-A V1 的窗口包含 as-of 当天：`window_start = as-of date`，
+`window_end = window_start + (forward_horizon_days - 1) days`。默认值因而恰好包含
+90 个自然日（当天至第 89 天），投影仅展示闭区间内的 reference row。
+
+Alpha Vantage 的 `horizon=3month` 只是请求参数，CSV 不提供权威的覆盖截止日。
+可报告 requested window 与有效行的最早/最晚 `reportDate`；合法空响应的观察日期
+范围为 NULL。`provider_coverage_end` 保持 UNKNOWN，不得从最后一条事件日期或
+后续日期无事件推断供应商覆盖不足、`coverage_gap_days` 或完整 90 天覆盖。
+
 理由：reference layer 只提供未来可见性；provider absence 不表示 correction，
 不触发 cancellation，也不参与 canonical backfill。ADR-010 的 canonical 90 forward +
 30 correction 窗口仍只属于 4.2F-B，不因本 ADR 改变。

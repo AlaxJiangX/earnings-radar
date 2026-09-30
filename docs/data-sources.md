@@ -24,7 +24,7 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
 | SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument、FilingEarningsLink 候选 | 官方来源；访问策略待实现前核对 |
 | 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native 或 ADR-015 internal） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015） | **供应商与许可待产品确认（4.2F-B 前）** |
-| 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）；尚未接入** |
+| 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）** |
 | IR 官方确认 | 公司 IR 页面或有限 IR Provider | 正式日期、电话会、新闻稿链接 | 确认状态、发布日期、来源证据 | 首批公司清单与抓取方式待确认 |
 | S&P 500 | 官方公告、合法 API 或受控导入 | 证券/ticker、公告日、生效日、成分快照 | SecurityListing 级 IndexMembership、IndexChangeLeg | **来源与许可待产品确认** |
 | Nasdaq 100 | 官方公告、合法 API 或受控导入 | 同上 | 同上 | **来源与许可待产品确认** |
@@ -56,7 +56,7 @@ Vantage Free 个人私有 Mode A reference 用途。该例外不授予公开展�
 > 2026-09-30 更新：Alpha Vantage Support 对原始响应长期持久化、多份历史保留、离线
 > 重放及私有单用户派生展示给予书面确认；4.2F-A Mode A reference-only license gate
 > 因此 PASS（ADR-019）。此许可仅覆盖个人、私有、单用户、非商业使用；公开展示、
-> 多用户、商业、再分发或客户访问前必须重新审查并取得相应协议。4.2F-A 尚未实现。
+> 多用户、商业、再分发或客户访问前必须重新审查并取得相应协议。
 
 ### 2.2 每个候选必须人工验证的许可问题
 

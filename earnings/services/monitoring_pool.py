@@ -93,11 +93,29 @@ def resolve_monitoring_pool_snapshot(sync_run: SyncRun) -> MonitoringPoolSnapsho
         raise InvalidMonitoringPoolSelectorInput("sync_run must be a persisted SyncRun.")
     current_run = SyncRun.objects.get(pk=sync_run.pk)
     scope = _validate_scope(current_run.scope)
+    return resolve_monitoring_pool_snapshot_contract(
+        as_of=date.fromisoformat(cast(str, scope["monitoring_pool_as_of"])),
+        selector_version=cast(str, scope["selector_version"]),
+        pool_hash=cast(str, scope["monitoring_pool_hash"]),
+    )
+
+
+def resolve_monitoring_pool_snapshot_contract(
+    *, as_of: date, selector_version: str, pool_hash: str
+) -> MonitoringPoolSnapshotReference:
+    """Validate a persisted frozen pool by its immutable scope contract."""
+
+    if isinstance(as_of, datetime) or not isinstance(as_of, date):
+        raise MonitoringPoolIntegrityError("Monitoring pool as-of date is invalid.")
+    if not isinstance(selector_version, str) or not selector_version:
+        raise MonitoringPoolIntegrityError("Monitoring pool selector version is invalid.")
+    if not isinstance(pool_hash, str) or len(pool_hash) != 64:
+        raise MonitoringPoolIntegrityError("Monitoring pool hash is invalid.")
     snapshot_matches = list(
         MonitoringPoolSnapshot.objects.filter(
-            as_of_date=date.fromisoformat(cast(str, scope["monitoring_pool_as_of"])),
-            selector_version=cast(str, scope["selector_version"]),
-            pool_hash=cast(str, scope["monitoring_pool_hash"]),
+            as_of_date=as_of,
+            selector_version=selector_version,
+            pool_hash=pool_hash,
         )
     )
     if len(snapshot_matches) != 1:

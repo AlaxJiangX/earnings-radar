@@ -1,3 +1,4 @@
+from providers.alpha_vantage_reference import AlphaVantageReferenceProvider
 from providers.base import Provider
 from providers.exceptions import (
     ProviderAuthenticationError,
@@ -19,10 +20,13 @@ from providers.http import (
     TransportRequest,
     TransportResponse,
 )
+from providers.live_http import BoundedHttpsTransport
 from providers.types import ProviderCapability, ProviderRequest, ProviderResult
 
 __all__ = [
     "DEFAULT_PROVIDER_USER_AGENT",
+    "AlphaVantageReferenceProvider",
+    "BoundedHttpsTransport",
     "HttpClientConfig",
     "HttpTimeouts",
     "HttpTransport",
