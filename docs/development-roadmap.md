@@ -498,12 +498,12 @@ subject 自身 open review；未做 destructive merge，loser / SourceEvidence /
 review_required 可查询、可重放；并发 manual decision 不产生无共同前驱的 decision branch；
 identity conflict / canonical collision fail closed。
 
-4.2F 交付：license gate 通过后的 live Provider adapter 与 `earnings.calendar_window` sync
+4.2F-B canonical 交付：license gate 通过后的 live Provider adapter 与 `earnings.calendar_window` sync
 command。ADR-015 已确认 Provider-native event ID 可选，source event identity 可以由系统从
 exact issuer + period facts 确定性生成；但仍需先重跑 Provider / License Gate，确认具体
 Provider 的 access、retention、display、derived data 和 replay 权利。验收标准：
 provider / license checklist 完成；普通 CI 仍不访问真实网络；受控 smoke test、超时 /
-限速 / partial / 幂等重跑与新鲜度记录通过。license gate 未完成时本阶段 BLOCKED。
+限速 / partial / 幂等重跑与新鲜度记录通过。canonical license gate 未完成时 4.2F-B BLOCKED。
 
 4.2F 已按 ADR-017 拆分为两个执行切片，避免把 reference visibility 与 canonical
 coverage 混在同一阶段：
@@ -530,12 +530,12 @@ gate（ADR-019）已由 `support@alphavantage.co` 的直接书面回复解决：
 两个切片都保持 license gate；4.2F-A 的契约与验收边界见 ADR-018，4.2F-B 的详细验收
 标准仍在其 planning gate 中定义。
 
-4.2F Focused Gate（Alpha Vantage Free）已执行，结论为 REJECTED（ADR-016）：
+4.2F-B canonical Focused Gate（Alpha Vantage Free）已执行，结论为 REJECTED（ADR-016）：
 `EARNINGS_CALENDAR` 只有 symbol / name / reportDate / fiscalDateEnding / estimate /
 currency / timeOfTheDay，没有 CIK、exchange 或 normalized period_type；horizon 仅有
 forward 3 / 6 / 12 months，不能覆盖默认 `past_correction_days=30`；免费 ToS 只授予
 personal, non-commercial use，且未明示 caching / persistence / derived / display /
-replay 权利。ADR-015 internal identity、窗口契约与保留契约因此均无法满足，4.2F 保持
+replay 权利。ADR-015 internal identity、窗口契约与保留契约因此均无法满足，4.2F-B 保持
 BLOCKED，等待新的 Provider / License Gate 结论；本轮不实现 Provider，也不选择替代来源。
 
 整体验收标准：
