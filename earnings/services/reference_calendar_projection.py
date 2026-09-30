@@ -311,7 +311,6 @@ def _match_rows(
                 listing is None
                 or listing.company_id != member.company_id
                 or not listing.effective_from <= as_of
-                or (listing.effective_to is not None and as_of >= listing.effective_to)
                 or date.fromisoformat(basis["effective_from"]) > as_of
                 or (
                     basis["effective_to"] is not None
@@ -321,6 +320,9 @@ def _match_rows(
                 valid = []
                 invalid_basis += 1
                 break
+            # The selector validated listing activity when it froze this snapshot.
+            # A later audited transition may backdate effective_to; replay must
+            # retain the original frozen membership decision.
             valid.append(listing)
         for listing in valid:
             symbols.setdefault(normalize_ticker(listing.ticker), {})[listing.company_id] = listing

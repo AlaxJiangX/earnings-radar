@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from accounts.models import User
 from audit.models import (
     DataSource,
     RawDataObservation,
@@ -13,6 +14,7 @@ from audit.models import (
     SyncRun,
 )
 from companies.models import Company, SecurityListing
+from companies.services import transition_security_listing
 from earnings.models import (
     EarningsCalendarObservation,
     EarningsEvent,
@@ -25,6 +27,7 @@ from earnings.services.reference_calendar_projection import (
 )
 from earnings.services.reference_calendar_sync import execute_reference_calendar_sync
 from indexes.models import IndexMembership, MarketIndex
+from indexes.services import end_membership
 from providers.alpha_vantage_reference import AlphaVantageReferenceProvider
 from providers.http import TransportRequest, TransportResponse
 
@@ -344,6 +347,48 @@ def test_no_prior_complete_projection_is_unavailable() -> None:
     view = latest_reference_calendar(source_id=source.pk)
     assert view.projection is None
     assert view.update_state == "unavailable"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_frozen_reference_replay_survives_backdated_listing_transition() -> None:
+    source, _company = _pool()
+    transport = CsvTransport(HEADER + b"AAA,Alpha,2026-10-01,,,,bmo\n")
+    run = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=AlphaVantageReferenceProvider(api_key="fixture-key", transport=transport),
+    )
+    now = datetime.now(UTC)
+    before = project_reference_calendar(run.sync_run.pk, now=now)
+    listing = SecurityListing.objects.get(ticker="AAA")
+    actor = User.objects.create_user(
+        email="listing-transition@example.com", password="fixture-password-only", is_staff=True
+    )
+    end_membership(
+        membership=IndexMembership.objects.get(security_listing=listing),
+        effective_to=date(2026, 9, 1),
+        actor_user=actor,
+        reason="Backdated membership correction",
+        request_id="backdated-membership-fixture",
+    )
+    assert project_reference_calendar(run.sync_run.pk, now=now) == before
+    transition_security_listing(
+        listing=listing,
+        transition_date=date(2026, 9, 1),
+        ticker="BBB",
+        exchange="NYSE",
+        actor_user=actor,
+        reason="Backdated listing identity correction",
+        request_id="backdated-transition-fixture",
+    )
+    listing.refresh_from_db()
+    assert listing.effective_to == date(2026, 9, 1)
+
+    after = project_reference_calendar(run.sync_run.pk, now=now)
+    assert after == before
+    assert len(after.rows) == 1
+    assert transport.calls == 1
 
 
 @pytest.mark.django_db(transaction=True)
