@@ -1,6 +1,6 @@
 # ADR-010：财报日历 Observation、External Identity 与 Reconciliation 契约
 
-- 状态：已接受（第 2 节 source event identity 规则由 ADR-015 部分修订）
+- 状态：已接受（第 2 节 source event identity 规则先后由 ADR-015 / ADR-020 部分修订）
 - 日期：2026-09-20
 - 决策者：产品负责人
 - 影响阶段：4.2A、4.2B、4.2C、4.2D、4.2E、4.2F
@@ -10,6 +10,13 @@
 > source event identity 仍必须存在，但允许系统从稳定 issuer + period facts 生成
 > internal identity。本节以下原文保留为历史决策记录；canonical identity、
 > exact-only reconciliation、no destructive merge 和 license gate 不变。
+>
+> 修订说明（ADR-020）：Stage 4.2F-B 的 Alpha Vantage Free adaptation contract 已由
+> ADR-020 接受。第 2 节 source identity 的 issuer 输入、第 3 节对 provider_symbol /
+> generic ticker-only matching 的限制、第 5 节的 universal 90 + 30 窗口，以及第 8 节
+> normalized record 的 `provider_event_id` 生成时点，对 Alpha Vantage Free v2 approved
+> path 由 ADR-020 部分修订；canonical identity、exact-only reconciliation、no destructive
+> merge、manual authority、absence non-authoritative 与 license gate 保持不变。
 
 ## 背景
 

@@ -8,6 +8,11 @@
   `2b351cca85fa1e2bc1d0f866b6b35205986ce0c4`
 - 影响阶段：4.2F-A；4.2F-B 与 ADR-015 / ADR-014 canonical 契约不变
 
+> 修订说明（ADR-020）：4.2F-A reference contract 不变。ADR-020 将 canonical 窗口重新
+> 解释为 system-level desired coverage 与 provider capability 声明两部分；Alpha Vantage
+> Free v2 为 forward nominal 3month、past correction unsupported，不得把 3month 当作
+> exactly 90 days。
+
 ## 1. 背景与 Gate 结论
 
 ADR-017 已接受 TWO-LAYER REFERENCE + CANONICAL 产品模型，并给出 v1

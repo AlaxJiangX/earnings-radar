@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 已按 ADR-013 实现并 merge candidate/company matching core，且通过 merge 后定向复验；阶段 4.2E reconciliation workflow 已实现并通过 PR #43 merge。尚无真实 Provider、真实网络传输、指数差异写入/同步命令、Live earnings sync command、SEC Filing 或通知领域模型。
+当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 已按 ADR-013 实现并 merge candidate/company matching core，且通过 merge 后定向复验；阶段 4.2E reconciliation workflow 已实现并通过 PR #43 merge；4.2F-A reference calendar 已实现、验证并 merge；4.2F-B Alpha Vantage adaptation contract 已由 ADR-020 冻结（technical PASS），normalized / candidate / canonical-pipeline storage 的许可仍待 Alpha Vantage 书面澄清，implementation 未开始。目前没有 canonical live Provider、canonical live sync command、SEC Filing 或通知领域模型。
 
 ## 1. 架构目标与边界
 
@@ -171,7 +171,7 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge；ADR-015 source identity 已接受；ADR-017/018 已冻结 4.2F-A reference 层契约，个人私有 Mode A license gate 已由 ADR-019 通过，4.2F-B 仍待 license gate）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge；ADR-015 source identity 已接受；ADR-017/018 已冻结 4.2F-A reference 层契约，个人私有 Mode A license gate 已由 ADR-019 通过，4.2F-B adaptation contract 已由 ADR-020 冻结，implementation 仍待 normalized / candidate pipeline license clarification）
 
 ADR-010 已冻结 4.2 的 provider-neutral 契约；ADR-015 进一步确认 source event identity
 可以由系统确定性生成，Provider-native ID 保持可选 lineage evidence。4.2B 已实现
@@ -222,15 +222,19 @@ orchestration 与 4.2F 仍待后续）：
   不新增可变 lock flag；
 - duplicate：no destructive merge；loser candidate 与全部历史保留，通过 decision / mapping
   指向 winner canonical；
-- 同步窗口：默认 `forward_horizon_days=90`、`past_correction_days=30`，必须配置化；合法
-  空日历是成功响应；
+- 同步窗口：`forward_horizon_days=90`、`past_correction_days=30` 是 system-level desired
+  coverage，必须配置化；具体 Provider 必须声明自己的 capability。ADR-020 将 Alpha
+  Vantage Free v2 定义为 forward nominal 3month、past correction unsupported（effective
+  `past_correction_days=0`），且不得把 3month 当作 exactly 90 days；合法空日历是成功响应；
 - monitoring pool：`earnings_monitoring_pool(as_of_date)` + `monitoring_pool_hash`，scope
   保存 as-of / hash / selector version；4.2C replay 只验证原 scope contract，selector 实现
   已由 4.2D-1 提供；immutable `MonitoringPoolSnapshot` / `MonitoringPoolMember`、canonical
   basis 与 `input_revision` 已落地；scheduled command 自动调用 selector 仍待后续 integration；
 - pagination：一个 SyncRun 一个 logical window，多页 raw / observation / parse attempt；
   pagination 未完成前默认不做该 window 的 domain writes；
-- live gate：4.2F 前必须完成 provider / license checklist，4.2A-4.2E 全部 fixture-first。
+- live gate：4.2F 前必须完成 provider / license checklist，4.2A-4.2E 全部 fixture-first；
+  ADR-020 已冻结 AV v2 technical contract，但 normalized / candidate / canonical-pipeline
+  storage 的许可仍待 Provider 澄清，4.2F-B implementation 未开始。
 
 4.2F-A（Zero Data Cost reference calendar）与上述 canonical 契约物理分层（ADR-017 /
 ADR-018）：reference rows 停在 `RawDataRecord + RawDataObservation + RawDataParseAttempt`，
@@ -248,6 +252,15 @@ Free market-wide `EARNINGS_CALENDAR?horizon=3month` Provider。应用 service �
 注入，持久化请求 URL 与 scope 不含凭据。reference replay 不新建 run 或 audit 行；当前
 没有 UI、自动调度或 canonical 写入。个人私有 Mode A 许可之外的部署须重新审查。
 
+4.2F-B 的 Alpha Vantage candidate-entry adaptation 已由 ADR-020 冻结：AV v2 使用
+Company-scoped `internal:v2:` source identity、frozen `MonitoringPoolSnapshot` 的精确
+symbol -> Company 解析、允许 `period_type=NULL` 的 observation / candidate、candidate
+family 复用、严格 promotion firewall，以及 provider capability 与 system desired window
+分离（forward nominal 3month、past correction unsupported）。canonical identity、exact-only
+reconciliation、no destructive merge 与 manual authority 不变；schema / migration = NO / NO。
+ADR-020 为 technical PASS，但 normalized / candidate / canonical-pipeline storage 的许可
+仍需 Alpha Vantage 书面澄清，4.2F-B implementation 保持 BLOCKED。
+
 完整决策见 `docs/decisions/ADR-010-earnings-calendar-observation-and-reconciliation.md`、
 `docs/decisions/ADR-011-earnings-calendar-offline-replay.md`、
 `docs/decisions/ADR-012-monitoring-pool-selector.md`、
@@ -256,7 +269,9 @@ Free market-wide `EARNINGS_CALENDAR?horizon=3month` Provider。应用 service �
 `docs/decisions/ADR-015-system-owned-source-event-identity.md`、
 `docs/decisions/ADR-016-alpha-vantage-free-provider-gate.md`、
 `docs/decisions/ADR-017-zero-data-cost-reference-calendar.md` 与
-`docs/decisions/ADR-018-reference-calendar-4.2f-a-contract.md`。
+`docs/decisions/ADR-018-reference-calendar-4.2f-a-contract.md`、
+`docs/decisions/ADR-019-alpha-vantage-mode-a-reference-license-gate.md` 与
+`docs/decisions/ADR-020-alpha-vantage-canonical-entry-adaptation.md`。
 
 ## 5. 领域流程
 
@@ -446,7 +461,9 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 - MVP 正式环境是否开放注册；
 - 邮件供应商、发件域名和失败/退信处理；
 - 四个指数各自合法、稳定且允许再展示的数据来源；
-- 财报日历供应商、字段语义、许可和更新频率；
+- 财报日历供应商、字段语义、许可和更新频率；AV v2 candidate-entry technical contract 已由
+  ADR-020 冻结；normalized / candidate pipeline storage 的许可澄清和公开 / 多用户 / 商业
+  用途的 Provider 选择仍待产品确认；
 - IR Provider 首批公司范围与维护方式；
 - IR / SEC 等高 authority 来源的字段级冲突与复核流程（4.4 / 4.5 前）；4.2 第三方 earnings
   calendar 的字段权限、manual decision authority 和 exact-only matching 已由 ADR-010 确定；

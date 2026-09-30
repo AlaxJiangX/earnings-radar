@@ -1,13 +1,20 @@
 # ADR-016：Alpha Vantage Free 4.2F Provider / License Gate 结果
 
-- 状态：已接受（gate 结论为 REJECTED；不改变产品基线）
+- 状态：已接受（gate 结论为 REJECTED；ADR-020 已对 Alpha Vantage v2 candidate-entry 部分重评，见修订说明）
 - 日期：2026-09-29
 - 决策者：产品负责人
 - 评估与起草：Codex（按 4.2F focused feasibility gate 任务执行）
 - 评审基线：分支 `codex/4.2f-identity-strategy-review`，commit
   `77932b698b9ded8baaeb90be14f0a8b2d43b1738`；`origin/main`
   `ead1e18fce7fd667b039aff482fe63907957e3b6`；原始 workspace 的 `M Dockerfile` 未触碰
-- 影响阶段：4.2F（保持 BLOCKED，直到新的 provider / license 结论通过 ADR-010 checklist）
+- 影响阶段：4.2F canonical-primary 保持 BLOCKED；AV v2 candidate-entry adaptation 由
+  ADR-020 冻结，implementation 仍待许可澄清
+
+> 修订说明（ADR-020）：ADR-020 在严格个人、私有、单用户、非商业的 candidate-only
+> adaptation 范围内重新评估了本 ADR 的部分拒绝理由。AV v2 source identity、frozen
+> snapshot symbol matching、forward-only window 与 candidate-only promotion firewall
+> 已由 ADR-020 冻结；本 ADR 对 canonical-primary、公开、多用户、商业与再分发的拒绝
+> 保持不变，许可澄清前的 implementation 仍保持 BLOCKED。
 
 ## 1. 范围与问题
 

@@ -10,6 +10,11 @@
 - 范围：只评估 Alpha Vantage Free 作为 ADR-018 **Mode A reference-only Provider** 的
   许可 / 数据权利；不实现代码、不加 key、不改 schema。
 
+> 修订说明（ADR-020）：本 ADR 的 Mode A reference-only 许可结论不变。ADR-020 另行冻结
+> Alpha Vantage Free v2 candidate-entry 技术契约；normalized / candidate /
+> canonical-pipeline storage 不在本 ADR 已确认的书面许可范围内，4.2F-B implementation
+> 保持 BLOCKED，直到 Provider 书面澄清。
+
 ## 1. 背景
 
 ADR-016 已拒绝 Alpha Vantage Free 作为 4.2F canonical primary Provider。本 gate 回答的是

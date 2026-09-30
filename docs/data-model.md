@@ -311,7 +311,7 @@ ADR-015 internal identity）与 raw lineage，支撑 replay 与 reconciliation�
 | `source_id` | FK DataSource，PROTECT；必须与 RawDataRecord source 一致 |
 | `raw_data_record_id` | FK RawDataRecord，PROTECT |
 | `provider_key`, `provider_version`, `parser_version` | 来源与解析版本 |
-| `provider_event_id` | 非空 source event identity 的物理存储；值可以是 Provider-native ID，或 `internal:v1:<sha256>` 形式的系统确定性 identity；不进入 EarningsEvent canonical identity |
+| `provider_event_id` | 非空 source event identity 的物理存储；值可以是 Provider-native ID、`internal:v1:<sha256>` 或 ADR-020 批准的 `internal:v2:<sha256>` 形式；不进入 EarningsEvent canonical identity |
 | `raw_position` | 原始页内 1-based 记录位置 |
 | company hints | `cik` / `ticker` / `exchange` / `provider_symbol` / `company_name` |
 | fiscal facts | `fiscal_label_raw` / `fiscal_year` / `period_end_date` nullable / normalized `period_type` nullable / `fiscal_calendar_type` / `period_length_weeks` |
@@ -328,6 +328,11 @@ ADR-015 internal identity）与 raw lineage，支撑 replay 与 reconciliation�
 - Provider-native ID 缺失时，只有 exact CIK 或 exact exchange+ticker 与
   `period_end_date` + normalized `period_type` 同时存在，才能生成 internal identity 并写入
   本表；输入不完整时只保留 raw / parse lineage；
+- ADR-020 批准的 Alpha Vantage v2 path 例外：frozen `MonitoringPoolSnapshot` basis listing
+  的 exact symbol 解析出唯一 Company，且 `period_end_date` 存在时，可以生成
+  `internal:v2:<sha256>` source identity 并写入本表，即使 `period_type = NULL`；
+  `internal:v2` MUST NOT 进入 canonical identity，MUST NOT 自动 promotion，MUST NOT 用
+  `fiscalDateEnding` 推断 period_type；
 - 本表不决定 canonical identity，也不直接写 EarningsEvent。
 
 ### 6.4 `EarningsReconciliationDecision`（4.2B 已实现）
@@ -363,6 +368,11 @@ append-only decision history，结构化保存 review / collision / mapping / de
 - mapping 冲突 MUST fail closed；
 - loser EarningsEvent MUST 保持 candidate，不删除、不覆盖、不 copy 历史；
 - loser MUST NOT 进入未来公开 canonical selector。
+
+ADR-020 补充：AV v2 incomplete candidate family 复用既有 `created_candidate` /
+`matched_candidate` decision；同一 family 的重复 observation 复用 candidate，不创建第二条
+candidate；cross-Company resolution conflict 使用 `collision` / `review_required` / `open`。
+不新增 schema。
 
 ### 6.5 `MonitoringPoolSnapshot` / `MonitoringPoolMember`（4.2D-1 已实现）
 
@@ -438,6 +448,31 @@ transaction，并通过既有 schedule service 写入 observation 中存在的 r
 pagination completion 到 run finalization 的 lifecycle integration 仍待后续编排接入。
 
 该实现不新增 schema、不创建 migration、不改变 MonitoringPoolSnapshot 或 EarningsEvent 字段。
+
+ADR-020 为 Alpha Vantage Free v2 增加了 provider-specific matcher：允许 exact
+`provider_symbol` == frozen snapshot basis listing `ticker` -> Company；generic matcher 对
+其他 Provider 仍禁止 `provider_symbol` / ticker-only fallback。
+
+### 6.7 ADR-020 Alpha Vantage v2 Candidate Adaptation（contract frozen；implementation blocked pending license clarification）
+
+ADR-020 为 Alpha Vantage Free 冻结了 candidate-only adaptation contract，未进入实现：
+
+- two-phase normalization：parser 输出 provisional rows，frozen `MonitoringPoolSnapshot`
+  exact symbol -> Company resolution 后才生成 `internal:v2:<sha256>` source identity；
+- v2 identity inputs：`source_key`、`provider_key`、resolved Company UUID、
+  `period_end_date`；不含 reportDate、release_session、raw_position、parser_version、
+  fiscal facts 或 snapshot hash；
+- observation / candidate 允许 `period_type = NULL`；candidate `identity_key` /
+  `identity_rule_version` 保持 NULL；
+- 同一 candidate family（v2 source identity + Company + period_end_date + matcher version）
+  复用既有 candidate，新 observation 通过 `matched_candidate` decision 追加 lineage；
+  冲突使用 `collision` / `review_required`；
+- promotion firewall：AV ingestion MUST NOT 调用 promotion；只有 SEC / IR / approved
+  manual evidence / future exact provider 补齐 period_type 后，才走 ADR-009；
+- window：system desired coverage 与 provider capability 分离；AV 为 forward nominal
+  3month、past correction unsupported；
+- schema / migration = NO / NO；license activation for normalized / candidate pipeline
+  storage 仍待 Provider 澄清。
 
 ## 7. SEC 文件
 
@@ -764,7 +799,7 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | IndexChangeEvent | aggregation_key unique |
 | EarningsEvent | 非空 identity_key unique；规则为 company + period_end_date + period_type，带版本 |
 | EarningsDateChange | data_change unique；领域历史 append-only |
-| EarningsCalendarObservation（4.2B 已实现） | raw_data_record + parser_version + source event identity（物理列 `provider_event_id`）unique；按 source + source event identity 建索引 |
+| EarningsCalendarObservation（4.2B 已实现） | raw_data_record + parser_version + source event identity（物理列 `provider_event_id`）unique；按 source + source event identity 建索引；ADR-020 v2 使用 `internal:v2:` 且允许经批准路径的 `period_type = NULL` |
 | EarningsReconciliationDecision（4.2B 已实现） | deterministic decision_key unique；append-only；supersedes 链 |
 | Filing | accession_number unique |
 | WatchlistItem | user + company unique |
@@ -812,6 +847,10 @@ append-only decision。4.2D-2 core 已实现 deterministic revision、decision/c
 identity、SourceEvidence/AuditRecord 和 replay/correction 幂等；run lifecycle integration
 仍待 caller 在 normalization 完整后、terminal finalization 前调用。
 
+ADR-020 进一步冻结 Alpha Vantage Free v2 candidate-entry adaptation：technical contract =
+PASS；implementation 仍待 normalized / candidate / canonical-pipeline storage 的许可澄清。
+详见 §6.7。
+
 以下数据决策仍待确认：
 
 1. precision refinement / regression 是否通知用户，以及日期变化通知中的 old/new status 组成；历史记录规则已由 ADR-007 确定。
@@ -824,4 +863,6 @@ identity、SourceEvidence/AuditRecord 和 replay/correction 幂等；run lifecyc
 8. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
 9. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
 10. AuditRecord 和 DataChange 的保留期限、IP 哈希保留期及具体查看角色仍需在阶段 8.1 前确认；目标引用已确定为受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。
-11. 4.2F 最终 provider / license checklist 结论与 anomaly shrink operational 阈值；不阻塞 4.2C-4.2E。
+11. 4.2F 最终 provider / license checklist 结论与 anomaly shrink operational 阈值；ADR-020
+   已冻结 Alpha Vantage v2 candidate-entry technical contract，normalized / candidate /
+   canonical-pipeline storage 许可待澄清，implementation 未开始；不阻塞 4.2C-4.2E。

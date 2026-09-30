@@ -6,6 +6,11 @@
 - 影响阶段：4.2D-2 Candidate Creation & Company Matching
 - 评审基线：`origin/main`，commit `49c3d90ec1521b6fd762418115ca97e6a1f7265e`
 
+> 修订说明（ADR-020）：本 ADR 的 frozen snapshot、exact-only 与 fail-closed 规则保持
+> 不变。ADR-020 为 Alpha Vantage Free v2 增加了 provider-specific 例外：允许 exact
+> `provider_symbol` 对 frozen snapshot basis listing `ticker` 做 Company resolution；
+> generic matcher 对其他 Provider 仍禁止 `provider_symbol` / ticker-only fallback。
+
 ## 1. 背景
 
 Stage 4.2D-1 已实现 Company-level monitoring-pool selector：
