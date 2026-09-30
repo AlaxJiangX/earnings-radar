@@ -163,3 +163,9 @@ EARNINGS_CALENDAR_STALE_AFTER_SECONDS = env_positive_int(
     default=1800,
     maximum=86400,
 )
+
+REFERENCE_CALENDAR_STALE_AFTER_HOURS = env_positive_int(
+    "REFERENCE_CALENDAR_STALE_AFTER_HOURS",
+    default=48,
+    maximum=8760,
+)

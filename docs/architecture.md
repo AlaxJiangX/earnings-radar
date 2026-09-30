@@ -241,6 +241,13 @@ listings 做 exact symbol -> Company 匹配，歧义 fail closed；reference 层
 只属于 4.2F-B。4.2F-A 不需要 schema / migration，且必须通过独立的 Mode A provider /
 license checklist。
 
+4.2F-A 后端实现使用独立 `earnings.calendar_reference_window` job type 和 Alpha Vantage
+Free market-wide `EARNINGS_CALENDAR?horizon=3month` Provider。应用 service 冻结 pool，
+经 audit service 保存原始响应及 parse attempt；读取时根据 run scope 解析同一 raw，并仅
+使用 frozen snapshot 的 basis listings 做精确匹配。API key 只在 HTTPS transport 发送边界
+注入，持久化请求 URL 与 scope 不含凭据。reference replay 不新建 run 或 audit 行；当前
+没有 UI、自动调度或 canonical 写入。个人私有 Mode A 许可之外的部署须重新审查。
+
 完整决策见 `docs/decisions/ADR-010-earnings-calendar-observation-and-reconciliation.md`、
 `docs/decisions/ADR-011-earnings-calendar-offline-replay.md`、
 `docs/decisions/ADR-012-monitoring-pool-selector.md`、

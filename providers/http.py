@@ -46,6 +46,7 @@ class RetryPolicy:
     max_attempts: int = 3
     base_delay_seconds: float = 0.25
     max_delay_seconds: float = 5.0
+    retry_rate_limits: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -58,6 +59,8 @@ class RetryPolicy:
         _require_non_negative_finite(self.max_delay_seconds, value_name="maximum retry delay")
         if self.max_delay_seconds < self.base_delay_seconds:
             raise ValueError("max_delay_seconds must not be less than base_delay_seconds.")
+        if not isinstance(self.retry_rate_limits, bool):
+            raise ValueError("retry_rate_limits must be a boolean.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +223,10 @@ class ProviderHttpClient:
 
             if (
                 not caught_error.retryable
+                or (
+                    isinstance(caught_error, ProviderRateLimitError)
+                    and not self.config.retry_policy.retry_rate_limits
+                )
                 or attempt_number >= self.config.retry_policy.max_attempts
             ):
                 raise caught_error

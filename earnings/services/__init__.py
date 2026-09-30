@@ -134,6 +134,7 @@ from earnings.services.monitoring_pool import (
     MonitoringPoolSnapshotReference,
     UnknownMonitoringPoolSelectorVersion,
     resolve_monitoring_pool_snapshot,
+    resolve_monitoring_pool_snapshot_contract,
     select_monitoring_pool,
 )
 from earnings.services.promotion import (
@@ -165,6 +166,22 @@ from earnings.services.reconciliation_workflow import (
     reconcile_earnings_candidate,
     resolve_earnings_reconciliation_manually,
 )
+from earnings.services.reference_calendar_projection import (
+    REFERENCE_CALENDAR_JOB_TYPE,
+    REFERENCE_PROJECTION_VERSION,
+    ReferenceCalendarView,
+    ReferenceDiagnostics,
+    ReferenceProjection,
+    ReferenceProjectionError,
+    ReferenceProjectionRow,
+    latest_reference_calendar,
+    project_reference_calendar,
+)
+from earnings.services.reference_calendar_sync import (
+    ReferenceCalendarSyncError,
+    ReferenceSyncResult,
+    execute_reference_calendar_sync,
+)
 
 __all__ = [
     "EARNINGS_CALENDAR_REQUEST_IDEMPOTENCY_PREFIX",
@@ -177,6 +194,8 @@ __all__ = [
     "EARNINGS_CANDIDATE_PROMOTION_RULE_VERSION",
     "EARNINGS_DATE_CHANGE_RULE_VERSION",
     "EARNINGS_MONITORING_POOL_SELECTOR_VERSION",
+    "REFERENCE_CALENDAR_JOB_TYPE",
+    "REFERENCE_PROJECTION_VERSION",
     "EARNINGS_RECONCILIATION_VERSION",
     "EARNINGS_STATUS_LIFECYCLE_RULE_VERSION",
     "PROMOTION_IDENTITY_FIELDS",
@@ -268,6 +287,13 @@ __all__ = [
     "MonitoringPoolSelectionResult",
     "MonitoringPoolSelectorError",
     "MonitoringPoolSnapshotReference",
+    "ReferenceCalendarSyncError",
+    "ReferenceCalendarView",
+    "ReferenceDiagnostics",
+    "ReferenceProjection",
+    "ReferenceProjectionError",
+    "ReferenceProjectionRow",
+    "ReferenceSyncResult",
     "ManualEarningsReconciliationResult",
     "UnknownMonitoringPoolSelectorVersion",
     "UnknownCompanyMatcherVersion",
@@ -286,6 +312,10 @@ __all__ = [
     "record_earnings_calendar_observation",
     "reconcile_earnings_calendar_replayed_count",
     "resolve_monitoring_pool_snapshot",
+    "resolve_monitoring_pool_snapshot_contract",
+    "project_reference_calendar",
+    "latest_reference_calendar",
+    "execute_reference_calendar_sync",
     "select_monitoring_pool",
     "retire_stale_earnings_calendar_replay_run",
     "record_earnings_reconciliation_decision",
