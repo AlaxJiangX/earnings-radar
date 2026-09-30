@@ -6,6 +6,12 @@
 - 影响阶段：4.2A-4.2F 的 source identity 解释，并为 4.2F Provider / License Gate 提供稳定输入
 - 评审基线：`origin/main`，commit `ead1e18fce7fd667b039aff482fe63907957e3b6`
 
+> 修订说明（ADR-020）：Alpha Vantage Free 的 candidate-entry adaptation contract 已由
+> ADR-020 接受。第 5 节 internal identity 的 issuer 输入、第 6 节 incomplete input
+> behavior 与第 11 节 zero-cost provider compatibility，对 Alpha Vantage Free v2
+> approved path 由 ADR-020 部分修订；三层 identity 模型、v1 历史不变、canonical
+> identity 分离、replay 语义与未列明规则保持不变。
+
 ## 1. 背景
 
 ADR-010 要求 earnings calendar Provider 提供稳定、非空、由上游提供的

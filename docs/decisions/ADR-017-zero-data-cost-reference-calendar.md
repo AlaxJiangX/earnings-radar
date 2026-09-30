@@ -9,6 +9,11 @@
   `ead1e18fce7fd667b039aff482fe63907957e3b6`
 - 影响阶段：4.2F 拆分为 4.2F-A / 4.2F-B；ADR-015 canonical identity 契约不变
 
+> 修订说明（ADR-020）：两层 reference + canonical 模型与 4.2F-A 边界保持不变。
+> ADR-020 进一步冻结 Alpha Vantage Free v2 candidate-entry adaptation：candidate 允许
+> `period_type = NULL` 并配合 promotion firewall；normalized / candidate pipeline storage
+> 的许可仍待澄清，4.2F-B implementation 未开始。
+
 ## 1. Zero Data Cost 定义
 
 本仓库不再使用含糊的 "zero cost"，统一使用 **Zero Data Cost**：
