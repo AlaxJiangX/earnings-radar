@@ -1,6 +1,6 @@
 # ADR-019：Alpha Vantage Free Mode A Reference Provider License Gate
 
-- 状态：已接受（gate 结论：**BLOCKED — PROVIDER CLARIFICATION REQUIRED**）
+- 状态：已接受（2026-09-30 resolution gate：**PASS**，仅限个人、私有、单用户 Mode A reference 用途）
 - 日期：2026-09-29
 - 决策者：产品负责人
 - 评估与起草：Codex（按 Stage 4.2F-A Mode A License Gate 执行）
@@ -67,17 +67,19 @@ offline replay 的明示条款。
 ## 3. 权利矩阵
 
 分类规则：明确授权或清晰必要的推论 = YES；明确限制 = NO；沉默 / 模糊 = UNKNOWN。
+以下为 2026-09-30 resolution gate 的当前判定；2026-09-29 的未知项已由 §9 的
+Alpha Vantage Support 书面回复澄清。所有 YES 仅适用于 §1 所述个人使用范围。
 
 | Right | 分类 | 官方证据 |
 |---|---|---|
 | ongoing free access | YES | Support："free stock API service ... 25 API requests per day"、"lifetime access"；Documentation：Earnings Calendar 可 claim free API key 且无 premium 标记；每天 1 次 reference fetch 在额度内 |
 | automated private retrieval | YES | ToS §2.a 授权在自有 / 控制的 computer 上 use / access / run，用于 personal, non-commercial use；§2.a.i 明确把 monitoring / research 等 private、individual 活动列为非商业用途 |
-| raw payload persistence | UNKNOWN | ToS 完全未提 cache / store / retain；§2.a 只列 install / use / access / display / run；§4 只限制 reverse engineering；§13 / §21 排除了用营销或支持文案补足未授予权利 |
-| historical retention | UNKNOWN | ToS 未提允许多份历史响应保留或保留期限 |
-| offline replay | UNKNOWN | ToS 未提允许对已保存数据离线再处理；§5.b 的 "User retains own data" 只是用户自有数据 IP 归属，不是 AV Content 的保存 / 再处理授权 |
-| derived / reference projection | YES（仅读取时派生并私有展示） | 对获授权的 access / use / display 而言，解析必要字段是清晰必要的推论；持久化派生数据未被条款提及，属于 UNKNOWN，v1 不持久化派生行 |
+| raw payload persistence | YES | Support 对原始 `EARNINGS_CALENDAR` CSV/JSON 长期保存问题明确答 YES；仅限个人私有数据库 |
+| historical retention | YES | Support 对保留多份历史 API 响应明确答 YES，并确认无额外保留期限 |
+| offline replay | YES | Support 对无需再次调用 API 而离线读取、处理已保存响应明确答 YES |
+| derived / reference projection | YES | Support 对从已保存响应派生字段并在私有单用户应用展示明确答 YES；4.2F-A v1 仍只在读取时投影，不持久化派生行 |
 | private / internal display | YES | ToS §2.a 明确授予 display，用于 personal, non-commercial use；单用户私有实例不触发 §2.a.ii / iii |
-| audit metadata retention | YES | fetch 时间、request fingerprint、content hash、parser/projection 版本、raw position 与 diagnostics 属于用户自有运行元数据，不复制 AV Content；ToS 无限制条款；但不能用它补足 raw payload 持久化的 UNKNOWN |
+| audit metadata retention | YES | fetch 时间、request fingerprint、content hash、parser/projection 版本、raw position 与 diagnostics 属于用户自有运行元数据；Support 已明确允许包含来源时间与 freshness metadata 的私有派生字段 |
 | alerts / notifications | UNKNOWN | ToS 未针对提醒 / 通知作说明；不属于当前实现切片，不作为本 gate 的 blocker |
 
 ## 4. Commercial Boundary
@@ -96,9 +98,14 @@ ToS 把"向 User 以外的人或实体直接或间接提供信息"定义为 comm
 ## 5. Zero Data Cost 与 Entire-Agreement 影响
 
 - 免费访问与额度：满足 Zero Data Cost 的访问条件（25 请求/天，1 请求/天足够）；
-- §13 / §21：只有官方书面条款或签名书面澄清才可能把 UNKNOWN 升级为 YES；marketing、
-  FAQ、support 文案不能作为授权依据；
-- 本 gate 不发送澄清请求，也不改变任何 provider 的批准状态。
+- §13 / §21：一般营销、FAQ 或未核实身份的支持文案不能补足未知权利。本次依据的是
+  从 ToS §19 所列 `support@alphavantage.co` 发出的、针对所述个人用途四项具体问题的
+  直接书面确认；这是对现有个人使用范围的澄清，不据此修改合同或授予新场景的许可。
+  回复没有双方签署的合同修改形式，因此不能据此扩大 §2.a 的许可范围；任何超出
+  该范围的合同修改仍须满足 §13 的签署要求。这是对原 gate 所设“签名书面澄清”
+  审查口径的显式限缩：本次只接受官方支持邮箱对现有个人许可的解释，不接受其
+  作为新增合同权利的证据。
+- 该回复没有扩大免费额度，也没有批准公开、多用户、商业使用或再分发。
 
 ## 6. Gate Decision
 
@@ -108,25 +115,26 @@ ToS 把"向 User 以外的人或实体直接或间接提供信息"定义为 comm
 required rights:
   ongoing free access              = YES
   automated private retrieval      = YES
-  raw payload persistence          = UNKNOWN
-  historical retention             = UNKNOWN
-  offline replay                   = UNKNOWN
-  derived / reference projection   = YES（读取时）
+  raw payload persistence          = YES
+  historical retention             = YES
+  offline replay                   = YES
+  derived / reference projection   = YES
   private / internal display       = YES
   audit metadata retention         = YES
 
 no required right = NO
 
-Gate result = BLOCKED — PROVIDER CLARIFICATION REQUIRED
+Gate result = PASS（仅限个人、私有、单用户、非商业 Mode A reference）
 ```
 
-这不是 REJECTED：ToS 没有明确禁止保留 / replay；但在书面澄清把 UNKNOWN 变成 YES 之前，
-Alpha Vantage Free 不得进入 production ingestion，4.2F-A implementation 保持 BLOCKED。
-ADR-016 对 canonical provider 的拒绝不因此改变。
+Alpha Vantage Free 获准作为 4.2F-A 的 Mode A reference-only Provider；这不是 4.2F-A
+实现或上线验收。ADR-016 对 canonical primary Provider 的拒绝不因此改变。
 
 ## 7. Provider Clarification Package
 
-以下问题描述真实架构，均为 yes/no 问题；本轮不发送。
+以下为 2026-09-29 记录的原始澄清问题；2026-09-30 的实际邮件以四项问题询问，
+并获得 §9 所记录的答复。第 6 项的终止/轮换后使用和第 7 项的开源自托管多实例
+未被逐项回答，本 gate 不把这两种场景列入当前批准范围。保留原问题供历史追溯。
 
 ```text
 1. May an individual free-API user store complete EARNINGS_CALENDAR API responses,
@@ -157,12 +165,37 @@ Future scope question（不阻塞当前 V1，供后续 open-source self-host 评
 
 ## 8. 后果与后续
 
-- Alpha Vantage Free = Mode A **PENDING CLARIFICATION**，未获批；
-- 4.2F-A implementation 保持 BLOCKED；
-- 若书面澄清对任一必需权利回答 NO，则升级为 REJECTED；
-- 若书面澄清对所有必需权利回答 YES，可据此更新 ADR-019（或另开 ADR）并重跑 gate；
+- Alpha Vantage Free = Mode A reference-only **APPROVED**，仅限个人、私有、单用户、
+  非商业实例；不得将数据公开、再分发、销售或提供给其他用户。
+- 转为公开、多用户、客户可访问、商业或再分发用途前，必须重新审查许可并取得相应协议；
+  当前批准不得直接用于 PRD 中的公开页面或多用户服务。
+- 4.2F-A implementation 尚未开始；未来实现仍须满足 ADR-018 的工程与测试验收。
+- 4.2F-B canonical primary Provider 仍受 ADR-016 的拒绝约束，保持 BLOCKED。
 - 不实现 provider adapter、HTTP transport、parser、projection、command、UI、model、
   migration 或 runtime schedule。
+
+## 9. 2026-09-30 书面澄清与 Resolution Gate
+
+- Provider：Alpha Vantage；证据类型：直接书面支持回复，发件人为
+  `AlphaVantage Support <support@alphavantage.co>`（邮箱与 ToS §19 一致）；
+- 用户报告回复日期：2026-09-30；reviewed_at：2026-09-30；reviewer：Codex；
+- 范围：Free API 的 `EARNINGS_CALENDAR`，仅限个人、私有、单用户、非商业使用；
+- 用户原邮件逐项询问原始 CSV/JSON 长期保存、多份历史响应保留、已保存响应离线处理，
+  以及派生参考字段在私有单用户应用内展示；明确排除再分发、销售、公开和多用户使用；
+- Support 对四项用途均答 YES，并确认在严格个人使用条件下，没有额外保留期限、
+  署名要求、缓存限制或其他条件。
+
+回复原文的实质句：
+
+> Yes, all the 4 uses are permitted. There are no other retention-period limits,
+> attribution requirements, caching restrictions, or other conditions to follow,
+> as long as you use the data strictly for personal use.
+
+证据来自用户提供的邮件抄录，未直接读取邮箱或独立验证邮件头；原始邮件由用户
+保留。本记录不保存用户个人邮箱、完整邮件头或无关邮件元数据。Support 回复仅
+澄清上述当前个人使用；不解释为公开、多用户、商业、再分发、通知、终止许可后
+继续使用或 canonical 使用授权。
+若 API 条款、免费额度或部署/使用范围变化，必须重新执行许可 gate。
 
 ## 参考
 
