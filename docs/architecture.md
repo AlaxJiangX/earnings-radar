@@ -171,7 +171,7 @@ audit app 只保存受限 `target_type + UUID`，不使用 GenericForeignKey，�
 
 `AUDIT_IP_HASH_KEY` 与 Django `SECRET_KEY` 是两个独立秘密。仅 development/test 可使用代码中明确标记的不安全默认值；其他环境缺少独立值、使用开发默认值或与 `DJANGO_SECRET_KEY` 相同时，Django settings 必须抛出 `ImproperlyConfigured`，且错误信息不得包含密钥。`v1` 标识当前算法/context 版本，不标识或保存秘密本身。密钥轮换只影响后续新操作的哈希，追加式历史不回填、不覆盖旧记录；若未来需要并行识别不同轮换代次，应在切换前引入新的版本前缀与 context，而不是改写 v1 历史。
 
-### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge；ADR-015 source identity 已接受；ADR-017/018 已冻结 4.2F-A reference 层契约，4.2F-A 待 Mode A license gate，4.2F-B 仍待 license gate）
+### 4.5 财报日历同步与 Reconciliation 契约（4.2A contract ratified；4.2B schema foundation 已实现；4.2C 已实现；4.2D-1 selector/snapshot core 已实现；4.2D-2 matching implementation 已实现并 merge；4.2E implementation 已实现并 merge；ADR-015 source identity 已接受；ADR-017/018 已冻结 4.2F-A reference 层契约，个人私有 Mode A license gate 已由 ADR-019 通过，4.2F-B 仍待 license gate）
 
 ADR-010 已冻结 4.2 的 provider-neutral 契约；ADR-015 进一步确认 source event identity
 可以由系统确定性生成，Provider-native ID 保持可选 lineage evidence。4.2B 已实现

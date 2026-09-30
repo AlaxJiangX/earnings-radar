@@ -23,7 +23,8 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 |---|---|---|---|---|
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
 | SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument、FilingEarningsLink 候选 | 官方来源；访问策略待实现前核对 |
-| 财报日历 | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native 或 ADR-015 internal） | EarningsCalendarObservation → reconciliation → 预计安排（4.2B planned，ADR-010 / ADR-015） | **供应商与许可待产品确认（4.2F 前）** |
+| 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native 或 ADR-015 internal） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015） | **供应商与许可待产品确认（4.2F-B 前）** |
+| 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）；尚未接入** |
 | IR 官方确认 | 公司 IR 页面或有限 IR Provider | 正式日期、电话会、新闻稿链接 | 确认状态、发布日期、来源证据 | 首批公司清单与抓取方式待确认 |
 | S&P 500 | 官方公告、合法 API 或受控导入 | 证券/ticker、公告日、生效日、成分快照 | SecurityListing 级 IndexMembership、IndexChangeLeg | **来源与许可待产品确认** |
 | Nasdaq 100 | 官方公告、合法 API 或受控导入 | 同上 | 同上 | **来源与许可待产品确认** |
@@ -34,7 +35,8 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 
 ### 2.1 候选入口（仅供人工评估）
 
-下列项目只证明存在潜在数据入口，不代表 Earnings Radar 获得了抓取、缓存、衍生、再分发或商业使用许可：
+下列项目通常只证明存在潜在数据入口；唯一已确认的例外是 ADR-019 批准的 Alpha
+Vantage Free 个人私有 Mode A reference 用途。该例外不授予公开展示、再分发或商业许可：
 
 | 能力 | 候选项 | 当前结论 |
 |---|---|---|
@@ -42,18 +44,19 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 | S&P 500 / Dow 30 | [S&P DJI Index Announcements](https://www.spglobal.com/spdji/en/index-announcements/)、获许可供应商、受控人工导入 | 候选；成分明细、历史、自动化访问与公开再展示许可均未确认 |
 | Nasdaq 100 | Nasdaq Global Index Watch/官方公告、获许可供应商、受控人工导入 | 候选；GIW/API 权限、下载自动化、缓存和再展示许可均未确认 |
 | Russell 2000 | [FTSE Russell Index Notices](https://www.lseg.com/en/ftse-russell/index-resources/notices)、[Russell 2000 页面](https://www.lseg.com/en/ftse-russell/indices/russell-2000-index)、获许可供应商、受控人工导入 | 候选；部分完整公告可能需要订阅，成分数据使用与再分发许可未确认 |
-| 财报日历 | [Nasdaq Earnings Calendar](https://www.nasdaq.com/market-activity/earnings)、[Finnhub Earnings Calendar API](https://finnhub.io/docs/api/introduction)、[Alpha Vantage Earnings Calendar](https://www.alphavantage.co/documentation/)、[FMP Earnings Calendar](https://site.financialmodelingprep.com/developer/docs/stable) | 功能候选；任何免费层、网页或 API 的生产使用、缓存、历史保留、公开展示和开源自托管授权均未确认 |
+| 财报日历 | [Nasdaq Earnings Calendar](https://www.nasdaq.com/market-activity/earnings)、[Finnhub Earnings Calendar API](https://finnhub.io/docs/api/introduction)、[Alpha Vantage Earnings Calendar](https://www.alphavantage.co/documentation/)、[FMP Earnings Calendar](https://site.financialmodelingprep.com/developer/docs/stable) | Alpha Vantage Free 的个人私有 Mode A reference 用途已通过 ADR-019；canonical、公开/多用户与其他候选的许可仍未确认 |
 
-> 2026-09-29 更新：财报日历候选中的 Alpha Vantage Free 已完成 4.2F focused
+> 2026-09-29 更新：财报日历候选中的 Alpha Vantage Free 已完成 4.2F-B canonical focused
 > provider / license gate，结论为 REJECTED：`EARNINGS_CALENDAR` 缺 CIK / exchange /
 > normalized period_type，horizon 仅 forward 3 / 6 / 12 months，免费条款只覆盖个人非商用
 > 且未明示 retention / derived / display / replay 权利（见
 > `docs/decisions/ADR-016-alpha-vantage-free-provider-gate.md`）。其余候选在本轮未评估，
-> 最终 provider 选择仍待产品确认。
+> canonical provider 选择仍待产品确认。
 >
-> 同日 4.2F-A Mode A reference-only license gate（ADR-019）结论为 BLOCKED —
-> PROVIDER CLARIFICATION REQUIRED：个人访问与私有展示有明确授权，但 raw 持久化、
-> 历史保留与 offline replay 未获明示；取得书面澄清前不得进入 production ingestion。
+> 2026-09-30 更新：Alpha Vantage Support 对原始响应长期持久化、多份历史保留、离线
+> 重放及私有单用户派生展示给予书面确认；4.2F-A Mode A reference-only license gate
+> 因此 PASS（ADR-019）。此许可仅覆盖个人、私有、单用户、非商业使用；公开展示、
+> 多用户、商业、再分发或客户访问前必须重新审查并取得相应协议。4.2F-A 尚未实现。
 
 ### 2.2 每个候选必须人工验证的许可问题
 
@@ -221,7 +224,8 @@ SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 
 任一项未知时只能使用 fixture 或受控开发 smoke test，不能进入生产同步。
 
 4.2F-A reference-only 用途的 Mode A 判定标准（PASS / FAIL / UNKNOWN）与权利清单见
-ADR-018；条款沉默一律视为未授权。
+ADR-018；Alpha Vantage Free 的个人私有用途结论与书面证据见 ADR-019。其他用途或
+来源条款沉默一律视为未授权。
 
 ## 9. 失败保护与验收
 
@@ -238,7 +242,8 @@ ADR-018；条款沉默一律视为未授权。
 
 ## 10. 仍待确认
 
-- 财报日历供应商、四个指数来源和各自许可；
+- 财报日历 canonical 供应商、四个指数来源和各自许可；Alpha Vantage Free 仅获准用于
+  个人私有 Mode A reference，公开/多用户使用仍待单独许可审查；
 - 首批 IR 公司清单与允许的抓取方式；
 - IR / SEC 高 authority 来源的字段级冲突矩阵与复核流程（4.4 / 4.5 前）；4.2 第三方
   calendar 字段权限与 append-only manual decision authority 已由 ADR-010 确定；
