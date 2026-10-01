@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 已按 ADR-013 实现并 merge candidate/company matching core，且通过 merge 后定向复验；阶段 4.2E reconciliation workflow 已实现并通过 PR #43 merge；4.2F-A reference calendar 已实现、验证并 merge；4.2F-B Alpha Vantage adaptation contract 已由 ADR-020 冻结（technical PASS），后续书面澄清解决了个人用途的 normalized / candidate / canonical-pipeline storage 许可；4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）。当前 main 已包含 candidate-only Alpha Vantage canonical provider adapter 与 sync service；仍没有通用 v1 canonical live Provider command、SEC Filing 或通知领域模型。
+当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 已按 ADR-013 实现并 merge candidate/company matching core，且通过 merge 后定向复验；阶段 4.2E reconciliation workflow 已实现并通过 PR #43 merge；4.2F-A reference calendar 已实现、验证并 merge；4.2F-B Alpha Vantage adaptation contract 已由 ADR-020 冻结（technical PASS），后续书面澄清解决了个人用途的 normalized / candidate / canonical-pipeline storage 许可；4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）。阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #55，merge `bda12ff`）。Stage 4.5 Contract Documentation 已将 4.5A 冻结为 `CONTRACT FROZEN / READY FOR IMPLEMENTATION`、4.5B 冻结为 `CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`；两者尚未实现。当前 main 已包含 candidate-only Alpha Vantage canonical provider adapter 与 sync service，仍没有通用 v1 canonical live Provider command、FilingEarningsLink、IR observation / decision 或通知领域模型。
 
 ## 1. 架构目标与边界
 
@@ -52,8 +52,8 @@ Web 请求不直接访问外部数据源。未来 Cron Job 调用 Django managem
 | `accounts` | 自定义用户、认证、时区和用户偏好 | Django auth | 公司及事件业务 |
 | `companies` | 公司、CIK、股票代码/上市身份、公司搜索、监控状态 | `audit` 的来源引用接口 | 直接抓取第三方数据 |
 | `indexes` | 证券级指数成分历史、加入/移除、偏移聚合 | `companies`, `providers`, `audit` | 用户通知投递 |
-| `earnings` | 财报事件生命周期、日期变更、来源核对、monitoring pool | `companies`, `indexes`, `filings`, `providers`, `audit` | 外部 HTTP 细节 |
-| `filings` | SEC 文件、财报关联、公开列表 | `companies`, `providers`, `audit` | 复制 SEC 全文 |
+| `earnings` | 财报事件生命周期、日期变更、来源核对、monitoring pool、Filing ↔ Earnings 关联 / classification / review / replay、IR confirmation | `companies`, `indexes`, `filings`, `providers`, `audit` | 外部 HTTP 细节 |
+| `filings` | SEC Filing / FilingDocument 与 metadata 同步 | `companies`, `providers`, `audit` | 复制 SEC 全文、Filing ↔ Earnings 关联、IR confirmation |
 | `watchlists` | 自选股、普通/重点关注、公司级提醒开关 | `accounts`, `companies` | 全局通知策略 |
 | `notifications` | 提醒规则、通知生成、站内通知、邮件投递和重试 | 各领域的稳定公开接口 | 判断外部数据真实性 |
 | `providers` | Provider 协议、安全 HTTP 传输接口、结构化原始结果和测试 Fake/fixture | `audit.security` 的纯安全函数、`audit.constants` 的原始正文硬上限 | 数据库写入、同步编排、页面渲染和用户权限 |
@@ -141,7 +141,8 @@ MVP Provider 类型：
 来源优先级原则是“官方且直接的证据优先”。Stage 4.2 的第三方 earnings calendar authority
 已由 ADR-010 冻结：自动写权限仅限于 `estimated_release` / `release_session`，且必须通过
 earnings schedule domain service；`confirmed_release`、`earnings_release`、
-`conference_call` 和 status 保留给 4.4 / 4.5 的 authority contract。provider absence 不得
+`conference_call` 和 status 保留给 4.5B 的 IR authority contract；4.4 只提供 Filing
+metadata，不推进 EarningsEvent lifecycle。provider absence 不得
 删除、取消或修改任何 EarningsEvent。完整分层、matching、empty calendar、merge 与 replay
 契约见 ADR-010 和 `docs/data-sources.md`。
 
@@ -274,6 +275,84 @@ merge gate。
 `docs/decisions/ADR-019-alpha-vantage-mode-a-reference-license-gate.md` 与
 `docs/decisions/ADR-020-alpha-vantage-canonical-entry-adaptation.md`。
 
+### 4.6 Filing ↔ Earnings Link 与 IR 确认契约（4.5 Contract Documentation；4.5A READY FOR IMPLEMENTATION；4.5B FIXTURE-FIRST / LIVE BLOCKED）
+
+Stage 4.5 已正式拆分为 4.5A 与 4.5B。权威契约分别为 ADR-021 与 ADR-022；本节只说明
+ownership 与数据流，不复制完整 decision table。
+
+#### 4.6.1 Ownership 与依赖方向
+
+```text
+filings app
+  Filing / FilingDocument
+  SEC provider parsing / sync
+
+earnings app
+  FilingEarningsLink / FilingEarningsDecision
+  matching / release classification / review / replay
+  has_release_filing / has_periodic_filing selector
+  InvestorRelationsObservation / InvestorRelationsDecision (4.5B future)
+  IR confirmation orchestration
+```
+
+依赖方向：
+
+- `earnings -> filings` 允许；
+- `filings -> earnings` 禁止；
+- Filing 的 SEC metadata 是监管事实，财报关联与 authority 是 earnings 领域语义；
+- 跨模块只通过公开 service / selector 和稳定模型引用协作。
+
+#### 4.6.2 4.5A 数据流
+
+```text
+Stage 4.4 persisted Filing / FilingDocument metadata
+  -> deterministic periodic / release matching in earnings
+  -> FilingEarningsLink current projection
+  -> append-only FilingEarningsDecision history
+  -> selector-derived has_release_filing / has_periodic_filing
+```
+
+规则：
+
+- 只匹配同一个 Company 的 canonical EarningsEvent；
+- candidate-only、多 candidate、取消事件进入 review_required，不创建 link；
+- release classification 只使用 form type、reported_items、document_type metadata；
+- 不下载、不解析、不持久化 filing body；
+- manual > automatic；manual leaf 阻塞 automatic supersession；
+- 任何 Filing link 都不修改 EarningsEvent.status；
+- 4.5A implementation 不修改 templates / pages。
+
+#### 4.6.3 4.5B 数据流
+
+```text
+IR Provider
+  -> RawDataRecord / RawDataObservation
+  -> parser
+  -> InvestorRelationsObservation
+  -> InvestorRelationsDecision
+  -> existing update_earnings_schedule / confirm_earnings_event /
+     cancel_earnings_event
+```
+
+规则：
+
+- Provider 只返回安全结构化结果，不写领域表，不创建 SyncRun 或 audit row；
+- IR source 仅限 official IR page / feed 或 licensed vendor API；
+- operator allowlist 最多 50 家公司，每家公司必须有 `Company.investor_relations_url`；
+- run 持久化 frozen scope 与 canonical digest，replay 不重选 allowlist；
+- field authority：`manual > IR > SEC filing state > third-party calendar`，只在来源对
+  相应字段有权限时适用；
+- same-authority conflict 进入 review_required；
+- provider absence 不取消、不降级、不删除；
+- SEC Filing 不推进 EarningsEvent lifecycle。
+
+#### 4.6.4 Live gate
+
+4.5B 每个 IR 来源在 live 前必须逐项记录 authentication / robots / terms / automated
+access / caching / retention / derived data / display / redistribution / rate limits /
+deletion / reviewer / reviewed_at / conclusion。任一项 unknown 即为 `LIVE BLOCKED`；
+fixture-first 不受阻塞。实际 IR company allowlist 与逐来源批准仍待产品负责人确认。
+
 ## 5. 领域流程
 
 ### 5.1 公司与监控池
@@ -315,7 +394,19 @@ SEC Filing 不属于 EarningsEvent 的单向状态机。`Filing` 保存每份监
 
 ### 5.4 SEC 文件
 
-按 SEC accession number 全局去重。文件先关联公司，再通过报告期、表单类型和时间窗口关联一个或多个财报事件。自动关联必须保存规则版本和置信度；不确定关联可由管理员复核，不能静默覆盖。release filing 与 periodic filing 的可用性分别从已确认的 FilingEarningsLink 推导，任何一类文件都不推动 EarningsEvent.status。
+按 SEC accession number 全局去重，Filing / FilingDocument 由 `filings` app 所有；
+Filing ↔ Earnings 关系由 `earnings` app 的公开 service 所有。4.5A matching 只使用
+persisted metadata，按报告期、表单类型和 ET 时间窗口在同一个 Company 的 canonical
+EarningsEvent 中确定性匹配；不使用 fuzzy，不重新运行 monitoring-pool selector，不以
+ticker、name 或 CIK 二次识别 Company。
+
+8-K / 6-K 的 `RELEASE_FILING` 关系和 10-Q / 10-K / 20-F / 40-F 的
+`PERIODIC_FILING` 关系相互独立；release classification 只使用 form type、
+`reported_items`、`document_type` 的 metadata，不下载 filing body。
+`review_required` / `no_match` / manual rejected 通过 append-only
+`FilingEarningsDecision` 留痕。release filing 与 periodic filing 的可用性分别从
+`review_status != rejected` 的 link 推导；任何 Filing 都不推动或倒退
+`EarningsEvent.status`。完整契约见 ADR-021。
 
 ### 5.5 通知
 
@@ -454,7 +545,7 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 2. “每条关键数据保存每次抓取的原始响应”与“重复同步不得产生重复原始响应”存在表述张力；本方案对相同内容只存一份正文，同时每次运行保留获取/未变统计。
 3. MVP 验收要求用户可以注册，待确认项又建议开发阶段关闭公开注册；路线图已拆为关闭注册的 alpha 和开放注册的 beta。
 4. “所有数据库时间保存 UTC”不适用于只精确到自然日的公告日/生效日；本方案将其保存为 `date`，只有具体时刻使用 UTC。财报发布时间字段的 date-only / exact datetime 表示见 ADR-007。
-5. PRD 使用公司级 IndexMembership、单一 `FILED` 状态和早期财报唯一键作为需求草案表达；ADR-001/002/003/007/008 已确定更精确的技术模型，产品范围未改变。
+5. PRD 使用公司级 IndexMembership、单一 `FILED` 状态和早期财报唯一键作为需求草案表达；ADR-001/002/003/007/008 已确定更精确的技术模型，ADR-021/022 进一步关闭 4.5A/4.5B 的 filing relation 与 IR authority。PRD §6.1 的 `FILED` 语言不重写，ADR 技术模型优先，产品范围未改变。
 
 ## 14. 待产品负责人确认
 
@@ -465,11 +556,16 @@ MVP 可先以日志、Django Admin 和邮件告警运维，不新增独立监控
 - 财报日历供应商、字段语义、许可和更新频率；AV v2 candidate-entry technical contract 已由
   ADR-020 冻结，个人用途许可已解决；公开 / 多用户 / 商业用途的 Provider 选择仍待产品
   确认；
-- IR Provider 首批公司范围与维护方式；
-- IR / SEC 等高 authority 来源的字段级冲突与复核流程（4.4 / 4.5 前）；4.2 第三方 earnings
-  calendar 的字段权限、manual decision authority 和 exact-only matching 已由 ADR-010 确定；
+- IR Provider 首批公司范围与维护方式：4.5B contract 已由 ADR-022 冻结，实际公司
+  allowlist、每家公司 official source 与逐来源许可仍待确认；live Provider 保持
+  `LIVE BLOCKED`；
+- IR / SEC 等高 authority 来源的字段级冲突与复核流程：IR / manual / SEC filing state /
+  third-party calendar 的字段级 authority 已由 ADR-022 冻结；4.2 第三方 earnings calendar
+  的字段权限、manual decision authority 和 exact-only matching 已由 ADR-010 确定；SEC
+  Filing 不推进 EarningsEvent lifecycle；
 - 1–7 日指数偏移候选的人工复核负责人、时限与默认处理；
-- release filing 首版允许使用的 exhibit/文本证据清单与复核时限；
+- release filing 首版允许使用的 exhibit/文本证据清单已由 ADR-021 关闭为 metadata-only
+  v1（`EX-99.1` / `EX-99`）；REVIEW_REQUIRED 展示范围与复核时限仍待确认；
 - 日期提醒按美东自然日还是用户本地自然日计算；
 - 摘要发送时间、每周摘要星期和 DST 行为；
 - 原始数据保留期限、最大体积和删除政策；

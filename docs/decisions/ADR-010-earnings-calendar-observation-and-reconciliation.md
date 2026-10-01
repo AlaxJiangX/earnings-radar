@@ -1,6 +1,7 @@
 # ADR-010：财报日历 Observation、External Identity 与 Reconciliation 契约
 
-- 状态：已接受（第 2 节 source event identity 规则先后由 ADR-015 / ADR-020 部分修订）
+- 状态：已接受（第 2 节 source event identity 规则先后由 ADR-015 / ADR-020 部分修订；4.5
+  authority handoff 由 ADR-021 / ADR-022 补充）
 - 日期：2026-09-20
 - 决策者：产品负责人
 - 影响阶段：4.2A、4.2B、4.2C、4.2D、4.2E、4.2F
@@ -499,6 +500,26 @@ Replay 分层：
 
 - 4.2F 最终 provider 选择与 license checklist 结论；
 - anomaly shrink 的 operational warning 阈值，仅作为非 domain 的运维策略；
-- 4.4 / 4.5 更高 authority 来源的字段级冲突矩阵；
+- 4.4 / 4.5 更高 authority 来源的字段级冲突矩阵：IR / manual / SEC filing state 的
+  4.5B authority 已由 ADR-022 冻结；4.5A Filing ↔ Earnings 关系与 derived filing state
+  已由 ADR-021 冻结。实际 IR 公司清单与逐来源许可仍待产品确认；
 - 7.2 review UI、复核负责人与 SLA；4.2E 只要求可查询 service 与 fail-closed 语义；
 - `decision_type` / `status` 的最终枚举字符串；语义已冻结，具体值属于 4.2B 实现细节。
+
+## 4.5 Authority Handoff（ADR-021 / ADR-022，2026-10-01）
+
+本 ADR 的 4.2 authority 不变，4.5 只接手以下字段与状态：
+
+- 4.2 继续只自动写 `estimated_release` / `release_session`；
+- 4.5A 负责 Filing ↔ Earnings 关系、release classification、review / replay 与
+  `has_release_filing` / `has_periodic_filing` 派生；它不修改 EarningsEvent；
+- 4.5B 负责 IR 官方确认的 `confirmed_release`、`earnings_release`、`conference_call`、
+  `release_session` refinement、`scheduled_confirmed`、`released` 与 explicit
+  `cancelled`；
+- 字段级优先级为 `manual > IR > SEC filing state > third-party calendar`，并且只在来源
+  对相应字段有 authority 时适用；
+- 3-party calendar absence、SEC Filing、IR missing 都不得触发 cancellation 或删除；
+- exact-only reconciliation、no destructive merge、manual authority 与 provider absence
+  规则保持不变。
+
+4.5A 契约见 ADR-021，4.5B 契约见 ADR-022。

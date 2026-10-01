@@ -474,53 +474,213 @@ ADR-020 为 Alpha Vantage Free 冻结了 candidate-only adaptation contract，�
 - schema / migration = NO / NO；个人用途的 normalized / candidate pipeline storage 许可
   已由后续书面澄清覆盖；4.2F-B implementation 已实现、验证并 merge（PR #51）。
 
+### 6.8 `InvestorRelationsObservation`（4.5B contract only；未实现）
+
+> 本节只记录 ADR-022 冻结的未来 schema 方向。4.5B live Provider 仍为
+> `LIVE BLOCKED`，本阶段 MUST NOT 创建 model 或 migration。
+
+IR observation 是 append-only normalized revision，不复用
+`EarningsCalendarObservation`。Provider → RawDataRecord → RawDataObservation → parse →
+IR observation → IR decision → 既有 schedule / lifecycle service；Provider 和 parser
+不得直接写 EarningsEvent。
+
+| 字段 | 说明 |
+|---|---|
+| `id` | UUID PK |
+| `source_id` | FK DataSource，PROTECT；必须与 raw record source 一致 |
+| `raw_data_record_id` | FK RawDataRecord，PROTECT |
+| `provider_key`, `provider_version`, `parser_version` | 来源与解析版本 |
+| `source_event_identity` | provider-native ID 或 `internal:ir:v1:<sha256>` |
+| `raw_position` | 1-based 原始位置 |
+| `company_id` | FK Company，PROTECT |
+| `period_end_date` | date，非空 |
+| `period_type` | Q1 / Q2 / Q3 / FY / H1 / H2 / OTHER，非空 |
+| `item_type` | release_confirmation / results_release / call_notice / cancellation |
+| `confirmed_release`, `earnings_release`, `conference_call` | date 或 exact datetime 加 precision，nullable |
+| `release_session` | nullable / unknown |
+| `cancellation` | explicit structure，nullable |
+| `source_observed_at`, `confidence`, `created_at` | 来源时间、可解释置信度、UTC |
+
+约束方向：
+
+- unique `(raw_data_record, parser_version, source_event_identity)`；
+- append-only，不允许 update / delete；
+- source 关系、item_type 必填事实和 Company / period identity 必须一致；
+- 缺少 exact Company 或完整 period identity 时只保留 raw lineage，不创建 observation、
+  decision 或 authority write；
+- source identity 的 `internal:ir:v1` 输入只包含 source_key、company_id、
+  period_end_date、period_type、item_type，不包含 mutable date、fetched_at、
+  raw_position 或 parser_version。
+
+### 6.9 `InvestorRelationsDecision`（4.5B contract only；未实现）
+
+IR decision 是 append-only authority / history model，通过 `supersedes` 链表达更替，
+不增加可变 lock flag。Manual decision 优先于 IR automatic decision。
+
+预期字段包括：
+
+```text
+id
+observation_id
+target_event_id nullable
+decision_type
+status
+covered_fields
+rule_version
+match_factors
+reason
+actor_user_id / sync_run_id
+request_id
+decided_at
+supersedes_id
+decision_key unique
+created_at
+```
+
+决策类型至少覆盖：confirmed_schedule、updated_conference_call、released、cancelled、
+conflict、no_match、ignored。所有 schedule / status 写入必须调用既有的
+`update_earnings_schedule`、`confirm_earnings_event`、`cancel_earnings_event` 等 service；
+decision 本身不得直接修改 EarningsEvent。
+
+IR field authority、冲突、取消与 replay 契约见 ADR-022。4.5B 的实际字段名、枚举和迁移
+编号必须在 implementation 阶段重新核对，不得把本节当作已实现 schema。
+
 ## 7. SEC 文件
 
 ### 7.1 `Filing`
+
+Filing / FilingDocument 由 `filings` app 所有。Filing ↔ Earnings 关系、release
+classification、review 与 replay 由 `earnings` app 所有，依赖方向为
+`earnings -> filings`，不得反向 import（ADR-021）。
+
+Stage 4.4 已实现以下 metadata foundation；4.5A implementation 只增加
+`reported_items`，不下载 filing body。
 
 | 字段 | 说明 |
 |---|---|
 | `id` | UUID PK |
 | `company_id` | FK Company |
 | `accession_number` | unique，规范化 SEC accession number |
-| `form_type` | 8-K / 10-Q / 10-K / 6-K / 20-F / 40-F / other |
+| `form_type` | 8-K / 10-Q / 10-K / 6-K / 20-F / 40-F（当前 Stage 4.4 TARGET_FORMS） |
 | `accepted_at` | timestamptz |
 | `period_of_report` | date nullable |
 | `primary_document` | string |
 | `filing_url` | URL |
-| `exhibit_url` | URL nullable；多个附件时拆表 |
-| `is_earnings_related` | boolean/tri-state |
-| `classification_rule_version` | string nullable |
+| `reported_items` | CharField(max_length=255, blank=True, default="")；canonical comma-separated SEC item codes |
 | `source_evidence_id` | SEC 来源证据 |
 | `created_at`, `updated_at` | UTC |
 
-若一个 filing 有多个相关附件，使用 `FilingDocument(id, filing_id, document_type, sequence, filename, url, description)`，而不是只保留一个 exhibit URL。
+`reported_items` 来源于 SEC submissions `filings.recent.items`，parser version 升级为
+`sec-filings-v2`。canonical form 只允许空字符串或逗号分隔的 `n.nn` item codes；trim、
+去空、去重并按 item 顺序升序排列。历史 Filing 在 migration 后保持空字符串，不得猜测；
+classification 在需要时进入 `REVIEW_REQUIRED`；未来 controlled backfill 只能从 persisted
+SEC raw 重新解析，并写审计 / DataChange。
+
+exhibit 使用 `FilingDocument(id, filing_id, document_type, sequence, filename, url,
+description)` 表达；Filing 上不保存 `exhibit_url`、`is_earnings_related` 或
+`classification_rule_version`。`FilingDocument.description` 在当前 Stage 4.4 source 中
+保持为空，v1 classification 不使用它；filename 不是语义证据。
+
+release classification 只使用 SEC metadata（form type、reported_items、
+document_type），不下载或持久化 filing body；完整 decision table 见 ADR-021。
 
 ### 7.2 `FilingEarningsLink`
 
+current projection，由 `earnings` app 所有，只能通过公开 service 修改。Filing FK 指向
+`filings.Filing`；EarningsEvent FK 在 link 创建时必须指向 canonical 事件，之后保留
+历史关联，不因事件后续取消或修正而删除；link 不修改 EarningsEvent.status。
+
 | 字段 | 说明 |
 |---|---|
-| `filing_id`, `earnings_event_id` | FK |
+| `id` | UUID PK |
+| `filing_id`, `earnings_event_id` | FK，均 PROTECT |
 | `relation_type` | RELEASE_FILING / PERIODIC_FILING / OTHER；具体表单类型来自 Filing |
-| `release_filing_classification` | YES / NO / REVIEW_REQUIRED nullable；只对 release 候选使用 |
-| `classification_reason` | 分类原因或命中证据摘要 |
-| `classification_rule_version` | 分类规则版本 |
-| `confidence` | 自动匹配置信度 |
-| `match_rule_version` | 规则版本 |
+| `release_filing_classification` | YES / NO / REVIEW_REQUIRED nullable；只对 release relation 使用 |
+| `classification_reason` | release relation 必填；非 release 为空 |
+| `classification_rule_version` | release relation 必填；非 release 为空 |
+| `match_rule_version` | 非空，`filing-earnings-match-v1` |
+| `confidence` | EXACT / BOUNDED_WINDOW / MANUAL，非空 |
 | `review_status` | auto / confirmed / rejected |
-| `created_at`, `reviewed_at`, `reviewed_by` | 审核信息 |
+| `review_reason` | auto 时为空；confirmed/rejected 时非空 |
+| `source_evidence_id` | nullable，PROTECT |
+| `current_decision_id` | FK FilingEarningsDecision，PROTECT，非空 |
+| `reviewed_by_id` | nullable，PROTECT |
+| `reviewed_at` | nullable timestamptz |
+| `created_at`, `updated_at` | UTC |
 
 唯一约束：`filing + earnings_event + relation_type`。
 
-### 7.3 财报页面的 Filing 派生状态
+索引：`(earnings_event, relation_type, review_status)`、
+`(filing, relation_type)`。
+
+约束：
+
+- release classification 仅在 `relation_type=RELEASE_FILING` 时非空；非 release 必须为空；
+- release relation 必须有非空 classification reason / rule version；
+- `review_status=auto` → reviewed_by / reviewed_at / review_reason 为空；
+- `confirmed` / `rejected` → reviewed_by / reviewed_at / review_reason 非空；
+- `review_status=confirmed` 且 release relation → release classification 必须为 YES；
+- `OTHER` 保留 enum，但 4.5A 不自动创建、不提供手工创建入口、不参与 selector。
+
+### 7.3 `FilingEarningsDecision`
+
+append-only history，由 `earnings` app 所有，使用 `AppendOnlyAuditModel` 与
+`AppendOnlyQuerySet`；不允许 update / delete。通过 `supersedes` self-FK 形成 decision 链。
+
+| 字段 | 说明 |
+|---|---|
+| `id` | UUID PK |
+| `filing_id` | FK `filings.Filing`，PROTECT |
+| `relation_type` | RELEASE_FILING / PERIODIC_FILING / OTHER |
+| `target_event_id` | FK EarningsEvent nullable，PROTECT |
+| `decision_type` | matched_release_filing / matched_periodic_filing / review_required / no_match / manual_confirmed / manual_rejected |
+| `status` | open / resolved / rejected |
+| `classification` | YES / NO / REVIEW_REQUIRED nullable |
+| `confidence` | EXACT / BOUNDED_WINDOW / MANUAL nullable |
+| `match_rule_version`, `classification_rule_version` | rule provenance；classification 非空时 classification version 非空 |
+| `decision_source` | automatic / manual |
+| `match_factors` | JSON，结构化 evidence，不塞入 AuditRecord |
+| `reason` | manual / review / no_match 的原因 |
+| `source_raw_data_record_id`, `source_evidence_id` | nullable，PROTECT |
+| `actor_user_id`, `sync_run_id` | 人工或系统上下文 |
+| `request_id` | 稳定请求身份 |
+| `decided_at`, `created_at` | UTC |
+| `supersedes_id` | self-FK nullable，PROTECT |
+| `decision_key` | char(64)，unique |
+
+状态语义：
+
+- `matched_release_filing` / `matched_periodic_filing` / `manual_confirmed` → `resolved`，
+  target_event 非空；
+- `review_required` → `open`；
+- `no_match` → `rejected`，target_event 为空；
+- `manual_rejected` → `rejected`，target_event 允许为空；
+- automatic → sync_run 非空、actor_user 为空；manual → actor_user、reason、request_id
+  非空；
+- `manual_confirmed` 在 release relation 下 classification 必须为 YES；
+- decision_key 为 canonical SHA-256，不包含 wall clock、raw body 或 DB insertion order；
+- manual leaf 阻塞 automatic supersession；只有新 manual decision 可以改变 manual
+  resolution。
+
+完整 decision table、decision_key 输入、并发和 replay 规则见 ADR-021。
+
+### 7.4 财报页面的 Filing 派生状态
 
 不在 EarningsEvent 上保存单一 `filing_status`，以免再次压缩两个独立维度。查询层从未被 rejected 的 FilingEarningsLink 推导：
 
-- `has_release_filing`：存在 `RELEASE_FILING` 关联且 `release_filing_classification=YES`；美国公司通常为含财报材料的 8-K，外国发行人可为 6-K；
-- `has_periodic_filing`：存在 `PERIODIC_FILING` 关联；通常为 10-Q、10-K、20-F 或 40-F；
-- 每一类同时返回关联 Filing 的 form type、accepted_at 和 URL，而不仅是布尔值。
+- `has_release_filing`：存在 `RELEASE_FILING` 关联、`release_filing_classification=YES`
+  且 `review_status != rejected`；美国公司通常为含财报材料的 8-K，外国发行人可为 6-K；
+- `has_periodic_filing`：存在 `PERIODIC_FILING` 关联且 `review_status != rejected`；
+  通常为 10-Q、10-K、20-F 或 40-F；
+- 每一类同时返回关联 Filing 的 form type、accepted_at、filing_url、
+  release_filing_classification、review_status、classification_reason、match rule
+  version、classification rule version 和 current decision id。
 
-REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核”。8-K/6-K 表单类型本身不能直接得出 YES。两个派生值彼此独立、与 EarningsEvent.status 也独立。允许 `RELEASED + has_release_filing=true + has_periodic_filing=false`，页面显示“财报已发布、8-K 已提交、10-Q 待提交”。文件先后顺序不触发财报生命周期倒退或前进。若未来为性能缓存派生值，缓存不能成为事实来源，并必须有一致性重算测试。详见 ADR-003。
+REVIEW_REQUIRED 不计为已提交，页面可按产品策略显示“待复核”。8-K/6-K 表单类型本身不能直接得出 YES。两个派生值彼此独立、与 EarningsEvent.status 也独立。允许 `RELEASED + has_release_filing=true + has_periodic_filing=false`，页面显示“财报已发布、8-K 已提交、10-Q 待提交”。文件先后顺序不触发财报生命周期倒退或前进。若未来为性能缓存派生值，缓存不能成为事实来源，并必须有一致性重算测试。详见 ADR-003 与 ADR-021。
+
+PRD §6.1 仍保留旧的 `FILED` 状态语言；该语言不适用于本模型。按 ADR-003 与 ADR-021
+的 precedence，SEC Filing 事实不进入 EarningsEvent 单向状态机，release / periodic
+可用性只由本节的派生状态表达。
 
 ## 8. 自选股与提醒规则
 
@@ -802,6 +962,11 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | EarningsCalendarObservation（4.2B 已实现） | raw_data_record + parser_version + source event identity（物理列 `provider_event_id`）unique；按 source + source event identity 建索引；ADR-020 v2 使用 `internal:v2:` 且允许经批准路径的 `period_type = NULL` |
 | EarningsReconciliationDecision（4.2B 已实现） | deterministic decision_key unique；append-only；supersedes 链 |
 | Filing | accession_number unique |
+| Filing.reported_items | canonical comma-separated SEC item codes；空字符串或 `n.nn` 格式 check constraint |
+| FilingEarningsLink（4.5A contract） | filing + earnings_event + relation_type unique；current projection；release classification iff release relation |
+| FilingEarningsDecision（4.5A contract） | decision_key unique；append-only；supersedes 链；manual leaf 阻塞 automatic supersession |
+| InvestorRelationsObservation（4.5B contract only） | raw_data_record + parser_version + source_event_identity unique；append-only；未实现 |
+| InvestorRelationsDecision（4.5B contract only） | decision_key unique；append-only；supersedes 链；未实现 |
 | WatchlistItem | user + company unique |
 | ReminderRule | null-safe user/company/event/channel/lead unique |
 | Notification | idempotency_key unique |
@@ -851,14 +1016,27 @@ ADR-020 进一步冻结 Alpha Vantage Free v2 candidate-entry adaptation：techn
 PASS；个人用途的 normalized / candidate / canonical-pipeline storage 许可已由后续书面
 澄清覆盖；implementation 已实现、验证并 merge（PR #51）。详见 §6.7。
 
+Stage 4.5 Contract Documentation 已追加冻结：
+
+- 4.5A = `CONTRACT FROZEN / READY FOR IMPLEMENTATION`：Filing.reported_items、
+  FilingEarningsLink、FilingEarningsDecision、deterministic matching、metadata-only
+  classification、manual review authority、replay 与 selector-derived filing state，
+  权威契约见 ADR-021；本阶段不实现 model / migration；
+- 4.5B = `CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`：
+  InvestorRelationsObservation / InvestorRelationsDecision、IR source scope、field
+  authority、conflict、absence / cancellation 与 replay，权威契约见 ADR-022；
+  live Provider 必须等待实际公司 allowlist 与逐来源许可；
+- 4.5A 与 4.5B 都不改变 EarningsEvent.status；SEC Filing 状态始终由
+  FilingEarningsLink 独立派生。
+
 以下数据决策仍待确认：
 
 1. precision refinement / regression 是否通知用户，以及日期变化通知中的 old/new status 组成；历史记录规则已由 ADR-007 确定。
 2. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则；4.2 matching 已由 ADR-010 限定为 unique CIK 或 unique exchange+ticker as-of，其余 fail closed，但 Company 主数据合并规则仍需确认。
 3. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。
 4. 1–7 日指数偏移候选的人工复核负责人、处理时限与默认行为。
-5. release filing 首版 exhibit/文本证据清单、REVIEW_REQUIRED 展示范围和复核时限。
-6. IR / SEC 等高 authority 来源的字段级冲突矩阵与复核流程（4.4 / 4.5 前）；4.2 第三方 calendar 的字段权限与 append-only manual decision authority 已由 ADR-010 确定。
+5. release filing 首版 exhibit/文本证据清单已由 ADR-021 关闭为 metadata-only v1（`EX-99.1` / `EX-99`）；REVIEW_REQUIRED 在用户页面的展示范围和复核时限仍待产品确认。
+6. IR / SEC 等高 authority 来源的字段级冲突矩阵与复核流程：IR / manual / SEC filing state / third-party calendar 的字段级 authority 已由 ADR-022 冻结；4.2 第三方 calendar 的字段权限与 append-only manual decision authority 已由 ADR-010 确定。实际 IR company allowlist 与逐来源许可仍待产品确认，live Provider 保持 BLOCKED。
 7. 用户级与公司级 ReminderRule 的覆盖/叠加规则。
 8. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
 9. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。

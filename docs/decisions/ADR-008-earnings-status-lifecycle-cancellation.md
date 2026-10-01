@@ -1,6 +1,6 @@
 # ADR-008：EarningsEvent 状态生命周期与取消语义
 
-- 状态：已接受
+- 状态：已接受（IR / SEC cancellation authority 已由 ADR-022 于 2026-10-01 关闭）
 - 日期：2026-09-19
 - 决策者：产品负责人
 - 影响阶段：4.1C、4.1D、4.2、6.x
@@ -321,9 +321,32 @@ EARNINGS_STATUS_LIFECYCLE_RULE_VERSION = "earnings-status-lifecycle-v1"
 
 ## Deferred
 
-- Provider absence 已由 ADR-010 明确不得触发 cancellation；IR / SEC affirmative cancellation
-  evidence 的具体 authority 仍待 4.4 / 4.5。
+- Provider absence 已由 ADR-010 明确不得触发 cancellation；IR / SEC cancellation authority
+  问题已由 ADR-022 关闭：explicit official IR cancellation 与 manual explicit
+  cancellation 获授权，SEC Filing、provider absence、third-party calendar disappearance
+  和 conference call cancellation 不得触发 EarningsEvent cancellation。
 - Cancellation 后 identity 无法确认时的 promotion/collision resolution：4.1D 已 fail closed；
   4.2 collision / review 契约已由 ADR-010 冻结，实现属于 4.2E。
 - Conference call 独立取消状态：未来产品需求。
 - Status change notification 的投递与去重：通知阶段。
+
+## 修订：IR / SEC cancellation authority（ADR-022，2026-10-01）
+
+ADR-022 冻结：
+
+```text
+allowed:
+  explicit official IR cancellation
+  manual explicit cancellation
+
+not allowed:
+  SEC Filing
+  provider absence
+  third-party calendar disappearance
+  conference call cancellation
+```
+
+`conference call cancellation != EarningsEvent cancellation`。所有 IR 取消仍必须通过
+`cancel_earnings_event` 的显式 affirmative intent 路径，保留 DataChange / AuditRecord 和
+完整来源链。完整 IR authority、冲突与 replay contract 见
+`docs/decisions/ADR-022-ir-confirmation-authority-cancellation-observation.md`。
