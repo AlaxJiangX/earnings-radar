@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现并验证，等待 Stage 4.2F-B Independent Pre-Merge / Merge Gate（状态：IMPLEMENTED / VERIFIED / PENDING MERGE）；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -504,8 +504,8 @@ exact issuer + period facts 确定性生成；但仍需先重跑 Provider / Lice
 Provider 的 access、retention、display、derived data 和 replay 权利。验收标准：
 provider / license checklist 完成；普通 CI 仍不访问真实网络；受控 smoke test、超时 /
 限速 / partial / 幂等重跑与新鲜度记录通过。ADR-020 已完成 AV v2 technical adaptation
-contract，个人用途许可已由后续书面澄清解决；implementation 已实现并验证，等待独立
-pre-merge / merge gate。公开 / 多用户 / 商业用途仍受许可边界限制。
+contract，个人用途许可已由后续书面澄清解决；implementation 已实现、验证并 merge
+（PR #51，merge `de38d4b`）。公开 / 多用户 / 商业用途仍受许可边界限制。
 
 4.2F 已按 ADR-017 拆分为两个执行切片，避免把 reference visibility 与 canonical
 coverage 混在同一阶段：
@@ -521,8 +521,8 @@ coverage 混在同一阶段：
 planning contract 已由 ADR-018 接受；独立 pre-merge 复审与 CI 已通过；
 MODE A LICENSE GATE = PASS（Alpha Vantage Free，仅限个人、私有、单用户、非商业
 reference 用途；ADR-019）；
-4.2F-B = IMPLEMENTED / VERIFIED / PENDING MERGE（ADR-020 technical PASS；个人用途许可
-已解决；等待 independent pre-merge / merge gate）。
+4.2F-B = IMPLEMENTED / VERIFIED / MERGED（PR #51，merge `de38d4b`；ADR-020 technical
+PASS；个人用途许可已解决）。
 
 4.2F-A planning gate 已冻结 reference parser / projection contract、forward-only reference
 window、frozen pool exact matching、reference identity、freshness / replay 语义与 Mode A
@@ -533,7 +533,7 @@ gate（ADR-019）已由 `support@alphavantage.co` 的直接书面回复解决：
 
 两个切片都保持 license gate；4.2F-A 的契约与验收边界见 ADR-018，4.2F-B 的 technical
 contract 已由 ADR-020 冻结；implementation + verification 的验收矩阵见 ADR-020 §16，
-已在隔离分支执行并通过定向验证，等待 independent merge gate。
+已完成并通过 independent pre-merge gate 与 merge（PR #51，merge `de38d4b`）。
 
 4.2F-B Alpha Vantage Adaptation Contract Gate 已执行（ADR-020）：AV v2 使用 frozen
 `MonitoringPoolSnapshot` 的精确 symbol -> Company 解析、Company-scoped `internal:v2:`
@@ -541,8 +541,8 @@ source identity、允许 `period_type = NULL` 的 observation / candidate、cand
 复用与严格 promotion firewall；system desired window 与 provider capability 分离。
 technical contract = FROZEN / PASS；schema / migration = NO / NO。唯一剩余阻塞是现有书面
 许可未明确覆盖 normalized / candidate / canonical-pipeline storage；2026-09-30 后续
-书面澄清（由产品负责人转述）已解决该个人用途许可，4.2F-B 已在隔离分支实现并验证，
-等待 independent merge gate。
+书面澄清（由产品负责人转述）已解决该个人用途许可，4.2F-B 已实现、验证并 merge
+（PR #51，merge `de38d4b`）。
 
 4.2F-B canonical Focused Gate（Alpha Vantage Free）已执行，结论为 REJECTED（ADR-016）：
 `EARNINGS_CALENDAR` 只有 symbol / name / reportDate / fiscalDateEnding / estimate /
@@ -556,8 +556,8 @@ BLOCKED，等待新的 Provider / License Gate 结论；本轮不实现 Provider
 重新评估并冻结 Alpha Vantage v2 adaptation contract；period_type 缺失改为 candidate-only +
 promotion firewall，issuer 改为 frozen snapshot exact symbol 解析，窗口改为 provider
 capability 声明。后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已
-实现并验证，等待 independent merge gate；ADR-016 对 canonical-primary、公开、多用户、
-商业与再分发的拒绝不变。
+实现、验证并 merge（PR #51，merge `de38d4b`）；ADR-016 对 canonical-primary、公开、
+多用户、商业与再分发的拒绝不变。
 
 整体验收标准：
 
@@ -571,8 +571,8 @@ capability 声明。后续书面澄清解决了个人用途的 normalized / cand
 - 来源冲突按已批准规则处理并可追溯；
 - no destructive merge；canonical collision fail closed；
 - provider absence / empty calendar / partial pagination 不触发删除或取消；
-- live Provider 的 AV v2 个人用途 license checklist 已完成；4.2F-B implementation 已实现
-  并验证，等待 independent merge gate；公开 / 多用户 / 商业用途仍受许可边界限制。
+- live Provider 的 AV v2 个人用途 license checklist 已完成；4.2F-B implementation 已实现、
+  验证并 merge（PR #51，merge `de38d4b`）；公开 / 多用户 / 商业用途仍受许可边界限制。
 
 #### 4.3 财报列表与公司详情基础页
 
@@ -809,7 +809,7 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 决策 | 最晚确认阶段 |
 |---|---|
 | 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前 |
-| 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture；ADR-020 已冻结 AV v2 candidate-entry technical contract；个人用途书面澄清已完成，4.2F-B 已实现并验证，等待 independent merge gate；公开 / 多用户 / 商业仍待单独审查 |
+| 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture；ADR-020 已冻结 AV v2 candidate-entry technical contract；个人用途书面澄清已完成，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；公开 / 多用户 / 商业仍待单独审查 |
 | 邮件服务、摘要时间、重试规则 | 6.4 前 |
 | 跨 Provider 合并阈值与重复核对 | 已由 ADR-010 确定为 exact-only；不实现 fuzzy auto-merge；FY/52-53 周规则由 ADR-001 确定 |
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
