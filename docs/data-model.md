@@ -1041,7 +1041,7 @@ Stage 4.5 Contract Documentation 已追加冻结：
   FilingEarningsLink、FilingEarningsDecision、deterministic matching、metadata-only
   classification、manual review authority、replay 与 selector-derived filing state，
   权威契约见 ADR-021；
-- 4.5B = `FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`：
+- 4.5B = `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`：
   InvestorRelationsObservation / InvestorRelationsDecision、IR source scope、field
   authority、conflict、absence / cancellation 与 zero-network replay 均已按 ADR-022
   以 fixture / persisted raw 实现并验证（earnings migration `0009`、audit migration
