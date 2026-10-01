@@ -80,13 +80,20 @@ User / SyncRun 1---* AuditRecord
 | `issuer_type` | enum | domestic / foreign_private / other / unknown |
 | `fiscal_year_end_month_day` | string/date fragment nullable | 不只存月份，避免 52/53 周公司误解 |
 | `investor_relations_url` | URL nullable | 当前 IR 入口 |
-| `monitoring_status` | enum | active / inactive / pending_identity |
-| `monitoring_recalculated_at` | timestamptz | 派生状态更新时间 |
+| `monitoring_status` | enum | active / inactive / pending_identity；由 `companies.services` 重算原语唯一写入，见 ADR-023 |
+| `monitoring_recalculated_at` | timestamptz | 每次成功重算更新时间；不得由 `update_company` 直接写入 |
 | `created_at`, `updated_at` | timestamptz | UTC |
 
 CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修正必须写审计，不能直接制造第二条公司。
 
 阶段 2.3 已实现：Service 将输入 CIK 规范化为 10 位 ASCII 数字并保留前导零；非空 CIK 由数据库唯一约束保护。暂时无 CIK 的创建必须提供预分配 UUID，避免以名称误合并。相同 CIK 但字段不同的重复写入会拒绝并要求走带审计的更新流程；Company 主数据的跨来源优先级、人工锁定与自动覆盖策略仍待产品负责人确认，真实 Provider 接入前不得自行推断。财报日历字段的 4.2 authority 已由 ADR-010 单独确定，不改变 Company 主数据规则。
+
+ADR-023 进一步冻结：`monitoring_status` 是 Company 级派生缓存，重算必须通过
+`companies.services` 的“显式 facts → 状态”原语；`update_company` 不得再接受该字段变更。
+自选触发的重算由 `watchlists.services` 在自选 mutation 的同一事务内完成，并使用
+`indexes.selectors` 的 as-of enabled-index 事实。`pending_identity` 的触发事实定义仍需
+产品确认（ADR-023 §13 PD-1）；在该决策关闭前，不得把“CIK 为空”或“无 listing”自行固定
+为判定规则。
 
 ### 4.2 `SecurityListing`
 
@@ -163,6 +170,23 @@ Provenance：自动来源需 SyncRun + SourceEvidence（通过 `resolve_source_e
 Company 不直接拥有 IndexMembership。公司级指数归属由其全部有效 SecurityListing 的有效成员关系去重聚合：任一 listing 属于某启用指数，公司即显示属于该指数；多个 share class 同属一个指数时，底层保留多条 membership，Company 页面只聚合展示。历史 ticker 对应的旧 listing 和 membership 通过有效期保留，不改写为当前 ticker。
 
 公司监控池按公司聚合计算：`存在任一有效 listing 的启用指数 membership OR 存在任一有效 WatchlistItem`。因此某个 share class 被移除不等于公司退出监控池；必须检查公司其他 listing 和用户自选股。详见 ADR-002。
+
+Stage 5.1 的 monitoring-pool v2 contract 由 ADR-023 冻结：
+
+- v1 selector、basis 形状、`input_revision` 与 hash 算法保持字节级兼容；
+- 新增 `earnings-monitoring-pool-v2` 与 `earnings-monitoring-pool-hash-v2`；
+- v2 输入 = as-of enabled index codes + 调用方显式传入的 active watchlist Company UUID
+  集合；selector 本体不 import `watchlists`；
+- member = as-of 指数成员 ∪ active watchlist Company，按 Company 去重；
+- 每个 listing basis 行都必须保留 `security_listing_id`、`effective_from`、
+  `effective_to`；指数行 `source=index`，区间为 membership 半开区间；watchlist listing
+  行 `source=watchlist`，区间为 listing 半开区间；无有效 listing 的公司使用
+  `{"source":"watchlist"}` marker；marker 是唯一不含 `security_listing_id` 的行，
+  provider 投影必须跳过 marker，而不是让整轮失败；
+- `input_revision` 纳入 watchlist Company 集合与 watchlist listing manifest；
+- resolver 按 `selector_version` 分派；未知版本或 canonical 形状不匹配必须 fail closed；
+- snapshot、basis、input revision 与 hash 不包含 user_id、email、watchlist item id、
+  priority_level 或 alerts_enabled。
 
 ### 5.3 `IndexChangeEvent`
 
@@ -708,13 +732,28 @@ PRD §6.1 仍保留旧的 `FILED` 状态语言；该语言不适用于本模型�
 | 字段 | 说明 |
 |---|---|
 | `id` | UUID PK |
-| `user_id`, `company_id` | FK |
-| `priority_level` | normal / important |
-| `alerts_enabled` | 单家公司总开关 |
-| `is_active` | 是否有效；移除时保留历史 |
-| `created_at`, `updated_at`, `deactivated_at` | UTC |
+| `user_id` | FK AUTH_USER_MODEL，PROTECT，related_name=`watchlist_items` |
+| `company_id` | FK Company，PROTECT，related_name=`watchlist_items` |
+| `priority_level` | normal / important，默认 normal |
+| `alerts_enabled` | boolean，默认 true；单公司提醒总开关，不改变池成员资格 |
+| `is_active` | boolean，默认 true；active / inactive 生命周期 |
+| `created_at` | UTC；首次创建时间，reactivation 不改写 |
+| `updated_at` | UTC；最近属性变化时间 |
+| `deactivated_at` | timestamptz nullable；active 时必须为 null，inactive 时必须非 null |
 
-唯一约束：`user + company` 一条主记录；重新添加时激活并保留审计。有效记录变化触发 Company 监控状态重算。
+约束与规则：
+
+- unique `(user, company)`，一个用户对同一 Company 只有一条主记录；
+- `priority_level` check 只允许 normal / important；
+- state check：`is_active=true` 与 `deactivated_at IS NULL` 必须同时成立，反向亦然；
+- index `(user, is_active)` 与 `(company, is_active)`；
+- 不物理删除；remove 只写 `is_active=false` + `deactivated_at`；
+- reactivation 复用原行，保留 `created_at`、`priority_level`、`alerts_enabled`；
+- add / remove / priority / alerts 全部通过 `watchlists.services`，并追加
+  `record_user_action(target_type=watchlist_item)`；不写 DataChange；
+- active 条目使 Company 进入全局监控池；priority 与 alerts 不改变 member set；
+- 添加时必须存在 as-of 有效 SecurityListing；listing 后续到期不自动删除自选；
+- 单行 + reactivation 不能可靠重建历史 as-of intervals；MVP 不承诺历史自选重建。
 
 ### 8.2 `ReminderRule`
 
@@ -986,15 +1025,15 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | FilingEarningsDecision（4.5A contract） | decision_key unique；append-only；supersedes 链；manual leaf 阻塞 automatic supersession |
 | InvestorRelationsObservation（4.5B fixture-first 已实现） | raw_data_record + parser_version + source_event_identity unique；append-only；item_type shape 约束；缺 Company / period identity 不创建 observation |
 | InvestorRelationsDecision（4.5B fixture-first 已实现） | decision_key unique；append-only；supersedes 链；manual leaf 阻塞 automatic override |
-| WatchlistItem | user + company unique |
+| WatchlistItem（Stage 5.1 contract，未实现） | user + company unique；priority / state check；soft delete only；active 参与 monitoring pool |
 | ReminderRule | null-safe user/company/event/channel/lead unique |
 | Notification | idempotency_key unique |
 | RawDataRecord | source + request_fingerprint + content_hash unique |
 | SourceEvidence | evidence_key unique；raw data record + target + field + normalized value + normalizer version |
 | DataChange | change_key unique |
 | AuditRecord | audit_key unique；actor/sync + action + target + before/after + reason + request |
-| MonitoringPoolSnapshot（4.2D-1 已实现） | as_of + selector_version + pool_hash / input_revision unique；append-only |
-| MonitoringPoolMember（4.2D-1 已实现） | snapshot + company unique；snapshot + ordinal unique |
+| MonitoringPoolSnapshot（4.2D-1 已实现；v2 契约见 ADR-023） | as_of + selector_version + pool_hash / input_revision unique；append-only；v1 字节级兼容；v2 使用独立 selector / hash contract |
+| MonitoringPoolMember（4.2D-1 已实现；v2 basis 契约见 ADR-023） | snapshot + company unique；snapshot + ordinal unique；v2 每行带 source + listing / interval，marker 仅用于 watchlist 无 listing 的 member |
 | SyncRun replay identity | source + job_type + replay_source_sync_run + parser_version + replay_contract_version + replay_input_digest unique（仅 run_mode=replay） |
 
 并发写入必须捕获唯一冲突后读取已存在记录，不能依赖“先查后写”。
@@ -1035,6 +1074,13 @@ ADR-020 进一步冻结 Alpha Vantage Free v2 candidate-entry adaptation：techn
 PASS；个人用途的 normalized / candidate / canonical-pipeline storage 许可已由后续书面
 澄清覆盖；implementation 已实现、验证并 merge（PR #51）。详见 §6.7。
 
+ADR-023 已冻结 Stage 5.1 Watchlist / Monitoring-Pool v2 contract：WatchlistItem 生命周期、
+priority / alerts 正交语义、`(user, company)` 唯一与软删除、自选触发的
+`monitoring_status` 重算、v1 字节级兼容、v2 explicit watchlist input / listing basis /
+marker / hash 分派、只读模块依赖与迁移边界。实现尚未开始；`pending_identity` 事实定义、
+US 资格、自选数量上限、移除时待发送通知、零指数模式与历史 as-of 重建仍按 ADR-023 §13
+待决。
+
 Stage 4.5 Contract Documentation 已追加冻结：
 
 - 4.5A = `IMPLEMENTED / VERIFIED / MERGED`（PR #58，merge `8f2e214`）：Filing.reported_items、
@@ -1052,7 +1098,7 @@ Stage 4.5 Contract Documentation 已追加冻结：
 以下数据决策仍待确认：
 
 1. precision refinement / regression 是否通知用户，以及日期变化通知中的 old/new status 组成；历史记录规则已由 ADR-007 确定。
-2. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则；4.2 matching 已由 ADR-010 限定为 unique CIK 或 unique exchange+ticker as-of，其余 fail closed，但 Company 主数据合并规则仍需确认。
+2. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则；4.2 matching 已由 ADR-010 限定为 unique CIK 或 unique exchange+ticker as-of，其余 fail closed，但 Company 主数据合并规则仍需确认。`pending_identity` 的判定事实见 ADR-023 §13 PD-1，Stage 5.1A 前确认。
 3. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。
 4. 1–7 日指数偏移候选的人工复核负责人、处理时限与默认行为。
 5. release filing 首版 exhibit/文本证据清单已由 ADR-021 关闭为 metadata-only v1（`EX-99.1` / `EX-99`）；REVIEW_REQUIRED 在用户页面的展示范围和复核时限仍待产品确认。

@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2–4.4 的既有能力已按路线图落地并 merge；阶段 4.2 已完成 fixture-first calendar ingestion / replay、monitoring pool、candidate matching 与 reconciliation workflow，4.2F-A / 4.2F-B 已实现、验证并 merge（PR #48 / #51）；阶段 4.3 财报页面与阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #53 / #55）。Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`。当前分支仍未实现通用 v1 canonical live Provider command、真实 IR live source、通知领域模型与 Stage 5/6 能力。
+当前实现进度：阶段 2.2–4.4 的既有能力已按路线图落地并 merge；阶段 4.2 已完成 fixture-first calendar ingestion / replay、monitoring pool、candidate matching 与 reconciliation workflow，4.2F-A / 4.2F-B 已实现、验证并 merge（PR #48 / #51）；阶段 4.3 财报页面与阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #53 / #55）。Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`。Stage 5.1 的 Watchlist / Monitoring-Pool v2 contract 已由 ADR-023 冻结，但实现尚未开始；当前分支仍未实现通用 v1 canonical live Provider command、真实 IR live source、通知领域模型与 Stage 5/6 能力。
 
 ## 1. 架构目标与边界
 
@@ -52,9 +52,9 @@ Web 请求不直接访问外部数据源。未来 Cron Job 调用 Django managem
 | `accounts` | 自定义用户、认证、时区和用户偏好 | Django auth | 公司及事件业务 |
 | `companies` | 公司、CIK、股票代码/上市身份、公司搜索、监控状态 | `audit` 的来源引用接口 | 直接抓取第三方数据 |
 | `indexes` | 证券级指数成分历史、加入/移除、偏移聚合 | `companies`, `providers`, `audit` | 用户通知投递 |
-| `earnings` | 财报事件生命周期、日期变更、来源核对、monitoring pool、Filing ↔ Earnings 关联 / classification / review / replay、IR confirmation | `companies`, `indexes`, `filings`, `providers`, `audit` | 外部 HTTP 细节 |
+| `earnings` | 财报事件生命周期、日期变更、来源核对、monitoring pool、Filing ↔ Earnings 关联 / classification / review / replay、IR confirmation | `companies`, `indexes`, `filings`, `providers`, `audit`；仅命令/编排层可只读 `watchlists` selector | 外部 HTTP 细节 |
 | `filings` | SEC Filing / FilingDocument 与 metadata 同步 | `companies`, `providers`, `audit` | 复制 SEC 全文、Filing ↔ Earnings 关联、IR confirmation |
-| `watchlists` | 自选股、普通/重点关注、公司级提醒开关 | `accounts`, `companies` | 全局通知策略 |
+| `watchlists` | 自选股、普通/重点关注、公司级提醒开关、自选触发的监控状态重算 | `accounts`, `companies`, `indexes` 的只读 selector, `audit.services` | 全局通知策略；不得 import earnings / notifications |
 | `notifications` | 提醒规则、通知生成、站内通知、邮件投递和重试 | 各领域的稳定公开接口 | 判断外部数据真实性 |
 | `providers` | Provider 协议、安全 HTTP 传输接口、结构化原始结果和测试 Fake/fixture | `audit.security` 的纯安全函数、`audit.constants` 的原始正文硬上限 | 数据库写入、同步编排、页面渲染和用户权限 |
 | `audit` | 数据来源、同步运行、原始数据、字段来源、变更及操作审计 | 尽量不反向依赖业务 app | 修改领域状态 |
@@ -410,7 +410,22 @@ CIK 是发行人监管身份，股票代码是可变的上市身份。公司主�
 
 IndexMembership 绑定 `SecurityListing`，而不是直接绑定 Company。每个 listing 表达具体 ticker、交易所和 share class，并保留有效期；Company 层面的指数归属通过其全部有效 listing 聚合。因此，同一公司可凭不同 share class 同时拥有不同指数身份，历史 ticker 也不会被当前 ticker 覆盖。
 
-`monitoring_status` 是公司级、可重算的派生状态：只要公司的任一有效 SecurityListing 属于任一启用指数，或公司存在任一有效用户自选股，该公司即为启用。指数或自选股变化后，在同一事务中重新计算。多个 listing 命中同一指数只计为一个公司级归属展示，但底层成员关系全部保留。退出监控池只停止未来同步和普通提醒，历史记录不删除。该决策见 `docs/decisions/ADR-002-index-migration-rules.md`。
+`monitoring_status` 是公司级、可重算的派生状态：只要公司的任一有效 SecurityListing 属于任一启用指数，或公司存在任一有效用户自选股，该公司即为启用；identity 未决时按 `pending_identity` 处理。指数或自选股变化后必须重算。多个 listing 命中同一指数只计为一个公司级归属展示，但底层成员关系全部保留。退出监控池只停止未来同步和普通提醒，历史记录不删除。该决策见 `docs/decisions/ADR-002-index-migration-rules.md`。
+
+Stage 5.1 的重算边界由 ADR-023 冻结：`companies` 拥有 `monitoring_status` /
+`monitoring_recalculated_at` 字段和“显式 facts → 状态”的纯规则；`companies` 不 import
+`indexes` 或 `watchlists`。`watchlists.services` 在自选 add / remove / reactivation 的同一
+事务内，通过 `indexes.selectors` 只读取得 as-of enabled-index 事实，并把
+`has_enabled_index_membership` / `has_active_watchlist` / `identity_pending` 显式传给
+`companies.services` 重算原语。`update_company` 不得再直接修改 `monitoring_status`。
+指数成员变化不在 5.1A 同步重算；后续 pool-selection composition 必须以同一原语补齐，
+否则 `monitoring_recalculated_at` 可能滞后。
+
+自选进入监控池的 v2 契约同样见 ADR-023：`earnings` 的 selector 本体只接受显式
+`watchlist_company_ids`，不 import watchlists 模型或 selector；只有 earnings 的命令/编排层
+可以只读调用 watchlists 公开 selector，再把去重后的 Company UUID 集合传入 selector。
+watchlist 公司按 Company 与指数成员取并集；snapshot basis 必须为每个 member 冻结 listing
+事实（无 listing 时使用明确 marker），并保持 v1 basis / hash 的字节级兼容。
 
 ### 5.2 指数同步与偏移
 
