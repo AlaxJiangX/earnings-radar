@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
@@ -14,15 +15,20 @@ from audit.models import DataSource, RawDataObservation, RawDataRecord, SourceEv
 from companies.models import Company, SecurityListing
 from companies.services import update_company
 from earnings.models import MonitoringPoolSnapshot
-from earnings.services import EARNINGS_MONITORING_POOL_SELECTOR_VERSION, select_monitoring_pool
+from earnings.services import (
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    resolve_monitoring_pool_snapshot_contract,
+    select_monitoring_pool,
+)
 from filings.models import Filing, FilingDocument
 from filings.sync import SecSyncError, SecSyncResult, _sec_run_ownership, sync_sec_filings
 from indexes.models import IndexMembership, MarketIndex
-from providers.http import TransportRequest, TransportResponse
+from providers.http import HttpTransport, TransportRequest, TransportResponse
 from providers.sec_edgar import SecEdgarProvider
 from tests.filings.test_sec_provider_and_parsing import index_body, submissions_body
 
 AS_OF = date(2026, 9, 30)
+_SCOPE_POOL_HASH = "a" * 64
 
 
 class FixtureTransport:
@@ -83,29 +89,101 @@ def _setup(*, cik: str | None = "0000001234") -> tuple[Company, DataSource, Moni
         selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
         enabled_index_codes=("SP500",),
     ).snapshot
-    source = DataSource.objects.create(
-        key="sec-official",
+    source = _source(key="sec-official")
+    return company, source, snapshot
+
+
+def _source(*, key: str | None = None) -> DataSource:
+    return DataSource.objects.create(
+        key=key or f"sec-official-{uuid.uuid4().hex[:8]}",
         name="SEC official",
         source_type=DataSource.SourceType.SEC,
         base_url="https://data.sec.gov",
         is_official=True,
         provider_adapter="sec-edgar",
     )
-    return company, source, snapshot
 
 
 def _run(
-    *, source: DataSource, snapshot: MonitoringPoolSnapshot, transport: FixtureTransport, key: str
+    *,
+    source: DataSource,
+    snapshot: MonitoringPoolSnapshot,
+    transport: FixtureTransport,
+    key: str,
+    company_ids: tuple[uuid.UUID, ...] | None = None,
 ) -> SecSyncResult:
+    if company_ids is None:
+        company_ids = tuple(
+            member.company_id
+            for member in resolve_monitoring_pool_snapshot_contract(
+                as_of=snapshot.as_of_date,
+                selector_version=snapshot.selector_version,
+                pool_hash=snapshot.pool_hash,
+            ).members
+        )
     provider = SecEdgarProvider(user_agent="Earnings Radar test@example.org", transport=transport)
     return sync_sec_filings(
         source=source,
         provider=provider,
+        company_ids=company_ids,
         pool_as_of=snapshot.as_of_date,
         pool_selector_version=snapshot.selector_version,
         pool_hash=snapshot.pool_hash,
         idempotency_key=key,
     )
+
+
+def _run_with_scope(
+    *,
+    source: DataSource,
+    company_ids: tuple[uuid.UUID, ...],
+    transport: HttpTransport,
+    key: str,
+) -> SecSyncResult:
+    provider = SecEdgarProvider(user_agent="Earnings Radar test@example.org", transport=transport)
+    return sync_sec_filings(
+        source=source,
+        provider=provider,
+        company_ids=company_ids,
+        pool_as_of=AS_OF,
+        pool_selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        pool_hash=_SCOPE_POOL_HASH,
+        idempotency_key=key,
+    )
+
+
+def _submissions_payload_for_cik(cik: str) -> bytes:
+    return json.dumps(
+        {
+            "cik": int(cik),
+            "filings": {
+                "recent": {
+                    "accessionNumber": [f"{cik}-26-000001"],
+                    "form": ["4"],
+                    "acceptanceDateTime": ["2026-03-09T16:30:00"],
+                    "reportDate": [""],
+                    "primaryDocument": ["ignored.htm"],
+                }
+            },
+        }
+    ).encode()
+
+
+class CikScopedTransport:
+    """Return one no-target submissions payload per requested CIK."""
+
+    def __init__(self) -> None:
+        self.requests: list[TransportRequest] = []
+
+    def send(self, request: TransportRequest) -> TransportResponse:
+        self.requests.append(request)
+        cik = request.url.rsplit("/CIK", 1)[1][:10]
+        return TransportResponse(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+            body=_submissions_payload_for_cik(cik),
+            fetched_at=datetime.now(UTC),
+        )
 
 
 @pytest.mark.django_db(transaction=True)
@@ -345,3 +423,78 @@ def test_global_sec_job_lock_rejects_parallel_sync() -> None:
             release.set()
             future.result(timeout=5)
     assert not SyncRun.objects.exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_caller_scope_preserves_order_and_skips_monitoring_pool_lookup() -> None:
+    first = Company.objects.create(legal_name="First", display_name="First", cik="0000001234")
+    Company.objects.create(legal_name="Second", display_name="Second", cik="0000005678")
+    excluded = Company.objects.create(
+        legal_name="Excluded", display_name="Excluded", cik="0000009999"
+    )
+    source = _source()
+    transport = CikScopedTransport()
+
+    result = _run_with_scope(
+        source=source,
+        company_ids=(excluded.pk, first.pk),
+        transport=transport,
+        key="caller-scope",
+    )
+
+    assert result.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert result.sync_run.fetched_count == 2
+    assert result.sync_run.scope == {
+        "monitoring_pool_as_of": AS_OF.isoformat(),
+        "selector_version": EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        "monitoring_pool_hash": _SCOPE_POOL_HASH,
+    }
+    assert [request.url for request in transport.requests] == [
+        "https://data.sec.gov/submissions/CIK0000009999.json",
+        "https://data.sec.gov/submissions/CIK0000001234.json",
+    ]
+    assert all("0000005678" not in request.url for request in transport.requests)
+    assert MonitoringPoolSnapshot.objects.count() == 0
+    assert MarketIndex.objects.count() == 0
+    assert Filing.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_empty_company_scope_succeeds_without_fetch() -> None:
+    source = _source()
+    transport = FixtureTransport()
+
+    result = _run_with_scope(
+        source=source,
+        company_ids=(),
+        transport=transport,
+        key="empty-scope",
+    )
+
+    assert result.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert result.sync_run.fetched_count == 0
+    assert transport.requests == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_duplicate_company_ids_fail_closed_without_starting_a_run() -> None:
+    company = Company.objects.create(
+        legal_name="Duplicate", display_name="Duplicate", cik="0000001234"
+    )
+    source = _source()
+    transport = FixtureTransport()
+    provider = SecEdgarProvider(user_agent="Earnings Radar test@example.org", transport=transport)
+
+    with pytest.raises(SecSyncError, match="duplicate Companies"):
+        sync_sec_filings(
+            source=source,
+            provider=provider,
+            company_ids=(company.pk, company.pk),
+            pool_as_of=AS_OF,
+            pool_selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+            pool_hash=_SCOPE_POOL_HASH,
+            idempotency_key="duplicate-scope",
+        )
+
+    assert not SyncRun.objects.exists()
+    assert transport.requests == []

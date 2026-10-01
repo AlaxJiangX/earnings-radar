@@ -15,6 +15,7 @@ from audit.models import DataSource, SyncRun
 from earnings.models import MonitoringPoolSnapshot
 from earnings.services.monitoring_pool import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    resolve_monitoring_pool_snapshot_contract,
     select_monitoring_pool,
 )
 from filings.sync import SEC_JOB_TYPE, sync_sec_filings
@@ -45,6 +46,12 @@ class Command(BaseCommand):
                 max_requests_per_second=settings.SEC_MAX_REQUESTS_PER_SECOND,
             )
             snapshot = self._resolve_snapshot(options)
+            pool = resolve_monitoring_pool_snapshot_contract(
+                as_of=snapshot.as_of_date,
+                selector_version=snapshot.selector_version,
+                pool_hash=snapshot.pool_hash,
+            )
+            company_ids = tuple(member.company_id for member in pool.members)
             now = timezone.now().astimezone(UTC)
             bucket = now.replace(minute=(now.minute // 10) * 10, second=0, microsecond=0)
             retry_id = cast(UUID | None, options["retry_run"])
@@ -59,6 +66,7 @@ class Command(BaseCommand):
             result = sync_sec_filings(
                 source=source,
                 provider=provider,
+                company_ids=company_ids,
                 pool_as_of=snapshot.as_of_date,
                 pool_selector_version=snapshot.selector_version,
                 pool_hash=snapshot.pool_hash,

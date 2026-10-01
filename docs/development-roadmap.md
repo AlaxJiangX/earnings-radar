@@ -634,6 +634,22 @@ authority、replay / idempotency 与 selector-derived filing state。
 - 不下载 filing body、不持久化正文、不修改 EarningsEvent.status；
 - 4.5A 不修改 templates / pages。
 
+#### 4.5A-I1 SEC Filing Dependency Boundary Repair
+
+状态：`IMPLEMENTED / VERIFIED / PENDING MERGE`。
+
+交付：修正 `filings -> earnings` 错误依赖；monitoring-pool 解析上移到 earnings
+command / orchestration 层；`sync_sec_filings` management command 从 `filings` 迁移到
+`earnings`（command name 与 CLI 参数保持兼容）；`filings.sync.sync_sec_filings` 改为消费
+上层传入的 canonical ordered `company_ids` 与 frozen scope metadata。
+
+验收：自动 import-boundary 测试固化 `filings` MUST NOT import `earnings`；Stage 4.4 SEC
+sync / command 行为、SyncRun scope、`SEC_JOB_TYPE` 与 idempotency 语义保持不变；无
+schema / migration。
+
+边界：只修依赖方向；`SEC Filing -> evaluate_filing_earnings_link` matching orchestration
+尚未实现，下一阶段为 `4.5A-I2 — SEC Filing Matching Orchestration`。
+
 #### 4.5B IR Confirmation
 
 状态：`CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`。权威契约见 ADR-022；本阶段尚未实现。

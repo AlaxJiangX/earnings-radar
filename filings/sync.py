@@ -1,12 +1,14 @@
-"""Frozen-pool, raw-first SEC metadata synchronization."""
+"""Frozen-scope, raw-first SEC metadata synchronization."""
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator
+import re
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+from uuid import UUID
 
 from django.db import connection, transaction
 from django.utils import timezone
@@ -24,7 +26,6 @@ from audit.services import (
 )
 from companies.models import Company
 from companies.services import normalize_cik
-from earnings.services.monitoring_pool import resolve_monitoring_pool_snapshot_contract
 from filings.parsing import PARSER_VERSION, SecMetadataError, parse_filing_index, parse_submissions
 from filings.services import filing_is_complete, record_filing
 from providers.base import Provider
@@ -36,6 +37,7 @@ from providers.sec_edgar import (
 from providers.types import ProviderCapability, ProviderRequest
 
 SEC_JOB_TYPE = "filings.sec_edgar"
+_POOL_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class SecSyncError(RuntimeError):
@@ -73,12 +75,13 @@ def sync_sec_filings(
     *,
     source: DataSource,
     provider: Provider,
+    company_ids: Sequence[UUID],
     pool_as_of: date,
     pool_selector_version: str,
     pool_hash: str,
     idempotency_key: str,
 ) -> SecSyncResult:
-    """Fetch only Companies authorized by one persisted monitoring-pool snapshot."""
+    """Fetch only Companies authorized by one caller-resolved monitoring-pool scope."""
 
     if (
         provider.provider_key != SEC_PROVIDER_KEY
@@ -93,14 +96,17 @@ def sync_sec_filings(
         or not current_source.is_official
     ):
         raise SecSyncError("SEC DataSource configuration is invalid.")
+    ordered_company_ids = _validated_company_ids(company_ids)
+    _validate_frozen_scope(
+        pool_as_of=pool_as_of,
+        pool_selector_version=pool_selector_version,
+        pool_hash=pool_hash,
+    )
     with _sec_run_ownership():
-        pool = resolve_monitoring_pool_snapshot_contract(
-            as_of=pool_as_of, selector_version=pool_selector_version, pool_hash=pool_hash
-        )
         scope = {
-            "monitoring_pool_as_of": pool.snapshot.as_of_date.isoformat(),
-            "selector_version": pool.snapshot.selector_version,
-            "monitoring_pool_hash": pool.snapshot.pool_hash,
+            "monitoring_pool_as_of": pool_as_of.isoformat(),
+            "selector_version": pool_selector_version,
+            "monitoring_pool_hash": pool_hash,
         }
         start = start_sync_run_with_result(
             job_type=SEC_JOB_TYPE,
@@ -120,9 +126,9 @@ def sync_sec_filings(
         failures = 0
         failure_details: list[str] = []
         processed = 0
-        for member in pool.members:
+        for company_id in ordered_company_ids:
             try:
-                company = Company.objects.get(pk=member.company_id)
+                company = Company.objects.get(pk=company_id)
                 cik = normalize_cik(company.cik)
                 if cik is None:
                     update_sync_run_counts(run.pk, skipped_delta=1)
@@ -194,7 +200,7 @@ def sync_sec_filings(
             except Exception as error:
                 failures += 1
                 if len(failure_details) < 10:
-                    failure_details.append(f"company={member.company_id}: {type(error).__name__}")
+                    failure_details.append(f"company={company_id}: {type(error).__name__}")
                 update_sync_run_counts(run.pk, failed_delta=1)
         if failures:
             summary = (
@@ -208,6 +214,37 @@ def sync_sec_filings(
         else:
             finished = mark_sync_run_succeeded(run.pk)
         return SecSyncResult(sync_run=finished, run_created=True)
+
+
+def _validated_company_ids(company_ids: Sequence[UUID]) -> tuple[UUID, ...]:
+    """Return one defensive, order-preserving copy of a caller-owned scope."""
+
+    if isinstance(company_ids, (str, bytes)) or not isinstance(company_ids, Sequence):
+        raise SecSyncError("company_ids must be a sequence of UUID values.")
+    ordered: list[UUID] = []
+    seen: set[UUID] = set()
+    for company_id in company_ids:
+        if not isinstance(company_id, UUID):
+            raise SecSyncError("company_ids must contain UUID values.")
+        if company_id in seen:
+            raise SecSyncError("company_ids must not contain duplicate Companies.")
+        seen.add(company_id)
+        ordered.append(company_id)
+    return tuple(ordered)
+
+
+def _validate_frozen_scope(
+    *,
+    pool_as_of: date,
+    pool_selector_version: str,
+    pool_hash: str,
+) -> None:
+    if isinstance(pool_as_of, datetime) or not isinstance(pool_as_of, date):
+        raise SecSyncError("Monitoring pool as-of date is invalid.")
+    if not isinstance(pool_selector_version, str) or not pool_selector_version.strip():
+        raise SecSyncError("Monitoring pool selector version is invalid.")
+    if not isinstance(pool_hash, str) or _POOL_HASH_RE.fullmatch(pool_hash) is None:
+        raise SecSyncError("Monitoring pool hash is invalid.")
 
 
 def _fetch_raw(*, run: SyncRun, provider: Provider, request: ProviderRequest) -> RawDataRecord:

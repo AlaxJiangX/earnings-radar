@@ -302,6 +302,19 @@ earnings app
 - Filing 的 SEC metadata 是监管事实，财报关联与 authority 是 earnings 领域语义；
 - 跨模块只通过公开 service / selector 和稳定模型引用协作。
 
+Monitoring pool 解析现在位于 earnings command / orchestration 层：
+
+```text
+earnings management/orchestration layer
+  -> resolve frozen monitoring pool
+  -> ordered Company IDs + frozen scope metadata
+  -> filings SEC sync
+```
+
+`filings` MUST NOT import `earnings`，也不得自行解析 monitoring pool 或读取
+`MonitoringPoolSnapshot`；SEC sync 只消费调用方明确授权、保留 canonical 顺序的 Company ID
+集合与 frozen scope metadata。Filing → Earnings matching 的自动编排（4.5A-I2）尚未实现。
+
 #### 4.6.2 4.5A 数据流
 
 ```text
