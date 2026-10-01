@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）已完成，4.2D-1 selector/snapshot core 与 4.2D-2 candidate/company matching core 均已实现、merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；Stage 4.3（财报列表与公司详情基础页）已实现、验证并 merge（PR #53，merge `7009156`）；SEC Filing（阶段 4.4）已实现、验证并 merge（PR #55，merge `bda12ff`）；Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`；IMPLEMENTED / VERIFIED / MERGED）；4.5A-I1 SEC Filing Dependency Boundary Repair 已实现、验证并 merge（PR #60，merge `692d90c`；IMPLEMENTED / VERIFIED / MERGED）；4.5A-I2 SEC Filing Matching Orchestration 已实现、验证并 merge（PR #62，merge `d2bd826`；IMPLEMENTED / VERIFIED / MERGED），4.5B（CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED）尚未实现；自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力（fixture Provider / parser、raw-first ingestion、InvestorRelationsObservation / InvestorRelationsDecision、authority / confirmation / cancellation / conflict 与 zero-network replay）已实现并验证，状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -677,10 +677,19 @@ replay。
 
 #### 4.5B IR Confirmation
 
-状态：`CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`。权威契约见 ADR-022；本阶段尚未实现。
+状态：`FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`。权威契约见
+ADR-022；离线 fixture-first 能力已实现并验证，真实 IR live source 仍未获批。
 
 交付：InvestorRelationsObservation / InvestorRelationsDecision contract shape、
 official IR authority、schedule confirmation、conflict / absence / cancellation 与 replay。
+
+已实现：`providers/fixture_ir.py` 零网络 fixture Provider；`earnings/ir_parsing.py`
+fixture parser 与 `internal:ir:v1:` source identity；`earnings/services/ir_observation.py` /
+`ir_decision.py` append-only observation / decision 写入原语；`ir_ingestion.py` raw-first
+摄取；`ir_confirmation.py` authority / confirmation / release / cancellation / conflict
+评估与 manual resolution；`ir_sync.py` frozen scope + `earnings.ir_confirmation` SyncRun +
+zero-network replay。Schema 为 earnings migration `0009` 与 audit migration `0012`；
+audit restricted targets 增加 investor_relations_observation / investor_relations_decision。
 
 验收标准：
 
@@ -715,7 +724,8 @@ Live gate（未满足前不得进入 production ingestion）：
 状态汇总：4.5A = `IMPLEMENTED / VERIFIED / MERGED`（PR #58，merge `8f2e214`）；4.5A-I1 =
 `IMPLEMENTED / VERIFIED / MERGED`（PR #60，merge `692d90c`）；4.5A-I2 =
 `IMPLEMENTED / VERIFIED / MERGED`（PR #62，merge `d2bd826`）；4.5B =
-`CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`。4.5B 尚未实现，不得标记为 implemented。
+`FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`。live gate checklist
+未完成前不得进入 production IR ingestion。
 
 ### 阶段 5：自选股与个人页面
 

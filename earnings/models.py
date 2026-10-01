@@ -135,6 +135,29 @@ class FilingEarningsDecisionSource(models.TextChoices):
     MANUAL = "manual", "Manual"
 
 
+class InvestorRelationsItemType(models.TextChoices):
+    RELEASE_CONFIRMATION = "release_confirmation", "Release confirmation"
+    RESULTS_RELEASE = "results_release", "Results release"
+    CALL_NOTICE = "call_notice", "Conference call notice"
+    CANCELLATION = "cancellation", "Cancellation"
+
+
+class InvestorRelationsDecisionType(models.TextChoices):
+    CONFIRMED_SCHEDULE = "confirmed_schedule", "Confirmed schedule"
+    UPDATED_CONFERENCE_CALL = "updated_conference_call", "Updated conference call"
+    RELEASED = "released", "Released"
+    CANCELLED = "cancelled", "Cancelled"
+    CONFLICT = "conflict", "Conflict"
+    NO_MATCH = "no_match", "No match"
+    IGNORED = "ignored", "Ignored"
+
+
+class InvestorRelationsDecisionStatus(models.TextChoices):
+    OPEN = "open", "Open"
+    RESOLVED = "resolved", "Resolved"
+    REJECTED = "rejected", "Rejected"
+
+
 ALLOWED_PERIOD_TYPES = frozenset({"Q1", "Q2", "Q3", "FY", "H1", "H2", "OTHER"})
 ALLOWED_EVENT_STATUSES = frozenset(
     {"scheduled_estimated", "scheduled_confirmed", "released", "cancelled"}
@@ -197,6 +220,27 @@ ALLOWED_FILING_EARNINGS_DECISION_SOURCES = frozenset({"automatic", "manual"})
 RESOLVED_FILING_EARNINGS_DECISION_TYPES = frozenset(
     {"matched_release_filing", "matched_periodic_filing", "manual_confirmed"}
 )
+ALLOWED_INVESTOR_RELATIONS_ITEM_TYPES = frozenset(
+    {"release_confirmation", "results_release", "call_notice", "cancellation"}
+)
+ALLOWED_INVESTOR_RELATIONS_DECISION_TYPES = frozenset(
+    {
+        "confirmed_schedule",
+        "updated_conference_call",
+        "released",
+        "cancelled",
+        "conflict",
+        "no_match",
+        "ignored",
+    }
+)
+ALLOWED_INVESTOR_RELATIONS_DECISION_STATUSES = frozenset({"open", "resolved", "rejected"})
+RESOLVED_INVESTOR_RELATIONS_DECISION_TYPES = frozenset(
+    {"confirmed_schedule", "updated_conference_call", "released", "cancelled"}
+)
+REJECTED_INVESTOR_RELATIONS_DECISION_TYPES = frozenset({"no_match", "ignored"})
+ALLOWED_INVESTOR_RELATIONS_CANCELLATION_SCOPES = frozenset({"event", "conference_call"})
+INTERNAL_IR_SOURCE_IDENTITY_PATTERN = r"^internal:ir:v1:[0-9a-f]{64}$"
 
 
 def _earnings_date_state_constraint(
@@ -1279,3 +1323,353 @@ class FilingEarningsLink(models.Model):
 
     def __str__(self) -> str:
         return f"{self.filing_id}:{self.earnings_event_id}:{self.relation_type}"
+
+
+class InvestorRelationsObservation(AppendOnlyAuditModel):
+    """Append-only normalized IR source fact (ADR-022, fixture-first 4.5B).
+
+    The model requires an exact Company and a complete period identity for
+    every row.  Items that cannot prove both are retained in raw parse lineage
+    only and MUST NOT create an observation.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    source = models.ForeignKey(
+        "audit.DataSource",
+        on_delete=models.PROTECT,
+        related_name="investor_relations_observations",
+    )
+    raw_data_record = models.ForeignKey(
+        "audit.RawDataRecord",
+        on_delete=models.PROTECT,
+        related_name="investor_relations_observations",
+    )
+
+    provider_key = models.CharField(max_length=64)
+    provider_version = models.CharField(max_length=100)
+    parser_version = models.CharField(max_length=100)
+    source_event_identity = models.CharField(max_length=255)
+    raw_position = models.PositiveIntegerField()
+
+    company = models.ForeignKey(
+        "companies.Company",
+        on_delete=models.PROTECT,
+        related_name="investor_relations_observations",
+    )
+    period_end_date = models.DateField()
+    period_type = models.CharField(max_length=8, choices=PeriodType.choices)
+    item_type = models.CharField(max_length=32, choices=InvestorRelationsItemType.choices)
+
+    estimated_release_at = models.DateTimeField(null=True, blank=True)
+    estimated_release_date = models.DateField(null=True, blank=True)
+    estimated_release_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
+    confirmed_release_at = models.DateTimeField(null=True, blank=True)
+    confirmed_release_date = models.DateField(null=True, blank=True)
+    confirmed_release_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
+    earnings_release_at = models.DateTimeField(null=True, blank=True)
+    earnings_release_date = models.DateField(null=True, blank=True)
+    earnings_release_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
+    conference_call_at = models.DateTimeField(null=True, blank=True)
+    conference_call_date = models.DateField(null=True, blank=True)
+    conference_call_precision = models.CharField(
+        max_length=16,
+        choices=EarningsDatePrecision.choices,
+        default=EarningsDatePrecision.UNKNOWN,
+    )
+
+    release_session = models.CharField(  # noqa: DJ001
+        max_length=16,
+        choices=ReleaseSession.choices,
+        null=True,
+        blank=True,
+    )
+    cancellation = models.JSONField(null=True, blank=True)
+
+    source_observed_at = models.DateTimeField(null=True, blank=True)
+    confidence = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("source", "source_event_identity")),
+            models.Index(fields=("company", "period_end_date", "period_type")),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("raw_data_record", "parser_version", "source_event_identity"),
+                name="investor_relations_observation_record_parser_event_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(provider_key__regex=r"^[a-z][a-z0-9._-]{1,63}$"),
+                name="investor_relations_observation_provider_key_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(provider_version__regex=r"[^[:space:]]")
+                    & Q(parser_version__regex=r"[^[:space:]]")
+                    & Q(source_event_identity__regex=r"[^[:space:]]")
+                ),
+                name="investor_relations_observation_identity_not_blank",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(source_event_identity__startswith="internal:")
+                    | Q(source_event_identity__regex=INTERNAL_IR_SOURCE_IDENTITY_PATTERN)
+                ),
+                name="investor_relations_observation_internal_namespace_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(period_type__in=ALLOWED_PERIOD_TYPES),
+                name="investor_relations_observation_period_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(item_type__in=ALLOWED_INVESTOR_RELATIONS_ITEM_TYPES),
+                name="investor_relations_observation_item_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(release_session__isnull=True)
+                | Q(release_session__in=ALLOWED_RELEASE_SESSIONS),
+                name="investor_relations_observation_release_session_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(raw_position__gte=1),
+                name="investor_relations_observation_raw_position_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(confidence__isnull=True)
+                | (Q(confidence__gte=0) & Q(confidence__lte=1)),
+                name="investor_relations_observation_confidence_range",
+            ),
+            _earnings_date_state_constraint(
+                prefix="estimated_release",
+                name="investor_relations_observation_estimated_precision_valid",
+            ),
+            _earnings_date_state_constraint(
+                prefix="confirmed_release",
+                name="investor_relations_observation_confirmed_precision_valid",
+            ),
+            _earnings_date_state_constraint(
+                prefix="earnings_release",
+                name="investor_relations_observation_earnings_precision_valid",
+            ),
+            _earnings_date_state_constraint(
+                prefix="conference_call",
+                name="investor_relations_observation_conference_precision_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(item_type="release_confirmation")
+                    | (
+                        (
+                            ~Q(confirmed_release_precision="unknown")
+                            & Q(estimated_release_precision="unknown")
+                        )
+                        | (
+                            Q(confirmed_release_precision="unknown")
+                            & ~Q(estimated_release_precision="unknown")
+                        )
+                    )
+                ),
+                name="investor_relations_observation_confirmation_shape_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(item_type="results_release")
+                    | (
+                        ~Q(earnings_release_precision="unknown")
+                        & Q(estimated_release_precision="unknown")
+                        & Q(confirmed_release_precision="unknown")
+                    )
+                ),
+                name="investor_relations_observation_results_shape_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(item_type="call_notice")
+                    | (
+                        ~Q(conference_call_precision="unknown")
+                        & Q(earnings_release_precision="unknown")
+                        & (
+                            Q(confirmed_release_precision="unknown")
+                            | Q(estimated_release_precision="unknown")
+                        )
+                    )
+                ),
+                name="investor_relations_observation_call_shape_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(item_type="cancellation")
+                    | (
+                        Q(cancellation__isnull=False)
+                        & Q(estimated_release_precision="unknown")
+                        & Q(confirmed_release_precision="unknown")
+                        & Q(earnings_release_precision="unknown")
+                        & Q(conference_call_precision="unknown")
+                    )
+                ),
+                name="investor_relations_observation_cancellation_shape_valid",
+            ),
+            models.CheckConstraint(
+                condition=(~Q(item_type="cancellation") & Q(cancellation__isnull=True))
+                | Q(item_type="cancellation"),
+                name="investor_relations_observation_cancellation_scope_valid",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.company_id}:{self.item_type}@{self.raw_position}"
+
+
+class InvestorRelationsDecision(AppendOnlyAuditModel):
+    """Append-only IR authority/history decision (ADR-022, fixture-first 4.5B)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    observation = models.ForeignKey(
+        InvestorRelationsObservation,
+        on_delete=models.PROTECT,
+        related_name="decisions",
+    )
+    target_event = models.ForeignKey(
+        EarningsEvent,
+        on_delete=models.PROTECT,
+        related_name="investor_relations_decisions",
+        null=True,
+        blank=True,
+    )
+    decision_type = models.CharField(
+        max_length=32,
+        choices=InvestorRelationsDecisionType.choices,
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=InvestorRelationsDecisionStatus.choices,
+    )
+    covered_fields = models.JSONField(default=list, blank=True)
+    rule_version = models.CharField(max_length=100)
+    match_factors = models.JSONField(default=dict, blank=True)
+    reason = models.CharField(max_length=2000, blank=True)
+    source_raw_data_record = models.ForeignKey(
+        "audit.RawDataRecord",
+        on_delete=models.PROTECT,
+        related_name="investor_relations_decisions",
+        null=True,
+        blank=True,
+    )
+    source_evidence = models.ForeignKey(
+        "audit.SourceEvidence",
+        on_delete=models.PROTECT,
+        related_name="investor_relations_decisions",
+        null=True,
+        blank=True,
+    )
+    actor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="investor_relations_decisions",
+        null=True,
+        blank=True,
+    )
+    sync_run = models.ForeignKey(
+        "audit.SyncRun",
+        on_delete=models.PROTECT,
+        related_name="investor_relations_decisions",
+        null=True,
+        blank=True,
+    )
+    request_id = models.CharField(max_length=255, blank=True)
+    decided_at = models.DateTimeField(default=timezone.now)
+    supersedes = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="superseding_decisions",
+        null=True,
+        blank=True,
+    )
+    decision_key = models.CharField(max_length=64, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-decided_at", "-created_at", "-id")
+        indexes = [
+            models.Index(fields=("observation", "decided_at")),
+            models.Index(fields=("target_event", "decided_at")),
+            models.Index(fields=("status", "decision_type", "decided_at")),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(decision_type__in=ALLOWED_INVESTOR_RELATIONS_DECISION_TYPES),
+                name="investor_relations_decision_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=ALLOWED_INVESTOR_RELATIONS_DECISION_STATUSES),
+                name="investor_relations_decision_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(status="resolved")
+                        & Q(decision_type__in=RESOLVED_INVESTOR_RELATIONS_DECISION_TYPES)
+                        & Q(target_event__isnull=False)
+                    )
+                    | (Q(status="open") & Q(decision_type="conflict"))
+                    | (
+                        Q(status="rejected")
+                        & Q(decision_type="no_match")
+                        & Q(target_event__isnull=True)
+                    )
+                    | (Q(status="rejected") & Q(decision_type="ignored"))
+                ),
+                name="investor_relations_decision_outcome_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (Q(actor_user__isnull=False) & ~Q(reason="") & ~Q(request_id=""))
+                    | (
+                        Q(actor_user__isnull=True)
+                        & Q(sync_run__isnull=False)
+                        & Q(request_id="")
+                        & Q(source_raw_data_record__isnull=False)
+                    )
+                ),
+                name="investor_relations_decision_context_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(decision_key__regex=r"^[0-9a-f]{64}$"),
+                name="investor_relations_decision_key_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(rule_version__regex=r"[^[:space:]]"),
+                name="investor_relations_decision_rule_not_empty",
+            ),
+            models.CheckConstraint(
+                condition=Q(supersedes__isnull=True) | ~Q(supersedes=F("id")),
+                name="investor_relations_decision_not_self",
+            ),
+            models.UniqueConstraint(
+                fields=("decision_key",),
+                name="investor_relations_decision_key_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.observation_id}:{self.decision_type}:{self.status}"

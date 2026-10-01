@@ -474,10 +474,10 @@ ADR-020 为 Alpha Vantage Free 冻结了 candidate-only adaptation contract，�
 - schema / migration = NO / NO；个人用途的 normalized / candidate pipeline storage 许可
   已由后续书面澄清覆盖；4.2F-B implementation 已实现、验证并 merge（PR #51）。
 
-### 6.8 `InvestorRelationsObservation`（4.5B contract only；未实现）
+### 6.8 `InvestorRelationsObservation`（4.5B fixture-first 已实现）
 
-> 本节只记录 ADR-022 冻结的未来 schema 方向。4.5B live Provider 仍为
-> `LIVE BLOCKED`，本阶段 MUST NOT 创建 model 或 migration。
+> 本节描述已落地的 4.5B fixture-first schema。真实 IR Provider 仍为
+> `LIVE BLOCKED`；本实现只使用 fixture / persisted raw。
 
 IR observation 是 append-only normalized revision，不复用
 `EarningsCalendarObservation`。Provider → RawDataRecord → RawDataObservation → parse →
@@ -486,64 +486,83 @@ IR observation → IR decision → 既有 schedule / lifecycle service；Provide
 
 | 字段 | 说明 |
 |---|---|
+| 字段 | 实际 schema |
+|---|---|
 | `id` | UUID PK |
-| `source_id` | FK DataSource，PROTECT；必须与 raw record source 一致 |
+| `source_id` | FK DataSource，PROTECT；service 校验与 raw record source 一致且 source type 为 `ir` |
 | `raw_data_record_id` | FK RawDataRecord，PROTECT |
-| `provider_key`, `provider_version`, `parser_version` | 来源与解析版本 |
-| `source_event_identity` | provider-native ID 或 `internal:ir:v1:<sha256>` |
-| `raw_position` | 1-based 原始位置 |
-| `company_id` | FK Company，PROTECT |
+| `provider_key`, `provider_version`, `parser_version` | 来源与解析版本；非空白 |
+| `source_event_identity` | provider-native ID 或 `internal:ir:v1:<sha256>`；DB check 禁止非规范 `internal:` 前缀 |
+| `raw_position` | 1-based 原始位置，`>= 1` |
+| `company_id` | FK Company，PROTECT；必须为 exact Company |
 | `period_end_date` | date，非空 |
 | `period_type` | Q1 / Q2 / Q3 / FY / H1 / H2 / OTHER，非空 |
 | `item_type` | release_confirmation / results_release / call_notice / cancellation |
-| `confirmed_release`, `earnings_release`, `conference_call` | date 或 exact datetime 加 precision，nullable |
-| `release_session` | nullable / unknown |
-| `cancellation` | explicit structure，nullable |
+| `estimated_release_at` / `_date` / `_precision` | IR explicit tentative schedule；三态表示与 EarningsEvent 相同 |
+| `confirmed_release_at` / `_date` / `_precision` | 官方确认；nullable |
+| `earnings_release_at` / `_date` / `_precision` | 官方 results release；nullable |
+| `conference_call_at` / `_date` / `_precision` | 电话会；nullable |
+| `release_session` | nullable；pre_market / after_market / during_market / unknown |
+| `cancellation` | explicit JSON structure `{scope, reason_code}`，nullable |
 | `source_observed_at`, `confidence`, `created_at` | 来源时间、可解释置信度、UTC |
 
-约束方向：
+约束与查询：
 
-- unique `(raw_data_record, parser_version, source_event_identity)`；
-- append-only，不允许 update / delete；
-- source 关系、item_type 必填事实和 Company / period identity 必须一致；
-- 缺少 exact Company 或完整 period identity 时只保留 raw lineage，不创建 observation、
-  decision 或 authority write；
-- source identity 的 `internal:ir:v1` 输入只包含 source_key、company_id、
+- UNIQUE `(raw_data_record, parser_version, source_event_identity)`；
+- append-only：`AppendOnlyAuditModel` + `AppendOnlyQuerySet`，不允许 update / delete；
+- index `(source, source_event_identity)`、`(company, period_end_date, period_type)`；
+- item_type shape check：release_confirmation 恰好一个 confirmed / estimated fact；
+  results_release 只有 earnings_release；call_notice 至少有 conference_call 且不得含
+  earnings_release；cancellation 必须携带 cancellation 且不得携带 schedule / release facts；
+- 缺少 exact Company 或完整 period identity 时 parser/ingestion 只保留 raw lineage，
+  不创建 observation、decision 或 authority write；
+- source identity 的 `internal:ir:v1` 输入只包含 stable source_key、company_id、
   period_end_date、period_type、item_type，不包含 mutable date、fetched_at、
-  raw_position 或 parser_version。
+  raw_position、parser_version 或 DB id。
 
-### 6.9 `InvestorRelationsDecision`（4.5B contract only；未实现）
+### 6.9 `InvestorRelationsDecision`（4.5B fixture-first 已实现）
 
 IR decision 是 append-only authority / history model，通过 `supersedes` 链表达更替，
 不增加可变 lock flag。Manual decision 优先于 IR automatic decision。
 
-预期字段包括：
+| 字段 | 实际 schema |
+|---|---|
+| `id` | UUID PK |
+| `observation_id` | FK InvestorRelationsObservation，PROTECT |
+| `target_event_id` | FK EarningsEvent nullable，PROTECT |
+| `decision_type` | confirmed_schedule / updated_conference_call / released / cancelled / conflict / no_match / ignored |
+| `status` | open / resolved / rejected |
+| `covered_fields` | JSON list；受控字段 estimated_release / confirmed_release / earnings_release / conference_call / release_session / status |
+| `rule_version` | 非空白 |
+| `match_factors` | 结构化 authority / facts / reason / conflict evidence，不塞入 AuditRecord JSON |
+| `reason` | manual / conflict / no_match / ignored 的受控原因 |
+| `source_raw_data_record_id` / `source_evidence_id` | nullable，PROTECT；asserted by service |
+| `actor_user_id` / `sync_run_id` | 人工或系统上下文 |
+| `request_id` | manual 稳定请求身份；automatic 为空 |
+| `decided_at` | UTC |
+| `supersedes_id` | self-FK nullable，PROTECT；不得 self-supersede |
+| `decision_key` | 64 位小写 SHA-256，unique；不包含 wall clock / raw body / supersedes |
+| `created_at` | UTC |
 
-```text
-id
-observation_id
-target_event_id nullable
-decision_type
-status
-covered_fields
-rule_version
-match_factors
-reason
-actor_user_id / sync_run_id
-request_id
-decided_at
-supersedes_id
-decision_key unique
-created_at
-```
+约束与状态语义：
 
-决策类型至少覆盖：confirmed_schedule、updated_conference_call、released、cancelled、
-conflict、no_match、ignored。所有 schedule / status 写入必须调用既有的
-`update_earnings_schedule`、`confirm_earnings_event`、`cancel_earnings_event` 等 service；
-decision 本身不得直接修改 EarningsEvent。
+- `resolved` 仅用于 confirmed_schedule / updated_conference_call / released / cancelled，
+  且必须有 target_event；
+- `conflict` 只能 `open`（review_required），target_event nullable；
+- `no_match` 只能 `rejected` 且 target_event 为空；`ignored` 只能 `rejected`，允许记录
+  target_event（manual authority blocked / conference-call cancellation 留痕）；
+- automatic decision 必须有 sync_run、source_raw_data_record，且 request_id 为空；
+  manual decision 必须有 actor_user、reason、request_id；
+- append-only，supersedes 链表达更替；DB unique `decision_key` 是并发重放的最终防线；
+- 所有 schedule / status 写入必须调用既有 `update_earnings_schedule`、
+  `confirm_earnings_event`、`mark_earnings_released`、`cancel_earnings_event`；
+  decision 本身不得直接修改 EarningsEvent；
+- IR autonomous write 生成指向 EarningsEvent 的 SourceEvidence、DataChange、AuditRecord；
+  manual authority leaf 阻塞自动覆盖，但 blocked outcome 仍追加 append-only decision。
 
-IR field authority、冲突、取消与 replay 契约见 ADR-022。4.5B 的实际字段名、枚举和迁移
-编号必须在 implementation 阶段重新核对，不得把本节当作已实现 schema。
+IR field authority、冲突、取消与 replay 契约见 ADR-022。4.5B 的 fixture-first schema 已由
+earnings migration `0009` 与 audit migration `0012` 落地；真实 IR live source 仍为
+`LIVE BLOCKED`。
 
 ## 7. SEC 文件
 
@@ -965,8 +984,8 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | Filing.reported_items | canonical comma-separated SEC item codes；空字符串或 `n.nn` 格式 check constraint |
 | FilingEarningsLink（4.5A contract） | filing + earnings_event + relation_type unique；current projection；release classification iff release relation |
 | FilingEarningsDecision（4.5A contract） | decision_key unique；append-only；supersedes 链；manual leaf 阻塞 automatic supersession |
-| InvestorRelationsObservation（4.5B contract only） | raw_data_record + parser_version + source_event_identity unique；append-only；未实现 |
-| InvestorRelationsDecision（4.5B contract only） | decision_key unique；append-only；supersedes 链；未实现 |
+| InvestorRelationsObservation（4.5B fixture-first 已实现） | raw_data_record + parser_version + source_event_identity unique；append-only；item_type shape 约束；缺 Company / period identity 不创建 observation |
+| InvestorRelationsDecision（4.5B fixture-first 已实现） | decision_key unique；append-only；supersedes 链；manual leaf 阻塞 automatic override |
 | WatchlistItem | user + company unique |
 | ReminderRule | null-safe user/company/event/channel/lead unique |
 | Notification | idempotency_key unique |
@@ -1022,10 +1041,11 @@ Stage 4.5 Contract Documentation 已追加冻结：
   FilingEarningsLink、FilingEarningsDecision、deterministic matching、metadata-only
   classification、manual review authority、replay 与 selector-derived filing state，
   权威契约见 ADR-021；
-- 4.5B = `CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`：
+- 4.5B = `FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`：
   InvestorRelationsObservation / InvestorRelationsDecision、IR source scope、field
-  authority、conflict、absence / cancellation 与 replay，权威契约见 ADR-022；
-  live Provider 必须等待实际公司 allowlist 与逐来源许可；
+  authority、conflict、absence / cancellation 与 zero-network replay 均已按 ADR-022
+  以 fixture / persisted raw 实现并验证（earnings migration `0009`、audit migration
+  `0012`）；live Provider 仍必须等待实际公司 allowlist 与逐来源许可；
 - 4.5A 与 4.5B 都不改变 EarningsEvent.status；SEC Filing 状态始终由
   FilingEarningsLink 独立派生。
 

@@ -25,7 +25,7 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 | SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、reported_items、documents | Filing、FilingDocument；FilingEarningsLink / FilingEarningsDecision 由 4.5A contract 冻结 | 官方公开 submissions 与目录 metadata；4.4 已实现，真实访问 smoke 待执行；4.5A 已实现、验证并 merge（PR #58，merge `8f2e214`） |
 | 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native、ADR-015 v1 或 ADR-020 v2） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015 / ADR-020） | **AV v2 candidate-entry 技术契约与个人用途许可已 PASS（ADR-020）；implementation 已实现、验证并 merge（PR #51）；公开 / 多用户 / 商业 canonical 供应商仍待产品确认** |
 | 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）** |
-| IR 官方确认 | 官方 IR page / feed 或 licensed vendor API | 正式日期、电话会、新闻稿链接 | InvestorRelationsObservation → InvestorRelationsDecision → 既有 schedule / lifecycle service（ADR-022） | **4.5B CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED；实际公司 allowlist 与逐来源许可待确认** |
+| IR 官方确认 | 官方 IR page / feed 或 licensed vendor API | 正式日期、电话会、新闻稿链接 | InvestorRelationsObservation → InvestorRelationsDecision → 既有 schedule / lifecycle service（ADR-022） | **4.5B FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE；实际公司 allowlist 与逐来源许可待确认** |
 | S&P 500 | 官方公告、合法 API 或受控导入 | 证券/ticker、公告日、生效日、成分快照 | SecurityListing 级 IndexMembership、IndexChangeLeg | **来源与许可待产品确认** |
 | Nasdaq 100 | 官方公告、合法 API 或受控导入 | 同上 | 同上 | **来源与许可待产品确认** |
 | Dow 30 | 官方公告、合法 API 或受控导入 | 同上 | 同上 | **来源与许可待产品确认** |
@@ -186,7 +186,9 @@ HTTP 基础层使用必须注入的 transport 协议；Stage 4.4 为 SEC 公共�
 
 ### 4.4 IR 官方确认
 
-> 状态：4.5B `CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`。本节只描述
+> 状态：4.5B `FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`。
+> fixture Provider / parser、raw-first ingestion、observation / decision、authority /
+> confirmation / cancellation / conflict 与 zero-network replay 已实现并验证；本节仍只描述
 > source scope 与许可门，不表示任何真实公司或来源已批准。
 
 v1 只允许：
@@ -231,7 +233,7 @@ final conclusion
 
 任一项 unknown / ambiguous / stale → `LIVE BLOCKED`。fixture-first 仍允许。
 
-未来数据流：
+数据流（fixture-first 已实现）：
 
 ```text
 Provider
@@ -351,8 +353,9 @@ display、redistribution、rate limits、deletion、reviewer、reviewed_at、con
 - 财报日历 canonical 供应商、四个指数来源和各自许可；Alpha Vantage Free 的个人私有
   Mode A reference 与 ADR-020 candidate-entry 个人用途已获准，implementation 已实现并
   验证；公开 / 多用户 / 商业用途仍需单独审查；
-- 首批 IR 公司清单与每家公司允许的 official source / feed / vendor；4.5B contract 已由
-  ADR-022 冻结，live Provider 保持 `LIVE BLOCKED`，不得用 fixture 或候选来源冒充批准；
+- 首批 IR 公司清单与每家公司允许的 official source / feed / vendor；4.5B fixture-first
+  implementation 已按 ADR-022 落地并验证，live Provider 仍保持 `LIVE BLOCKED`，不得用
+  fixture 或候选来源冒充批准；
 - IR / SEC 高 authority 来源的字段级冲突矩阵与复核流程：IR / manual / SEC filing state /
   third-party calendar 的字段级 authority 已由 ADR-022 冻结；4.2 第三方 calendar 字段权限
   与 append-only manual decision authority 已由 ADR-010 确定；
