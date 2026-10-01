@@ -1,0 +1,63 @@
+<div id="earnings-results">
+  {% if not has_results %}
+    <div class="empty-state">
+      {% if filters_active %}
+        <p>No earnings events match the selected filters.</p>
+      {% else %}
+        <p>No earnings events are scheduled in this window.</p>
+      {% endif %}
+      <p class="muted">Window: {{ window_label }}</p>
+    </div>
+  {% else %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Company</th>
+          <th>Ticker</th>
+          <th>Release session</th>
+          <th>Status</th>
+          <th>Identity</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>
+              <strong>{{ row.display.timing.label }}</strong>
+              {% include "includes/_event_timing.html" with display=row.display %}
+            </td>
+            <td>
+              {% if row.ticker %}
+                <a href="{% url 'companies:detail' ticker=row.ticker %}">{{ row.display.event.company.display_name }}</a>
+              {% else %}
+                {{ row.display.event.company.display_name }}
+              {% endif %}
+            </td>
+            <td>
+              {% if row.ticker %}
+                {{ row.ticker }}{% if row.exchange %} <span class="muted">{{ row.exchange }}</span>{% endif %}
+              {% else %}
+                <span class="muted">&mdash;</span>
+              {% endif %}
+            </td>
+            <td><span class="badge session">{{ row.display.timing.session_label }}</span></td>
+            <td>
+              <span class="badge {% if row.display.event.status == 'scheduled_confirmed' %}confirmed{% elif row.display.event.status == 'released' %}released{% elif row.display.event.status == 'cancelled' %}cancelled{% else %}estimated{% endif %}">
+                {{ row.display.status_label }}
+              </span>
+            </td>
+            <td>
+              <span class="badge {% if row.display.is_candidate %}candidate{% else %}canonical{% endif %}">
+                {{ row.display.identity_label }}
+              </span>
+            </td>
+            <td class="muted">{{ row.display.source_label }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% include "includes/_pagination.html" with page_obj=page_obj query_string=query_string hx_target="#earnings-results" %}
+  {% endif %}
+</div>

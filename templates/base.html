@@ -1,0 +1,105 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Earnings Radar{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #1a1a2e; background: #f5f5f7; }
+    a { color: #0f3460; }
+    .site-header { background: #16213e; color: #fff; }
+    .site-header .inner { max-width: 1200px; margin: 0 auto; padding: 0.85rem 1.5rem; display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
+    .site-title { color: #fff; font-weight: 700; text-decoration: none; font-size: 1.05rem; }
+    .site-nav { display: flex; flex-wrap: wrap; gap: 0.85rem; }
+    .site-nav a { color: #dbe4ff; text-decoration: none; font-size: 0.9rem; }
+    .site-nav a:hover { text-decoration: underline; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.45rem; margin-bottom: 0.35rem; color: #16213e; }
+    .page-note { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
+    .card { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 1rem; }
+    .filters { background: #fff; padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 1px solid #e0e0e0; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; }
+    .filters label { font-size: 0.8rem; display: block; color: #555; margin-bottom: 0.15rem; }
+    .filters select, .filters input { padding: 0.35rem 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem; }
+    .filters button { padding: 0.35rem 1rem; background: #16213e; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+    .filters button:hover { background: #0f3460; }
+    .filters a { font-size: 0.85rem; color: #666; text-decoration: none; padding: 0.35rem 0; }
+    .filters a:hover { text-decoration: underline; }
+    .filter-group { display: flex; flex-direction: column; }
+    table.data-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; border: 1px solid #e0e0e0; }
+    table.data-table th { background: #16213e; color: #fff; padding: 0.6rem 0.75rem; text-align: left; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    table.data-table td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #eee; font-size: 0.85rem; vertical-align: top; }
+    table.data-table tr:last-child td { border-bottom: none; }
+    table.data-table tr:hover { background: #f9f9fb; }
+    .badge { display: inline-block; padding: 0.15rem 0.45rem; border-radius: 3px; font-size: 0.72rem; font-weight: 600; }
+    .badge.estimated { background: #fff8e1; color: #8d6e00; }
+    .badge.confirmed { background: #e8f5e9; color: #2e7d32; }
+    .badge.released { background: #e3f2fd; color: #1565c0; }
+    .badge.cancelled { background: #fce4ec; color: #c62828; }
+    .badge.candidate { background: #f3e5f5; color: #6a1b9a; }
+    .badge.canonical { background: #e8eaf6; color: #283593; }
+    .badge.session { background: #f1f3f5; color: #495057; }
+    .muted { color: #777; }
+    .empty-state { text-align: center; padding: 3rem 1rem; color: #888; font-size: 1rem; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; }
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 1rem; padding: 1rem; }
+    .pagination-info { color: #666; font-size: 0.85rem; }
+    .pagination-link { color: #16213e; text-decoration: none; padding: 0.3rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem; background: #fff; }
+    .pagination-link:hover { background: #eee; }
+    .local-time { display: block; color: #0f3460; }
+    .detail-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 1rem; align-items: start; }
+    .detail-list { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 0.75rem; font-size: 0.9rem; }
+    .detail-list dt { color: #666; }
+    .detail-list dd { color: #1a1a2e; }
+    .section { margin-top: 1.25rem; }
+    .section h2 { font-size: 1.05rem; margin-bottom: 0.6rem; color: #16213e; }
+    .candidate-note { background: #fff8e1; border: 1px solid #f0e0a8; color: #7a5c00; border-radius: 6px; padding: 0.6rem 0.75rem; font-size: 0.85rem; margin-bottom: 1rem; }
+    @media (max-width: 760px) {
+      .container { padding: 0.75rem; }
+      .filters { flex-direction: column; align-items: stretch; }
+      .detail-grid { grid-template-columns: 1fr; }
+      table.data-table { display: block; overflow-x: auto; }
+    }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <header class="site-header">
+    <div class="inner">
+      <a class="site-title" href="/">Earnings Radar</a>
+      <nav class="site-nav">
+        <a href="/earnings/">Earnings</a>
+        <a href="/companies/">Companies</a>
+        <a href="/index-changes/">Index Changes</a>
+      </nav>
+    </div>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      if (typeof Intl === "undefined" || !Intl.DateTimeFormat) return;
+      var browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      document.querySelectorAll("time[data-utc]").forEach(function (element) {
+        if (element.dataset.userTz === "true") return;
+        try {
+          var date = new Date(element.dataset.utc);
+          var local = new Intl.DateTimeFormat(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short",
+            timeZone: browserTimezone
+          }).format(date);
+          var span = document.createElement("span");
+          span.className = "local-time";
+          span.textContent = "Local: " + local + " (" + browserTimezone + ")";
+          element.appendChild(span);
+        } catch (error) {
+          /* Keep the server-rendered ET and UTC values when local conversion is unavailable. */
+        }
+      });
+    });
+  </script>
+</body>
+</html>

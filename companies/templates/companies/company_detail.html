@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+
+{% block title %}{{ company.display_name }} - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>{{ company.display_name }}</h1>
+  <p class="page-note">
+    Market reference timezone: {{ market_timezone_label }}.
+    {% if include_candidates %}
+      Candidate / incomplete rows are visible to the signed-in owner and are not confirmed canonical events.
+    {% else %}
+      Candidate / incomplete third-party rows are private and are not shown publicly.
+    {% endif %}
+  </p>
+
+  <div class="detail-grid">
+    <section class="card">
+      <h2>Company identity</h2>
+      <dl class="detail-list">
+        <dt>Legal name</dt><dd>{{ company.legal_name }}</dd>
+        <dt>Display name</dt><dd>{{ company.display_name }}</dd>
+        <dt>CIK</dt><dd>{{ company.cik|default:"—" }}</dd>
+        <dt>Country</dt><dd>{{ company.country_code|default:"—" }}</dd>
+        <dt>Issuer type</dt><dd>{{ company.get_issuer_type_display }}</dd>
+        <dt>Monitoring status</dt><dd>{{ company.get_monitoring_status_display }}</dd>
+        {% if company.investor_relations_url %}
+          <dt>Investor relations</dt>
+          <dd><a href="{{ company.investor_relations_url }}" rel="noopener noreferrer">Official IR page</a></dd>
+        {% endif %}
+      </dl>
+    </section>
+
+    <section class="card">
+      <h2>Current listing</h2>
+      {% if primary_listing %}
+        <dl class="detail-list">
+          <dt>Ticker</dt><dd>{{ primary_listing.ticker }}</dd>
+          <dt>Exchange</dt><dd>{{ primary_listing.exchange }}</dd>
+          <dt>Share class</dt><dd>{{ primary_listing.share_class|default:"—" }}</dd>
+          <dt>Effective from</dt><dd>{{ primary_listing.effective_from|date:"Y-m-d" }}</dd>
+          <dt>Effective to</dt><dd>{{ primary_listing.effective_to|date:"Y-m-d"|default:"Open-ended" }}</dd>
+        </dl>
+      {% else %}
+        <p class="muted">No current listing is available for the requested date.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="section">
+    <h2>Index memberships (as of today)</h2>
+    {% if memberships %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Index</th><th>Code</th><th>Effective from</th><th>Effective to</th></tr>
+        </thead>
+        <tbody>
+          {% for membership in memberships %}
+            <tr>
+              <td>{{ membership.index.name }}</td>
+              <td>{{ membership.index.code }}</td>
+              <td>{{ membership.effective_from|date:"Y-m-d" }}</td>
+              <td>{{ membership.effective_to|date:"Y-m-d"|default:"Open-ended" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="empty-state">No enabled index membership is recorded for the current date.</div>
+    {% endif %}
+  </section>
+
+  <section class="section">
+    <h2>Next earnings</h2>
+    {% if next_display %}
+      <div class="card">
+        <dl class="detail-list">
+          <dt>Timing</dt><dd>{% include "includes/_event_timing.html" with display=next_display %}</dd>
+          <dt>Status</dt><dd>{{ next_display.status_label }}</dd>
+          <dt>Identity</dt><dd>{{ next_display.identity_label }}</dd>
+          <dt>Release session</dt><dd>{{ next_display.timing.session_label }}</dd>
+          <dt>Source</dt><dd>{{ next_display.source_label }}</dd>
+        </dl>
+      </div>
+    {% else %}
+      <div class="empty-state">No upcoming earnings event is scheduled for the current date.</div>
+    {% endif %}
+  </section>
+
+  <section class="section">
+    <h2>Earnings history</h2>
+    {% if history_rows %}
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Period end</th>
+            <th>Period type</th>
+            <th>Timing</th>
+            <th>Session</th>
+            <th>Status</th>
+            <th>Identity</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in history_rows %}
+            <tr>
+              <td>{{ row.event.period_end_date|date:"Y-m-d"|default:"—" }}</td>
+              <td>{{ row.event.period_type|default:"Unknown" }}</td>
+              <td>
+                <strong>{{ row.timing.label }}</strong>
+                {% include "includes/_event_timing.html" with display=row %}
+              </td>
+              <td><span class="badge session">{{ row.timing.session_label }}</span></td>
+              <td>
+                <span class="badge {% if row.event.status == 'scheduled_confirmed' %}confirmed{% elif row.event.status == 'released' %}released{% elif row.event.status == 'cancelled' %}cancelled{% else %}estimated{% endif %}">
+                  {{ row.status_label }}
+                </span>
+              </td>
+              <td>
+                <span class="badge {% if row.is_candidate %}candidate{% else %}canonical{% endif %}">
+                  {{ row.identity_label }}
+                </span>
+              </td>
+              <td class="muted">{{ row.source_label }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if history_page_obj.paginator.num_pages > 1 %}
+        <nav aria-label="Earnings history pagination" class="pagination">
+          {% if history_page_obj.has_previous %}
+            <a class="pagination-link" href="?history_page={{ history_page_obj.previous_page_number }}">Previous</a>
+          {% endif %}
+          <span class="pagination-info">Page {{ history_page_obj.number }} of {{ history_page_obj.paginator.num_pages }}</span>
+          {% if history_page_obj.has_next %}
+            <a class="pagination-link" href="?history_page={{ history_page_obj.next_page_number }}">Next</a>
+          {% endif %}
+        </nav>
+      {% endif %}
+    {% else %}
+      <div class="empty-state">No earnings history is recorded for this company.</div>
+    {% endif %}
+  </section>
+{% endblock %}

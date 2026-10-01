@@ -23,7 +23,7 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 |---|---|---|---|---|
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
 | SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument、FilingEarningsLink 候选 | 官方来源；访问策略待实现前核对 |
-| 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native、ADR-015 v1 或 ADR-020 v2） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015 / ADR-020） | **AV v2 candidate-entry 技术契约与个人用途许可已 PASS（ADR-020）；implementation 已实现并验证，等待 merge gate；公开 / 多用户 / 商业 canonical 供应商仍待产品确认** |
+| 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native、ADR-015 v1 或 ADR-020 v2） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015 / ADR-020） | **AV v2 candidate-entry 技术契约与个人用途许可已 PASS（ADR-020）；implementation 已实现、验证并 merge（PR #51）；公开 / 多用户 / 商业 canonical 供应商仍待产品确认** |
 | 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）** |
 | IR 官方确认 | 公司 IR 页面或有限 IR Provider | 正式日期、电话会、新闻稿链接 | 确认状态、发布日期、来源证据 | 首批公司清单与抓取方式待确认 |
 | S&P 500 | 官方公告、合法 API 或受控导入 | 证券/ticker、公告日、生效日、成分快照 | SecurityListing 级 IndexMembership、IndexChangeLeg | **来源与许可待产品确认** |
