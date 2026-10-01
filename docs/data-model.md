@@ -471,8 +471,8 @@ ADR-020 为 Alpha Vantage Free 冻结了 candidate-only adaptation contract，�
   manual evidence / future exact provider 补齐 period_type 后，才走 ADR-009；
 - window：system desired coverage 与 provider capability 分离；AV 为 forward nominal
   3month、past correction unsupported；
-- schema / migration = NO / NO；license activation for normalized / candidate pipeline
-  storage 仍待 Provider 澄清。
+- schema / migration = NO / NO；个人用途的 normalized / candidate pipeline storage 许可
+  已由后续书面澄清覆盖；4.2F-B implementation 已实现并验证，等待 merge gate。
 
 ## 7. SEC 文件
 
@@ -848,8 +848,8 @@ identity、SourceEvidence/AuditRecord 和 replay/correction 幂等；run lifecyc
 仍待 caller 在 normalization 完整后、terminal finalization 前调用。
 
 ADR-020 进一步冻结 Alpha Vantage Free v2 candidate-entry adaptation：technical contract =
-PASS；implementation 仍待 normalized / candidate / canonical-pipeline storage 的许可澄清。
-详见 §6.7。
+PASS；个人用途的 normalized / candidate / canonical-pipeline storage 许可已由后续书面
+澄清覆盖；implementation 已实现并验证，等待 merge gate。详见 §6.7。
 
 以下数据决策仍待确认：
 
@@ -864,5 +864,5 @@ PASS；implementation 仍待 normalized / candidate / canonical-pipeline storage
 9. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
 10. AuditRecord 和 DataChange 的保留期限、IP 哈希保留期及具体查看角色仍需在阶段 8.1 前确认；目标引用已确定为受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。
 11. 4.2F 最终 provider / license checklist 结论与 anomaly shrink operational 阈值；ADR-020
-   已冻结 Alpha Vantage v2 candidate-entry technical contract，normalized / candidate /
-   canonical-pipeline storage 许可待澄清，implementation 未开始；不阻塞 4.2C-4.2E。
+   已冻结 Alpha Vantage v2 candidate-entry technical contract，个人用途许可已解决；
+   implementation 已实现并验证，等待 merge gate；不阻塞 4.2C-4.2E。

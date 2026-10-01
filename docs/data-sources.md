@@ -23,7 +23,7 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 |---|---|---|---|---|
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
 | SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument、FilingEarningsLink 候选 | 官方来源；访问策略待实现前核对 |
-| 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native、ADR-015 v1 或 ADR-020 v2） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015 / ADR-020） | **AV v2 candidate-entry 技术契约已由 ADR-020 冻结；normalized / candidate pipeline storage 许可待澄清；公开 / 多用户 / 商业 canonical 供应商仍待产品确认** |
+| 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native、ADR-015 v1 或 ADR-020 v2） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015 / ADR-020） | **AV v2 candidate-entry 技术契约与个人用途许可已 PASS（ADR-020）；implementation 已实现并验证，等待 merge gate；公开 / 多用户 / 商业 canonical 供应商仍待产品确认** |
 | 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）** |
 | IR 官方确认 | 公司 IR 页面或有限 IR Provider | 正式日期、电话会、新闻稿链接 | 确认状态、发布日期、来源证据 | 首批公司清单与抓取方式待确认 |
 | S&P 500 | 官方公告、合法 API 或受控导入 | 证券/ticker、公告日、生效日、成分快照 | SecurityListing 级 IndexMembership、IndexChangeLeg | **来源与许可待产品确认** |
@@ -44,7 +44,7 @@ Vantage Free 个人私有 Mode A reference 用途。该例外不授予公开展�
 | S&P 500 / Dow 30 | [S&P DJI Index Announcements](https://www.spglobal.com/spdji/en/index-announcements/)、获许可供应商、受控人工导入 | 候选；成分明细、历史、自动化访问与公开再展示许可均未确认 |
 | Nasdaq 100 | Nasdaq Global Index Watch/官方公告、获许可供应商、受控人工导入 | 候选；GIW/API 权限、下载自动化、缓存和再展示许可均未确认 |
 | Russell 2000 | [FTSE Russell Index Notices](https://www.lseg.com/en/ftse-russell/index-resources/notices)、[Russell 2000 页面](https://www.lseg.com/en/ftse-russell/indices/russell-2000-index)、获许可供应商、受控人工导入 | 候选；部分完整公告可能需要订阅，成分数据使用与再分发许可未确认 |
-| 财报日历 | [Nasdaq Earnings Calendar](https://www.nasdaq.com/market-activity/earnings)、[Finnhub Earnings Calendar API](https://finnhub.io/docs/api/introduction)、[Alpha Vantage Earnings Calendar](https://www.alphavantage.co/documentation/)、[FMP Earnings Calendar](https://site.financialmodelingprep.com/developer/docs/stable) | Alpha Vantage Free 的个人私有 Mode A reference 用途已通过 ADR-019；其 candidate-entry adaptation 技术契约已由 ADR-020 冻结，但 normalized / candidate pipeline storage 许可仍待澄清；公开 / 多用户 / 商业 canonical 与其他候选的许可仍未确认 |
+| 财报日历 | [Nasdaq Earnings Calendar](https://www.nasdaq.com/market-activity/earnings)、[Finnhub Earnings Calendar API](https://finnhub.io/docs/api/introduction)、[Alpha Vantage Earnings Calendar](https://www.alphavantage.co/documentation/)、[FMP Earnings Calendar](https://site.financialmodelingprep.com/developer/docs/stable) | Alpha Vantage Free 的个人私有 Mode A reference 用途已通过 ADR-019；其 candidate-entry adaptation 技术契约已由 ADR-020 冻结，个人用途的 normalized / candidate storage 许可已由后续书面澄清覆盖；公开 / 多用户 / 商业 canonical 与其他候选的许可仍未确认 |
 
 > 2026-09-29 更新：财报日历候选中的 Alpha Vantage Free 已完成 4.2F-B canonical focused
 > provider / license gate，结论为 REJECTED：`EARNINGS_CALENDAR` 缺 CIK / exchange /
@@ -62,8 +62,8 @@ Vantage Free 个人私有 Mode A reference 用途。该例外不授予公开展�
 > ADR-020：AV v2 使用 frozen `MonitoringPoolSnapshot` 的精确 symbol -> Company 解析、
 > Company-scoped `internal:v2:` source identity、允许 `period_type = NULL` 的 observation /
 > candidate 与严格 promotion firewall；system desired window 与 provider capability
-> 分离。技术契约 = PASS；normalized / candidate / canonical-pipeline storage 的许可仍需
-> Alpha Vantage 书面澄清，因此 4.2F-B implementation 保持 BLOCKED。
+> 分离。技术契约 = PASS；后续产品负责人转述的书面澄清已覆盖个人用途的 normalized /
+> candidate / canonical-pipeline storage，4.2F-B 已实现并验证，等待独立 merge gate。
 
 ### 2.2 每个候选必须人工验证的许可问题
 
@@ -248,11 +248,10 @@ SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 
 ADR-018；Alpha Vantage Free 的个人私有用途结论与书面证据见 ADR-019。其他用途或
 来源条款沉默一律视为未授权。
 
-ADR-020 的 AV v2 candidate-entry contract 技术上 PASS，但现有书面回复只明确覆盖 raw
-persistence / historical retention / offline replay / derived reference display；
-normalized database records、local master-data linkage、long-term retention 与 candidate
-earnings-event use 仍需 Alpha Vantage 单独书面澄清。未澄清前 4.2F-B implementation 保持
-BLOCKED；不得用“derive fields”宽泛解释替代该确认。
+ADR-020 的 AV v2 candidate-entry contract 技术上 PASS；normalized database records、
+local master-data linkage、long-term retention 与 candidate earnings-event use 已由产品
+负责人转述的后续书面澄清覆盖，范围仍是严格个人、私有、单用户、非商业。公开 / 多用户 /
+商业用途仍不在范围内；4.2F-B implementation 已实现并验证，等待独立 merge gate。
 
 ## 9. 失败保护与验收
 
@@ -270,8 +269,8 @@ BLOCKED；不得用“derive fields”宽泛解释替代该确认。
 ## 10. 仍待确认
 
 - 财报日历 canonical 供应商、四个指数来源和各自许可；Alpha Vantage Free 的个人私有
-  Mode A reference 已获准，ADR-020 candidate-entry 技术契约已冻结，但 normalized /
-  candidate pipeline storage 许可与公开 / 多用户使用仍待单独澄清或审查；
+  Mode A reference 与 ADR-020 candidate-entry 个人用途已获准，implementation 已实现并
+  验证；公开 / 多用户 / 商业用途仍需单独审查；
 - 首批 IR 公司清单与允许的抓取方式；
 - IR / SEC 高 authority 来源的字段级冲突矩阵与复核流程（4.4 / 4.5 前）；4.2 第三方
   calendar 字段权限与 append-only manual decision authority 已由 ADR-010 确定；

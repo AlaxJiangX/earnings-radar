@@ -1,6 +1,6 @@
 # ADR-020：Alpha Vantage Free Canonical-Entry Adaptation Contract
 
-- 状态：已接受（Stage 4.2F-B Alpha Vantage Adaptation Contract Gate；Gate = PARTIAL PASS）
+- 状态：已接受（Stage 4.2F-B Alpha Vantage Adaptation Contract Gate；Gate = PASS after license resolution）
 - 日期：2026-09-30
 - 决策者：产品负责人（产品方向已批准；本 ADR 冻结技术契约边界）
 - 评估与起草：Codex（按 `Finance_Stage_4.2F-B_Alpha_Vantage_Adaptation_Contract_Gate.md` 执行）
@@ -8,11 +8,11 @@
   `codex/4.2f-b-alpha-vantage-contract`
 - 影响阶段：4.2F-B contract；implementation 仍受许可澄清阻塞，尚未开始
 
-> Gate 结论：**技术契约 PASS；许可激活 PARTIAL PASS**。Alpha Vantage Free 的
-> `EARNINGS_CALENDAR` 可以按本 ADR 的 candidate-only 契约进入主财报流水线；
-> normalized / candidate / canonical-pipeline storage 的许可仍未由现有书面证据明确覆盖，
-> 因此 implementation 在取得 Provider 书面澄清前保持 BLOCKED。本 ADR 不实现生产代码、
-> 不新增 migration、不接入 live sync、不开始 4.2F-B Implementation。
+> Gate 结论（最终）：**技术契约 PASS；个人、私有、单用户、非商业的 normalized /
+> candidate / canonical-pipeline storage 许可已由后续书面澄清解决**。初始 Gate 曾为
+> PARTIAL PASS，唯一阻塞是 normalized / candidate pipeline storage 的许可覆盖；
+> 该阻塞现已解除。本 ADR 只冻结契约，不包含生产实现；实现与验证由 Stage 4.2F-B
+> Implementation + Verification 负责，公开 / 多用户 / 商业 / 再分发仍不在批准范围。
 
 ## 1. 背景与产品决定
 
@@ -49,7 +49,7 @@ reference 用途，并明确未批准 canonical 使用授权。
 | replay | 仅使用 persisted raw + persisted frozen snapshot；network fetch = 0 |
 | schema change required | NO |
 | migration required | NO |
-| license status | PARTIAL：normalized / candidate pipeline storage 待 Provider 书面澄清 |
+| license status | PASS（个人/私有/单用户/非商业的 normalized / candidate storage；公开/多用户/商业除外） |
 | implementation status | NOT STARTED |
 
 ## 3. 保留的 Canonical 不变量
@@ -586,7 +586,10 @@ MUST NOT destructive merge。
 
 ## 14. License Boundary
 
-现有 Alpha Vantage Support 书面回复明确覆盖：
+### 14.1 初始结论（历史）
+
+本 ADR 初始 Gate 结论为 PARTIAL PASS。其原因是当时的 Alpha Vantage Support 书面回复
+明确覆盖：
 
 ```text
 raw CSV / JSON persistence
@@ -596,7 +599,7 @@ derived fields
 private single-user display
 ```
 
-但它没有明确覆盖：
+但没有明确覆盖：
 
 ```text
 parsing stored responses into normalized database records
@@ -606,7 +609,7 @@ using them internally as candidate earnings-event records
 later completing those candidates with facts from other sources
 ```
 
-ADR-019 也明确把 canonical 使用授权排除在结论之外。因此：
+ADR-019 也把 canonical 使用授权排除在结论之外。因此初始结论为：
 
 ```text
 technical contract = PASS（本 ADR）
@@ -614,7 +617,39 @@ license activation for normalized / candidate / canonical-pipeline storage =
   BLOCKED pending Provider clarification
 ```
 
-需要向 Alpha Vantage Support 确认的精确问题：
+### 14.2 后续书面澄清与许可解决
+
+产品负责人报告：Alpha Vantage Support 随后针对同一 strictly personal / private /
+single-user / non-commercial 使用，书面批准以下用途：
+
+```text
+parse stored EARNINGS_CALENDAR responses into normalized database records
+link normalized records to local company / security master data
+retain normalized records long-term
+use them internally as candidate earnings-event records
+later complete those candidates with facts from other sources
+```
+
+边界保持不变：
+
+```text
+MUST NOT redistribute
+MUST NOT sell
+MUST NOT publicly display
+MUST NOT make accessible to another user
+MUST NOT use for a multi-user or commercial service
+```
+
+该确认由产品负责人转述；本 ADR 不引用未提供的原文，也不扩大其范围。因此最终状态为：
+
+```text
+technical contract = PASS（本 ADR）
+license activation for normalized / candidate / canonical-pipeline storage,
+strictly personal/private/single-user/non-commercial = PASS
+public / multi-user / commercial = OUT OF SCOPE（需要另行书面协议）
+```
+
+初始 Gate 使用的澄清问题保留如下，作为历史记录：
 
 > For the same strictly personal, private, single-user, non-commercial use:
 >
@@ -626,8 +661,8 @@ license activation for normalized / candidate / canonical-pipeline storage =
 > No Alpha Vantage data will be redistributed, sold, publicly displayed, or made
 > accessible to any other user.
 
-在收到明确答复并完成新的 license gate 记录前，4.2F-B implementation MUST NOT 开始；
-MUST NOT 以“derive fields”的宽泛解释替代该确认。
+公开、多用户、商业、再分发或客户访问场景仍必须重新执行 license gate；当前 PASS 只
+覆盖本 ADR §1 所述个人、私有、单用户、非商业范围。
 
 ## 15. Schema / Migration Decision
 
@@ -761,12 +796,12 @@ Stage 4.3 或任何后续阶段
 ## 18. Gate Decision
 
 ```text
-PARTIAL PASS
+PASS
 
 technical contract = FROZEN
-implementation = BLOCKED only by license clarification for
-  normalized / candidate / canonical-pipeline storage
-next step after clarification = Stage 4.2F-B Implementation + Verification
+license activation for the strictly personal/private/single-user/non-commercial
+normalized / candidate / canonical-pipeline storage = RESOLVED
+next stage = Stage 4.2F-B Implementation + Verification
 ```
 
 理由：
@@ -776,8 +811,9 @@ next step after clarification = Stage 4.2F-B Implementation + Verification
 - v2 source identity、冻结 snapshot matching、candidate family 与 promotion firewall
   都已冻结；
 - schema / migration 均不需要；
-- 唯一剩余阻塞是现有书面许可未明确覆盖 normalized / candidate pipeline storage；
-  该问题已有精确澄清问题，不得由实现代答或推断。
+- 初始 PARTIAL PASS 的唯一剩余阻塞（normalized / candidate pipeline storage 许可）
+  已由后续书面澄清解决；
+- 公开、多用户、商业与再分发仍不在批准范围内，必须重新审查。
 
 ## 19. 参考
 

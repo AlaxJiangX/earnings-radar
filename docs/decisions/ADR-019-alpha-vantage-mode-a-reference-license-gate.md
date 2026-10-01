@@ -11,9 +11,9 @@
   许可 / 数据权利；不实现代码、不加 key、不改 schema。
 
 > 修订说明（ADR-020）：本 ADR 的 Mode A reference-only 许可结论不变。ADR-020 另行冻结
-> Alpha Vantage Free v2 candidate-entry 技术契约；normalized / candidate /
-> canonical-pipeline storage 不在本 ADR 已确认的书面许可范围内，4.2F-B implementation
-> 保持 BLOCKED，直到 Provider 书面澄清。
+> Alpha Vantage Free v2 candidate-entry 技术契约；后续书面澄清（由产品负责人转述）已
+> 覆盖同一 strictly personal/private/single-user/non-commercial 范围内的 normalized /
+> candidate / canonical-pipeline storage。公开、多用户、商业与再分发仍不在批准范围内。
 
 ## 1. 背景
 
@@ -175,7 +175,9 @@ Future scope question（不阻塞当前 V1，供后续 open-source self-host 评
 - 转为公开、多用户、客户可访问、商业或再分发用途前，必须重新审查许可并取得相应协议；
   当前批准不得直接用于 PRD 中的公开页面或多用户服务。
 - 4.2F-A implementation 尚未开始；未来实现仍须满足 ADR-018 的工程与测试验收。
-- 4.2F-B canonical primary Provider 仍受 ADR-016 的拒绝约束，保持 BLOCKED。
+- 4.2F-B canonical primary Provider 仍受 ADR-016 的拒绝约束；AV v2 candidate-entry
+  路径已由 ADR-020 另行批准，个人用途许可已由后续书面澄清解决，公开 / 多用户 /
+  商业仍保持 BLOCKED。
 - 不实现 provider adapter、HTTP transport、parser、projection、command、UI、model、
   migration 或 runtime schedule。
 
