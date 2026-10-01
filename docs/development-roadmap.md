@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力（fixture Provider / parser、raw-first ingestion、InvestorRelationsObservation / InvestorRelationsDecision、authority / confirmation / cancellation / conflict 与 zero-network replay）已实现并验证，状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -677,8 +677,9 @@ replay。
 
 #### 4.5B IR Confirmation
 
-状态：`FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`。权威契约见
-ADR-022；离线 fixture-first 能力已实现并验证，真实 IR live source 仍未获批。
+状态：`FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`（PR #64，merge
+`0c35173`）。权威契约见 ADR-022；离线 fixture-first 能力已实现、验证并 merge，真实 IR
+live source 仍未获批。
 
 交付：InvestorRelationsObservation / InvestorRelationsDecision contract shape、
 official IR authority、schedule confirmation、conflict / absence / cancellation 与 replay。
@@ -724,8 +725,8 @@ Live gate（未满足前不得进入 production ingestion）：
 状态汇总：4.5A = `IMPLEMENTED / VERIFIED / MERGED`（PR #58，merge `8f2e214`）；4.5A-I1 =
 `IMPLEMENTED / VERIFIED / MERGED`（PR #60，merge `692d90c`）；4.5A-I2 =
 `IMPLEMENTED / VERIFIED / MERGED`（PR #62，merge `d2bd826`）；4.5B =
-`FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`。live gate checklist
-未完成前不得进入 production IR ingestion。
+`FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`（PR #64，merge
+`0c35173`）。live gate checklist 未完成前不得进入 production IR ingestion。
 
 ### 阶段 5：自选股与个人页面
 

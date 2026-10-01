@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2–4.4 的既有能力已按路线图落地并 merge；阶段 4.2 已完成 fixture-first calendar ingestion / replay、monitoring pool、candidate matching 与 reconciliation workflow，4.2F-A / 4.2F-B 已实现、验证并 merge（PR #48 / #51）；阶段 4.3 财报页面与阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #53 / #55）。Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`）；4.5B IR Confirmation 的 fixture-first 能力（fixture Provider / parser、raw-first ingestion、InvestorRelationsObservation / InvestorRelationsDecision、authority / confirmation / cancellation / conflict 与 zero-network replay）已实现并验证，状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`。当前分支仍未实现通用 v1 canonical live Provider command、真实 IR live source、通知领域模型与 Stage 5/6 能力。
+当前实现进度：阶段 2.2–4.4 的既有能力已按路线图落地并 merge；阶段 4.2 已完成 fixture-first calendar ingestion / replay、monitoring pool、candidate matching 与 reconciliation workflow，4.2F-A / 4.2F-B 已实现、验证并 merge（PR #48 / #51）；阶段 4.3 财报页面与阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #53 / #55）。Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`。当前分支仍未实现通用 v1 canonical live Provider command、真实 IR live source、通知领域模型与 Stage 5/6 能力。
 
 ## 1. 架构目标与边界
 
