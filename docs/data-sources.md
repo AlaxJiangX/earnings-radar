@@ -22,7 +22,7 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 | 能力 | 首选来源类型 | 关键输入 | 标准化输出 | 选择状态 |
 |---|---|---|---|---|
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
-| SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、reported_items、documents | Filing、FilingDocument；FilingEarningsLink / FilingEarningsDecision 由 4.5A contract 冻结 | 官方公开 submissions 与目录 metadata；4.4 已实现，真实访问 smoke 待执行；4.5A READY FOR IMPLEMENTATION，尚未实现 |
+| SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、reported_items、documents | Filing、FilingDocument；FilingEarningsLink / FilingEarningsDecision 由 4.5A contract 冻结 | 官方公开 submissions 与目录 metadata；4.4 已实现，真实访问 smoke 待执行；4.5A 已实现、验证并 merge（PR #58，merge `8f2e214`） |
 | 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native、ADR-015 v1 或 ADR-020 v2） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015 / ADR-020） | **AV v2 candidate-entry 技术契约与个人用途许可已 PASS（ADR-020）；implementation 已实现、验证并 merge（PR #51）；公开 / 多用户 / 商业 canonical 供应商仍待产品确认** |
 | 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）** |
 | IR 官方确认 | 官方 IR page / feed 或 licensed vendor API | 正式日期、电话会、新闻稿链接 | InvestorRelationsObservation → InvestorRelationsDecision → 既有 schedule / lifecycle service（ADR-022） | **4.5B CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED；实际公司 allowlist 与逐来源许可待确认** |
@@ -181,8 +181,8 @@ HTTP 基础层使用必须注入的 transport 协议；Stage 4.4 为 SEC 公共�
   `filing-earnings-match-v1`；release window 是 reference date D 的 `[D-1, D+1]`
   ET 自然日；
 - `RELEASE_FILING` 与 `PERIODIC_FILING` 独立，不改变 EarningsEvent.status；
-- review、replay 与 decision 契约见 ADR-021。4.5A 当前状态为
-  `CONTRACT FROZEN / READY FOR IMPLEMENTATION`，尚未实现。
+- review、replay 与 decision 契约见 ADR-021。4.5A 已实现、验证并 merge
+  （PR #58，merge `8f2e214`）。
 
 ### 4.4 IR 官方确认
 
