@@ -38,22 +38,29 @@ def make_event(
     *,
     company: Company | None = None,
     period_end_date: date = date(2026, 3, 31),
-    period_type: str = "Q1",
+    period_type: str | None = "Q1",
     **overrides: object,
 ) -> EarningsEvent:
     company = company or make_company("event")
-    identity_key = derive_earnings_identity_key(
-        company_id=company.pk,
-        period_end_date=period_end_date,
-        period_type=period_type,
-    )
+    if period_type is None:
+        identity_status = "candidate"
+        identity_key = None
+        identity_rule_version = None
+    else:
+        identity_status = "canonical"
+        identity_key = derive_earnings_identity_key(
+            company_id=company.pk,
+            period_end_date=period_end_date,
+            period_type=period_type,
+        )
+        identity_rule_version = IDENTITY_RULE_VERSION
     values = {
         "company": company,
         "period_end_date": period_end_date,
         "period_type": period_type,
-        "identity_status": "canonical",
+        "identity_status": identity_status,
         "identity_key": identity_key,
-        "identity_rule_version": IDENTITY_RULE_VERSION,
+        "identity_rule_version": identity_rule_version,
         "includes_q4": period_type == "FY",
         **overrides,
     }

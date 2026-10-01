@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Companies - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>Companies</h1>
+  <p class="page-note">Browse companies, current tickers, index memberships, and upcoming earnings.</p>
+
+  <form method="get" action="{% url 'companies:list' %}"
+        hx-get="{% url 'companies:list' %}"
+        hx-target="#company-results"
+        hx-push-url="true"
+        class="filters">
+    <div class="filter-group">
+      <label for="filter-q">Search</label>
+      <input type="search" name="q" id="filter-q" value="{{ q }}" placeholder="Company or ticker">
+    </div>
+    <div class="filter-group">
+      <label for="filter-exchange">Exchange</label>
+      <input type="text" name="exchange" id="filter-exchange" value="{{ exchange|default:'' }}" placeholder="e.g. NASDAQ">
+    </div>
+    <div class="filter-group">
+      <label for="filter-index">Index</label>
+      <select name="index" id="filter-index">
+        <option value="">All indexes</option>
+        {% for code in index_choices %}
+          <option value="{{ code }}" {% if index == code %}selected{% endif %}>{{ code }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit">Filter</button>
+    <a href="{% url 'companies:list' %}">Clear</a>
+  </form>
+
+  {% include "companies/_company_list.html" %}
+{% endblock %}

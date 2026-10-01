@@ -1,0 +1,14 @@
+{% if display.timing.precision == "exact_datetime" %}
+  <time data-utc="{{ display.timing.data_utc }}"
+        {% if display.timing.local_label %}data-user-tz="true"{% endif %}>
+    ET: {{ display.timing.date_label }} {{ display.timing.time_label }}<br>
+    UTC: {{ display.timing.utc_label }}
+    {% if display.timing.local_label %}<br>{{ display.timing.local_label }}{% endif %}
+  </time>
+{% elif display.timing.precision == "date_only" %}
+  <div>{{ display.timing.date_label }} <span class="muted">(date only)</span></div>
+{% elif display.timing.precision == "session_only" %}
+  <div class="muted">{{ display.timing.session_label }} (session only)</div>
+{% else %}
+  <div class="muted">Time unknown</div>
+{% endif %}

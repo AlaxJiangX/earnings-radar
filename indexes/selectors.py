@@ -153,6 +153,27 @@ def current_memberships(
     return qs.order_by("index__code", "security_listing__ticker")
 
 
+def memberships_for_companies(
+    *,
+    company_ids: tuple[UUID, ...],
+    as_of_date: date,
+    is_enabled: bool | None = True,
+) -> QuerySet[IndexMembership]:
+    """Return normative memberships for a bounded set of Companies."""
+
+    if not company_ids:
+        return IndexMembership.objects.none()
+    qs = IndexMembership.objects.select_related("index", "security_listing").filter(
+        security_listing__company_id__in=company_ids,
+    )
+    qs = _normative_as_of(qs, as_of_date)
+    if is_enabled is True:
+        qs = qs.filter(index__is_enabled=True)
+    elif is_enabled is False:
+        qs = qs.filter(index__is_enabled=False)
+    return qs.order_by("security_listing__company_id", "index__code", "security_listing__ticker")
+
+
 def listing_indexes_as_of(
     *,
     security_listing_id: UUID,

@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）为 IN PROGRESS，4.2D-1 selector/snapshot core 已完成，4.2D-2 candidate/company matching core 已完成、已 merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）已完成，4.2D-1 selector/snapshot core 与 4.2D-2 candidate/company matching core 均已实现、merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；Stage 4.3（财报列表与公司详情基础页）已实现并验证，等待 independent pre-merge / merge gate；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -380,7 +380,7 @@
 
 4.1 财报事件领域基础已完成：EarningsEvent core、EarningsDateChange、status lifecycle、candidate promotion 和只读 Admin。4.2A contract ratification 已完成。4.2B Earnings Calendar Observation & Reconciliation Schema Foundation 已完成并进入 main。4.2C Fixture-First Earnings Calendar Ingestion & Replay 已完成：4.2C-1 parser protocol + fixture parser、4.2C-2 raw-first ingestion foundation、4.2C-3 pagination + logical-window completion、4.2C-4 scope + scheduled idempotency foundation、4.2C-5 run ownership / retry refetch、4.2C-6 replay foundation / schema ratification、4.2C-7 provider context foundation 与 offline replay orchestration implementation 均已通过 verification、CI、merge 和 merge commit 复验。
 
-#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C ✅ COMPLETE；4.2D IN PROGRESS，4.2D-1 COMPLETE；4.2D-2 COMPLETE；4.2E ✅ COMPLETE）
+#### 4.2 财报日历 Provider、同步与 Reconciliation（4.2A ✅ COMPLETE；4.2B ✅ COMPLETE；4.2C ✅ COMPLETE；4.2D ✅ COMPLETE（4.2D-1 COMPLETE；4.2D-2 COMPLETE）；4.2E ✅ COMPLETE）
 
 正式拆分与实现依据（ADR-010）：
 
@@ -446,7 +446,7 @@ Hybrid 模型并持久化 immutable snapshot；retry/replay 复用 persisted poo
 Schema change required = YES，仅限 snapshot/member foundation，本规划阶段不创建 model 或
 migration。
 
-4.2D-1 ✅ IMPLEMENTED，待 independent pre-merge review。已实现
+4.2D-1 ✅ COMPLETE（已实现并 merge，merge 后定向复验通过）。已实现
 `earnings_monitoring_pool(as_of_date, selector_version, enabled_index_codes)`、
 canonical member/basis、`monitoring_pool_hash`、`MonitoringPoolSnapshot` /
 `MonitoringPoolMember`、earnings migration 0006、append-only 约束、selector input revision
@@ -582,9 +582,12 @@ capability 声明。后续书面澄清解决了个人用途的 normalized / cand
 
 - 今日/本周/未来 30 天、状态、时段、指数可筛选；
 - 公司页显示下一财报、状态、历史、来源和指数归属；
-- 页面明确展示美东与用户本地时间（访客默认时区待确认）；
+- 页面明确展示美东时间；已登录用户在存在账号时区时显示账号时区，否则使用浏览器本地时区增强，无法获取时回退 ET / UTC；
 - DST 边界有测试；
 - 列表查询无明显 N+1。
+
+状态：Stage 4.3 = IMPLEMENTED / VERIFIED / PENDING MERGE（隔离分支
+`codex/4.3-earnings-company-pages`；等待 Stage 4.3 Independent Pre-Merge / Merge Gate）。
 
 #### 4.4 SEC Provider 与 Filing
 

@@ -472,7 +472,7 @@ ADR-020 为 Alpha Vantage Free 冻结了 candidate-only adaptation contract，�
 - window：system desired coverage 与 provider capability 分离；AV 为 forward nominal
   3month、past correction unsupported；
 - schema / migration = NO / NO；个人用途的 normalized / candidate pipeline storage 许可
-  已由后续书面澄清覆盖；4.2F-B implementation 已实现并验证，等待 merge gate。
+  已由后续书面澄清覆盖；4.2F-B implementation 已实现、验证并 merge（PR #51）。
 
 ## 7. SEC 文件
 
@@ -849,7 +849,7 @@ identity、SourceEvidence/AuditRecord 和 replay/correction 幂等；run lifecyc
 
 ADR-020 进一步冻结 Alpha Vantage Free v2 candidate-entry adaptation：technical contract =
 PASS；个人用途的 normalized / candidate / canonical-pipeline storage 许可已由后续书面
-澄清覆盖；implementation 已实现并验证，等待 merge gate。详见 §6.7。
+澄清覆盖；implementation 已实现、验证并 merge（PR #51）。详见 §6.7。
 
 以下数据决策仍待确认：
 
@@ -865,4 +865,4 @@ PASS；个人用途的 normalized / candidate / canonical-pipeline storage 许�
 10. AuditRecord 和 DataChange 的保留期限、IP 哈希保留期及具体查看角色仍需在阶段 8.1 前确认；目标引用已确定为受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。
 11. 4.2F 最终 provider / license checklist 结论与 anomaly shrink operational 阈值；ADR-020
    已冻结 Alpha Vantage v2 candidate-entry technical contract，个人用途许可已解决；
-   implementation 已实现并验证，等待 merge gate；不阻塞 4.2C-4.2E。
+   implementation 已实现、验证并 merge（PR #51）；不阻塞 4.2C-4.2E。

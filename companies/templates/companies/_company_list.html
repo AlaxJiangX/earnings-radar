@@ -1,0 +1,61 @@
+<div id="company-results">
+  {% if not has_results %}
+    <div class="empty-state">
+      {% if filters_active %}
+        <p>No companies match the selected filters.</p>
+      {% else %}
+        <p>No companies have been recorded yet.</p>
+      {% endif %}
+    </div>
+  {% else %}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Company</th>
+          <th>Ticker</th>
+          <th>Exchange</th>
+          <th>CIK</th>
+          <th>Indexes</th>
+          <th>Next earnings</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>
+              {% if row.listing %}
+                <a href="{% url 'companies:detail' ticker=row.listing.ticker %}">{{ row.company.display_name }}</a>
+              {% else %}
+                {{ row.company.display_name }}
+              {% endif %}
+            </td>
+            <td>{{ row.listing.ticker|default:"—" }}</td>
+            <td>{{ row.listing.exchange|default:"—" }}</td>
+            <td>{{ row.company.cik|default:"—" }}</td>
+            <td>
+              {% if row.index_codes %}
+                {{ row.index_codes|join:", " }}
+              {% else %}
+                <span class="muted">&mdash;</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.next_display %}
+                {% include "includes/_event_timing.html" with display=row.next_display %}
+                <span class="badge {% if row.next_display.is_candidate %}candidate{% else %}canonical{% endif %}">
+                  {{ row.next_display.identity_label }}
+                </span>
+                <span class="badge {% if row.next_display.event.status == 'scheduled_confirmed' %}confirmed{% else %}estimated{% endif %}">
+                  {{ row.next_display.status_label }}
+                </span>
+              {% else %}
+                <span class="muted">No upcoming earnings</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% include "includes/_pagination.html" with page_obj=page_obj query_string=query_string hx_target="#company-results" %}
+  {% endif %}
+</div>

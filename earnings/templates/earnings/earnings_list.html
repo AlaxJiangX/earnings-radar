@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Earnings Calendar - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>Earnings Calendar</h1>
+  <p class="page-note">
+    Market reference timezone: {{ market_timezone_label }}.
+    {% if include_candidates %}
+      Candidate / incomplete rows are visible to the signed-in owner and are not confirmed canonical events.
+    {% else %}
+      Candidate / incomplete third-party rows are private and are not shown publicly.
+    {% endif %}
+  </p>
+
+  <form method="get" action="{% url 'earnings:list' %}"
+        hx-get="{% url 'earnings:list' %}"
+        hx-target="#earnings-results"
+        hx-push-url="true"
+        class="filters">
+    <div class="filter-group">
+      <label for="filter-window">Window</label>
+      <select name="window" id="filter-window">
+        {% for value, label in window_choices %}
+          <option value="{{ value }}" {% if window == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="filter-group">
+      <label for="filter-status">Status</label>
+      <select name="status" id="filter-status">
+        <option value="">All statuses</option>
+        {% for value, label in status_choices %}
+          <option value="{{ value }}" {% if status == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="filter-group">
+      <label for="filter-session">Release session</label>
+      <select name="session" id="filter-session">
+        <option value="">All sessions</option>
+        {% for value, label in session_choices %}
+          <option value="{{ value }}" {% if session == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="filter-group">
+      <label for="filter-index">Index</label>
+      <select name="index" id="filter-index">
+        <option value="">All indexes</option>
+        {% for code in index_choices %}
+          <option value="{{ code }}" {% if index == code %}selected{% endif %}>{{ code }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit">Filter</button>
+    <a href="{% url 'earnings:list' %}">Clear</a>
+  </form>
+
+  {% include "earnings/_earnings_list.html" %}
+{% endblock %}

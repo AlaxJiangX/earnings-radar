@@ -1,0 +1,19 @@
+{% if page_obj.paginator.num_pages > 1 %}
+<nav aria-label="Pagination" class="pagination">
+  {% if page_obj.has_previous %}
+    <a href="?{{ query_string }}&page={{ page_obj.previous_page_number }}"
+       hx-get="?{{ query_string }}&page={{ page_obj.previous_page_number }}"
+       hx-target="{{ hx_target|default:'#results' }}"
+       hx-push-url="true"
+       class="pagination-link">Previous</a>
+  {% endif %}
+  <span class="pagination-info">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+  {% if page_obj.has_next %}
+    <a href="?{{ query_string }}&page={{ page_obj.next_page_number }}"
+       hx-get="?{{ query_string }}&page={{ page_obj.next_page_number }}"
+       hx-target="{{ hx_target|default:'#results' }}"
+       hx-push-url="true"
+       class="pagination-link">Next</a>
+  {% endif %}
+</nav>
+{% endif %}
