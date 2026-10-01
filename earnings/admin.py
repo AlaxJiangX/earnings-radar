@@ -3,7 +3,12 @@ from __future__ import annotations
 from django.contrib import admin
 from django.http import HttpRequest
 
-from earnings.models import EarningsDateChange, EarningsEvent
+from earnings.models import (
+    EarningsDateChange,
+    EarningsEvent,
+    FilingEarningsDecision,
+    FilingEarningsLink,
+)
 
 
 @admin.register(EarningsEvent)
@@ -70,5 +75,94 @@ class EarningsDateChangeAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
         self,
         request: HttpRequest,
         obj: EarningsDateChange | None = None,
+    ) -> bool:
+        return False
+
+
+@admin.register(FilingEarningsDecision)
+class FilingEarningsDecisionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    list_display = (
+        "filing",
+        "relation_type",
+        "decision_type",
+        "status",
+        "classification",
+        "decision_source",
+        "decided_at",
+    )
+    list_filter = (
+        "relation_type",
+        "decision_type",
+        "status",
+        "classification",
+        "decision_source",
+    )
+    search_fields = (
+        "=filing__accession_number",
+        "=decision_key",
+        "=request_id",
+    )
+    ordering = ("-decided_at",)
+    date_hierarchy = "decided_at"
+    list_select_related = ("filing", "target_event", "actor_user", "sync_run")
+    readonly_fields = tuple(field.name for field in FilingEarningsDecision._meta.fields)
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(
+        self,
+        request: HttpRequest,
+        obj: FilingEarningsDecision | None = None,
+    ) -> bool:
+        return False
+
+    def has_delete_permission(
+        self,
+        request: HttpRequest,
+        obj: FilingEarningsDecision | None = None,
+    ) -> bool:
+        return False
+
+
+@admin.register(FilingEarningsLink)
+class FilingEarningsLinkAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    list_display = (
+        "filing",
+        "earnings_event",
+        "relation_type",
+        "release_filing_classification",
+        "review_status",
+        "confidence",
+    )
+    list_filter = (
+        "relation_type",
+        "release_filing_classification",
+        "review_status",
+        "confidence",
+    )
+    search_fields = (
+        "=filing__accession_number",
+        "=earnings_event__id",
+        "=current_decision__decision_key",
+    )
+    ordering = ("-created_at",)
+    list_select_related = ("filing", "earnings_event", "current_decision", "reviewed_by")
+    readonly_fields = tuple(field.name for field in FilingEarningsLink._meta.fields)
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(
+        self,
+        request: HttpRequest,
+        obj: FilingEarningsLink | None = None,
+    ) -> bool:
+        return False
+
+    def has_delete_permission(
+        self,
+        request: HttpRequest,
+        obj: FilingEarningsLink | None = None,
     ) -> bool:
         return False

@@ -1,18 +1,120 @@
-"""Read-only selectors for earnings pages."""
+"""Read-only selectors for earnings pages and Filing-derived state."""
 
 from __future__ import annotations
 
-from datetime import date
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import date, datetime
 from uuid import UUID
 
 from django.db.models import Case, DateField, F, IntegerField, Q, QuerySet, Value, When
 from django.db.models.functions import Coalesce
 
-from earnings.models import EarningsEvent
+from earnings.models import (
+    EarningsEvent,
+    FilingEarningsLink,
+    FilingEarningsRelationType,
+    FilingReleaseClassification,
+)
 from earnings.presentation import window_bounds
 from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership
 
 UPCOMING_EVENT_STATUSES = ("scheduled_estimated", "scheduled_confirmed")
+
+
+@dataclass(frozen=True, slots=True)
+class FilingLinkDetail:
+    filing_id: UUID
+    form_type: str
+    accepted_at: datetime
+    filing_url: str
+    release_filing_classification: str | None
+    review_status: str
+    classification_reason: str
+    match_rule_version: str
+    classification_rule_version: str
+    current_decision_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class FilingEarningsState:
+    earnings_event_id: UUID
+    has_release_filing: bool
+    has_periodic_filing: bool
+    release_filings: tuple[FilingLinkDetail, ...]
+    periodic_filings: tuple[FilingLinkDetail, ...]
+
+
+def get_filing_earnings_state(*, earnings_event: EarningsEvent) -> FilingEarningsState:
+    """Derive release/periodic filing state for one EarningsEvent.
+
+    ``review_status = rejected`` links are excluded.  Only ``YES`` release
+    classifications set ``has_release_filing``; ``REVIEW_REQUIRED`` never does.
+    """
+
+    states = get_filing_earnings_states(earnings_event_ids=(earnings_event.pk,))
+    return states[earnings_event.pk]
+
+
+def get_filing_earnings_states(
+    *,
+    earnings_event_ids: Sequence[UUID],
+) -> dict[UUID, FilingEarningsState]:
+    """Derive Filing state for multiple events in one query, without N+1 reads."""
+
+    ordered_ids = tuple(dict.fromkeys(earnings_event_ids))
+    links = (
+        FilingEarningsLink.objects.filter(
+            earnings_event_id__in=ordered_ids,
+        )
+        .exclude(review_status="rejected")
+        .select_related("filing")
+        .order_by("filing__accepted_at", "filing_id")
+    )
+    grouped: dict[UUID, list[FilingEarningsLink]] = {}
+    for link in links:
+        grouped.setdefault(link.earnings_event_id, []).append(link)
+    result: dict[UUID, FilingEarningsState] = {}
+    for event_id in ordered_ids:
+        event_links = grouped.get(event_id, [])
+        release = tuple(
+            _detail(link)
+            for link in event_links
+            if link.relation_type == FilingEarningsRelationType.RELEASE_FILING
+        )
+        periodic = tuple(
+            _detail(link)
+            for link in event_links
+            if link.relation_type == FilingEarningsRelationType.PERIODIC_FILING
+        )
+        result[event_id] = FilingEarningsState(
+            earnings_event_id=event_id,
+            has_release_filing=any(
+                link.release_filing_classification == FilingReleaseClassification.YES
+                for link in event_links
+                if link.relation_type == FilingEarningsRelationType.RELEASE_FILING
+            ),
+            has_periodic_filing=bool(periodic),
+            release_filings=release,
+            periodic_filings=periodic,
+        )
+    return result
+
+
+def _detail(link: FilingEarningsLink) -> FilingLinkDetail:
+    filing = link.filing
+    return FilingLinkDetail(
+        filing_id=filing.pk,
+        form_type=filing.form_type,
+        accepted_at=filing.accepted_at,
+        filing_url=filing.filing_url,
+        release_filing_classification=link.release_filing_classification,
+        review_status=link.review_status,
+        classification_reason=link.classification_reason,
+        match_rule_version=link.match_rule_version,
+        classification_rule_version=link.classification_rule_version,
+        current_decision_id=link.current_decision_id,
+    )
 
 
 def display_date_expression() -> Coalesce:

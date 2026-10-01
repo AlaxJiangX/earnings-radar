@@ -13,8 +13,9 @@ from filings.models import TARGET_FORMS
 
 _ACCESSION_RE = re.compile(r"^[0-9]{10}-[0-9]{2}-[0-9]{6}$")
 _FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+_ITEM_CODE_RE = re.compile(r"^[0-9]{1,2}\.[0-9]{2}$")
 _EASTERN = ZoneInfo("America/New_York")
-PARSER_VERSION = "sec-filings-v1"
+PARSER_VERSION = "sec-filings-v2"
 
 
 class SecMetadataError(ValueError):
@@ -30,6 +31,7 @@ class FilingMetadata:
     primary_document: str
     filing_url: str
     raw_position: int
+    reported_items: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,30 @@ class DocumentMetadata:
     document_type: str
     url: str
     description: str = ""
+
+
+def normalize_reported_items(value: object) -> str:
+    """Canonicalize one SEC ``filings.recent.items`` value.
+
+    The empty string means the source did not provide a value, provided an
+    empty value, or provided a value that cannot be parsed as SEC item codes.
+    A malformed row never fails the whole submissions payload.
+    """
+
+    if not isinstance(value, str):
+        return ""
+    codes: set[tuple[int, int]] = set()
+    for raw_code in value.split(","):
+        code = raw_code.strip()
+        if not code:
+            continue
+        if not _ITEM_CODE_RE.fullmatch(code):
+            return ""
+        major, minor = code.split(".")
+        codes.add((int(major), int(minor)))
+    if not codes:
+        return ""
+    return ",".join(f"{major}.{minor:02d}" for major, minor in sorted(codes))
 
 
 def normalize_accession_number(value: object) -> str:
@@ -86,6 +112,10 @@ def parse_submissions(payload: bytes, *, cik: str) -> tuple[FilingMetadata, ...]
     count = len(columns["form"])
     if any(len(column) != count for column in columns.values()):
         raise SecMetadataError("SEC submissions columns have unequal lengths.")
+    raw_items = recent.get("items")
+    items_column: list[object] | None = (
+        raw_items if isinstance(raw_items, list) and len(raw_items) == count else None
+    )
     rows: list[FilingMetadata] = []
     seen: set[str] = set()
     for index in range(count):
@@ -127,6 +157,9 @@ def parse_submissions(payload: bytes, *, cik: str) -> tuple[FilingMetadata, ...]
                 primary_document=primary,
                 filing_url=archive_root + quote(primary),
                 raw_position=index + 1,
+                reported_items=normalize_reported_items(
+                    items_column[index] if items_column is not None else None
+                ),
             )
         )
     return tuple(rows)
