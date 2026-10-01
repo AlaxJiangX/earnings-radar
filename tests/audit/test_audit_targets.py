@@ -128,3 +128,54 @@ def test_data_change_rejects_new_targets(
             rule_version="fixture-v1",
             sync_run=sync_run,
         )
+
+
+@pytest.mark.django_db
+def test_system_action_accepts_filing_earnings_decision_target(sync_run) -> None:
+    result = record_system_action(
+        sync_run=sync_run,
+        action="create",
+        target_type="filing_earnings_decision",
+        target_id=uuid.uuid4(),
+        before={},
+        after={"decision_type": "matched_release_filing"},
+        request_id="audit-filing-decision-target",
+    )
+
+    assert result.record.target_type == "filing_earnings_decision"
+
+
+@pytest.mark.django_db
+def test_source_evidence_accepts_filing_earnings_decision_target(
+    sync_run,
+    raw_data_observation,
+) -> None:
+    result = record_source_evidence(
+        raw_data_record=raw_data_observation.raw_data_record,
+        sync_run=sync_run,
+        target_type="filing_earnings_decision",
+        target_id=uuid.uuid4(),
+        field_name="classification",
+        raw_value={"item": "2.02"},
+        normalized_value={"classification": "YES"},
+        confidence=Decimal("1.0000"),
+        normalizer_version="filing-release-classification-v1",
+    )
+
+    assert result.evidence.target_type == "filing_earnings_decision"
+
+
+@pytest.mark.django_db
+def test_data_change_accepts_filing_earnings_decision_target(sync_run) -> None:
+    result = record_data_change(
+        target_type="filing_earnings_decision",
+        target_id=uuid.uuid4(),
+        field_name="status",
+        old_value="open",
+        new_value="resolved",
+        rule_version="filing-earnings-match-v1",
+        sync_run=sync_run,
+    )
+
+    assert result.change is not None
+    assert result.change.target_type == "filing_earnings_decision"

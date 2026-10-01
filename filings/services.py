@@ -93,6 +93,7 @@ def record_filing(
             "period_of_report": metadata.period_of_report,
             "primary_document": metadata.primary_document,
             "filing_url": metadata.filing_url,
+            "reported_items": metadata.reported_items,
         }
         try:
             with transaction.atomic():
@@ -222,6 +223,7 @@ def _filing_values(metadata: FilingMetadata) -> dict[str, object]:
         else None,
         "primary_document": metadata.primary_document,
         "filing_url": metadata.filing_url,
+        "reported_items": metadata.reported_items,
     }
 
 
@@ -233,5 +235,10 @@ def _verify_filing(*, filing: Filing, metadata: FilingMetadata, company_id: obje
         or filing.period_of_report != metadata.period_of_report
         or filing.primary_document != metadata.primary_document
         or filing.filing_url != metadata.filing_url
+        # Historical rows migrated before sec-filings-v2 keep an empty
+        # reported_items value.  Re-parsing must not silently backfill it; a
+        # future controlled backfill has to replay persisted raw data and write
+        # DataChange/AuditRecord.  A non-empty persisted value is immutable.
+        or (filing.reported_items and filing.reported_items != metadata.reported_items)
     ):
         raise FilingIntegrityError("Existing Filing identity or metadata conflicts with SEC.")

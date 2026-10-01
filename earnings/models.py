@@ -91,6 +91,50 @@ class ReconciliationDecisionStatus(models.TextChoices):
     REJECTED = "rejected", "Rejected"
 
 
+class FilingEarningsRelationType(models.TextChoices):
+    RELEASE_FILING = "RELEASE_FILING", "Release filing"
+    PERIODIC_FILING = "PERIODIC_FILING", "Periodic filing"
+    OTHER = "OTHER", "Other"
+
+
+class FilingReleaseClassification(models.TextChoices):
+    YES = "YES", "Yes"
+    NO = "NO", "No"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED", "Review required"
+
+
+class FilingEarningsConfidence(models.TextChoices):
+    EXACT = "EXACT", "Exact"
+    BOUNDED_WINDOW = "BOUNDED_WINDOW", "Bounded window"
+    MANUAL = "MANUAL", "Manual"
+
+
+class FilingEarningsReviewStatus(models.TextChoices):
+    AUTO = "auto", "Automatic"
+    CONFIRMED = "confirmed", "Confirmed"
+    REJECTED = "rejected", "Rejected"
+
+
+class FilingEarningsDecisionType(models.TextChoices):
+    MATCHED_RELEASE_FILING = "matched_release_filing", "Matched release filing"
+    MATCHED_PERIODIC_FILING = "matched_periodic_filing", "Matched periodic filing"
+    REVIEW_REQUIRED = "review_required", "Review required"
+    NO_MATCH = "no_match", "No match"
+    MANUAL_CONFIRMED = "manual_confirmed", "Manually confirmed"
+    MANUAL_REJECTED = "manual_rejected", "Manually rejected"
+
+
+class FilingEarningsDecisionStatus(models.TextChoices):
+    OPEN = "open", "Open"
+    RESOLVED = "resolved", "Resolved"
+    REJECTED = "rejected", "Rejected"
+
+
+class FilingEarningsDecisionSource(models.TextChoices):
+    AUTOMATIC = "automatic", "Automatic"
+    MANUAL = "manual", "Manual"
+
+
 ALLOWED_PERIOD_TYPES = frozenset({"Q1", "Q2", "Q3", "FY", "H1", "H2", "OTHER"})
 ALLOWED_EVENT_STATUSES = frozenset(
     {"scheduled_estimated", "scheduled_confirmed", "released", "cancelled"}
@@ -134,6 +178,25 @@ RESOLVED_RECONCILIATION_DECISION_TYPES = frozenset(
 OPEN_RECONCILIATION_DECISION_TYPES = frozenset({"collision", "conflict", "review_required"})
 REJECTED_RECONCILIATION_DECISION_TYPES = frozenset({"no_match", "ignored"})
 ALLOWED_RECONCILIATION_COVERED_FIELDS = frozenset({"estimated_release", "release_session"})
+ALLOWED_FILING_EARNINGS_RELATION_TYPES = frozenset({"RELEASE_FILING", "PERIODIC_FILING", "OTHER"})
+ALLOWED_FILING_RELEASE_CLASSIFICATIONS = frozenset({"YES", "NO", "REVIEW_REQUIRED"})
+ALLOWED_FILING_EARNINGS_CONFIDENCES = frozenset({"EXACT", "BOUNDED_WINDOW", "MANUAL"})
+ALLOWED_FILING_EARNINGS_REVIEW_STATUSES = frozenset({"auto", "confirmed", "rejected"})
+ALLOWED_FILING_EARNINGS_DECISION_TYPES = frozenset(
+    {
+        "matched_release_filing",
+        "matched_periodic_filing",
+        "review_required",
+        "no_match",
+        "manual_confirmed",
+        "manual_rejected",
+    }
+)
+ALLOWED_FILING_EARNINGS_DECISION_STATUSES = frozenset({"open", "resolved", "rejected"})
+ALLOWED_FILING_EARNINGS_DECISION_SOURCES = frozenset({"automatic", "manual"})
+RESOLVED_FILING_EARNINGS_DECISION_TYPES = frozenset(
+    {"matched_release_filing", "matched_periodic_filing", "manual_confirmed"}
+)
 
 
 def _earnings_date_state_constraint(
@@ -841,3 +904,378 @@ class MonitoringPoolMember(AppendOnlyAuditModel):
 
     def __str__(self) -> str:
         return f"{self.snapshot_id}:{self.ordinal}:{self.company_id}"
+
+
+class FilingEarningsDecision(AppendOnlyAuditModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    filing = models.ForeignKey(
+        "filings.Filing",
+        on_delete=models.PROTECT,
+        related_name="earnings_decisions",
+    )
+    relation_type = models.CharField(
+        max_length=32,
+        choices=FilingEarningsRelationType.choices,
+    )
+    target_event = models.ForeignKey(
+        EarningsEvent,
+        on_delete=models.PROTECT,
+        related_name="filing_earnings_decisions",
+        null=True,
+        blank=True,
+    )
+    decision_type = models.CharField(
+        max_length=32,
+        choices=FilingEarningsDecisionType.choices,
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=FilingEarningsDecisionStatus.choices,
+    )
+    classification = models.CharField(  # noqa: DJ001
+        max_length=20,
+        choices=FilingReleaseClassification.choices,
+        null=True,
+        blank=True,
+    )
+    confidence = models.CharField(  # noqa: DJ001
+        max_length=20,
+        choices=FilingEarningsConfidence.choices,
+        null=True,
+        blank=True,
+    )
+    match_rule_version = models.CharField(max_length=100)
+    classification_rule_version = models.CharField(max_length=100, blank=True, default="")
+    decision_source = models.CharField(
+        max_length=16,
+        choices=FilingEarningsDecisionSource.choices,
+    )
+    match_factors = models.JSONField(default=dict, blank=True)
+    reason = models.CharField(max_length=2000, blank=True)
+    source_raw_data_record = models.ForeignKey(
+        "audit.RawDataRecord",
+        on_delete=models.PROTECT,
+        related_name="filing_earnings_decisions",
+        null=True,
+        blank=True,
+    )
+    source_evidence = models.ForeignKey(
+        "audit.SourceEvidence",
+        on_delete=models.PROTECT,
+        related_name="filing_earnings_decisions",
+        null=True,
+        blank=True,
+    )
+    actor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="filing_earnings_decisions",
+        null=True,
+        blank=True,
+    )
+    sync_run = models.ForeignKey(
+        "audit.SyncRun",
+        on_delete=models.PROTECT,
+        related_name="filing_earnings_decisions",
+        null=True,
+        blank=True,
+    )
+    request_id = models.CharField(max_length=255, blank=True, default="")
+    decided_at = models.DateTimeField(default=timezone.now)
+    supersedes = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        related_name="superseding_decisions",
+        null=True,
+        blank=True,
+    )
+    decision_key = models.CharField(max_length=64, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = AppendOnlyQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-decided_at", "-created_at", "-id")
+        indexes = [
+            models.Index(fields=("filing", "relation_type", "decided_at")),
+            models.Index(fields=("target_event", "decided_at")),
+            models.Index(fields=("status", "decision_type", "decided_at")),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(relation_type__in=ALLOWED_FILING_EARNINGS_RELATION_TYPES),
+                name="filing_earnings_decision_relation_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(decision_type__in=ALLOWED_FILING_EARNINGS_DECISION_TYPES),
+                name="filing_earnings_decision_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=ALLOWED_FILING_EARNINGS_DECISION_STATUSES),
+                name="filing_earnings_decision_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(decision_source__in=ALLOWED_FILING_EARNINGS_DECISION_SOURCES),
+                name="filing_earnings_decision_source_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(classification__isnull=True)
+                | Q(classification__in=ALLOWED_FILING_RELEASE_CLASSIFICATIONS),
+                name="filing_earnings_decision_classification_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(confidence__isnull=True)
+                | Q(confidence__in=ALLOWED_FILING_EARNINGS_CONFIDENCES),
+                name="filing_earnings_decision_confidence_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(
+                            decision_type__in=(
+                                "matched_release_filing",
+                                "matched_periodic_filing",
+                                "manual_confirmed",
+                            )
+                        )
+                        & Q(status="resolved")
+                        & Q(target_event__isnull=False)
+                    )
+                    | (Q(decision_type="review_required") & Q(status="open"))
+                    | (
+                        Q(decision_type="no_match")
+                        & Q(status="rejected")
+                        & Q(target_event__isnull=True)
+                    )
+                    | (Q(decision_type="manual_rejected") & Q(status="rejected"))
+                ),
+                name="filing_earnings_decision_outcome_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(decision_type="matched_periodic_filing")
+                        & Q(relation_type="PERIODIC_FILING")
+                        & Q(classification__isnull=True)
+                        & Q(classification_rule_version="")
+                    )
+                    | (
+                        Q(decision_type="matched_release_filing")
+                        & Q(relation_type="RELEASE_FILING")
+                        & Q(classification__isnull=False)
+                        & ~Q(classification_rule_version="")
+                    )
+                    | (
+                        Q(decision_type="manual_confirmed")
+                        & (
+                            (
+                                Q(relation_type="RELEASE_FILING")
+                                & Q(classification="YES")
+                                & ~Q(classification_rule_version="")
+                            )
+                            | (
+                                Q(relation_type="PERIODIC_FILING")
+                                & Q(classification__isnull=True)
+                                & Q(classification_rule_version="")
+                            )
+                        )
+                    )
+                    | ~Q(
+                        decision_type__in=(
+                            "matched_release_filing",
+                            "matched_periodic_filing",
+                            "manual_confirmed",
+                        )
+                    )
+                ),
+                name="filing_earnings_decision_classification_shape_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(classification__isnull=True) | ~Q(classification_rule_version=""),
+                name="filing_earnings_decision_classification_version_required",
+            ),
+            models.CheckConstraint(
+                condition=Q(match_rule_version__regex=r"[^[:space:]]"),
+                name="filing_earnings_decision_match_rule_not_empty",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(decision_source="automatic")
+                        & Q(sync_run__isnull=False)
+                        & Q(actor_user__isnull=True)
+                        & Q(request_id="")
+                    )
+                    | (
+                        Q(decision_source="manual")
+                        & Q(actor_user__isnull=False)
+                        & ~Q(reason="")
+                        & ~Q(request_id="")
+                    )
+                ),
+                name="filing_earnings_decision_source_context_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(decision_key__regex=r"^[0-9a-f]{64}$"),
+                name="filing_earnings_decision_key_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(supersedes__isnull=True) | ~Q(supersedes=F("id")),
+                name="filing_earnings_decision_not_self",
+            ),
+            models.UniqueConstraint(
+                fields=("decision_key",),
+                name="filing_earnings_decision_key_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.filing_id}:{self.relation_type}:{self.decision_type}:{self.status}"
+
+
+class FilingEarningsLink(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    filing = models.ForeignKey(
+        "filings.Filing",
+        on_delete=models.PROTECT,
+        related_name="earnings_links",
+    )
+    earnings_event = models.ForeignKey(
+        EarningsEvent,
+        on_delete=models.PROTECT,
+        related_name="filing_earnings_links",
+    )
+    relation_type = models.CharField(
+        max_length=32,
+        choices=FilingEarningsRelationType.choices,
+    )
+    release_filing_classification = models.CharField(  # noqa: DJ001
+        max_length=20,
+        choices=FilingReleaseClassification.choices,
+        null=True,
+        blank=True,
+    )
+    classification_reason = models.CharField(max_length=2000, blank=True, default="")
+    classification_rule_version = models.CharField(max_length=100, blank=True, default="")
+    match_rule_version = models.CharField(max_length=100)
+    confidence = models.CharField(max_length=20, choices=FilingEarningsConfidence.choices)
+    review_status = models.CharField(
+        max_length=16,
+        choices=FilingEarningsReviewStatus.choices,
+        default=FilingEarningsReviewStatus.AUTO,
+    )
+    review_reason = models.CharField(max_length=2000, blank=True, default="")
+    source_evidence = models.ForeignKey(
+        "audit.SourceEvidence",
+        on_delete=models.PROTECT,
+        related_name="filing_earnings_links",
+        null=True,
+        blank=True,
+    )
+    current_decision = models.ForeignKey(
+        FilingEarningsDecision,
+        on_delete=models.PROTECT,
+        related_name="current_links",
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="filing_earnings_links",
+        null=True,
+        blank=True,
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("earnings_event", "relation_type", "review_status")),
+            models.Index(fields=("filing", "relation_type")),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(relation_type__in=ALLOWED_FILING_EARNINGS_RELATION_TYPES),
+                name="filing_earnings_link_relation_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(confidence__in=ALLOWED_FILING_EARNINGS_CONFIDENCES),
+                name="filing_earnings_link_confidence_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(review_status__in=ALLOWED_FILING_EARNINGS_REVIEW_STATUSES),
+                name="filing_earnings_link_review_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(release_filing_classification__isnull=True)
+                | Q(release_filing_classification__in=ALLOWED_FILING_RELEASE_CLASSIFICATIONS),
+                name="filing_earnings_link_classification_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(relation_type="RELEASE_FILING")
+                        & Q(release_filing_classification__isnull=False)
+                    )
+                    | (
+                        ~Q(relation_type="RELEASE_FILING")
+                        & Q(release_filing_classification__isnull=True)
+                    )
+                ),
+                name="filing_earnings_link_release_classification_scope_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(relation_type="RELEASE_FILING")
+                        & ~Q(classification_reason="")
+                        & ~Q(classification_rule_version="")
+                    )
+                    | (
+                        ~Q(relation_type="RELEASE_FILING")
+                        & Q(classification_reason="")
+                        & Q(classification_rule_version="")
+                    )
+                ),
+                name="filing_earnings_link_classification_provenance_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(match_rule_version__regex=r"[^[:space:]]"),
+                name="filing_earnings_link_match_rule_not_empty",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (
+                        Q(review_status="auto")
+                        & Q(reviewed_by__isnull=True)
+                        & Q(reviewed_at__isnull=True)
+                        & Q(review_reason="")
+                    )
+                    | (
+                        Q(review_status__in=("confirmed", "rejected"))
+                        & Q(reviewed_by__isnull=False)
+                        & Q(reviewed_at__isnull=False)
+                        & ~Q(review_reason="")
+                    )
+                ),
+                name="filing_earnings_link_review_state_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~Q(review_status="confirmed")
+                    | ~Q(relation_type="RELEASE_FILING")
+                    | Q(release_filing_classification="YES")
+                ),
+                name="filing_earnings_link_confirmed_release_yes",
+            ),
+            models.UniqueConstraint(
+                fields=("filing", "earnings_event", "relation_type"),
+                name="filing_earnings_link_identity_unique",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.filing_id}:{self.earnings_event_id}:{self.relation_type}"

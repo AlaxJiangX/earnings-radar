@@ -21,6 +21,7 @@ class Filing(models.Model):
     period_of_report = models.DateField(null=True, blank=True)
     primary_document = models.CharField(max_length=255)
     filing_url = models.URLField(max_length=500, validators=(validate_safe_base_url,))
+    reported_items = models.CharField(max_length=255, blank=True, default="")
     source_evidence = models.ForeignKey(
         "audit.SourceEvidence", on_delete=models.PROTECT, null=True, blank=True
     )
@@ -36,6 +37,13 @@ class Filing(models.Model):
             ),
             models.CheckConstraint(
                 condition=Q(form_type__in=TARGET_FORMS), name="filings_form_target"
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(reported_items="")
+                    | Q(reported_items__regex=(r"^[0-9]{1,2}\.[0-9]{2}(,[0-9]{1,2}\.[0-9]{2})*$"))
+                ),
+                name="filings_reported_items_canonical",
             ),
         ]
 

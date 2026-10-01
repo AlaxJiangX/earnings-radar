@@ -27,6 +27,7 @@ class DomainTargetType(models.TextChoices):
     FILING = "filing", "Filing"
     FILING_DOCUMENT = "filing_document", "Filing document"
     FILING_EARNINGS_LINK = "filing_earnings_link", "Filing earnings link"
+    FILING_EARNINGS_DECISION = "filing_earnings_decision", "Filing earnings decision"
 
 
 class AuditRecordTargetType(models.TextChoices):
@@ -52,6 +53,7 @@ class AuditRecordTargetType(models.TextChoices):
     FILING = "filing", "Filing"
     FILING_DOCUMENT = "filing_document", "Filing document"
     FILING_EARNINGS_LINK = "filing_earnings_link", "Filing earnings link"
+    FILING_EARNINGS_DECISION = "filing_earnings_decision", "Filing earnings decision"
 
 
 DOMAIN_TARGET_TYPE_VALUES = tuple(value for value, _ in DomainTargetType.choices)
