@@ -1,6 +1,6 @@
 # ADR-003：财报生命周期与 Release Filing 分类
 
-- 状态：已接受
+- 状态：已接受（release evidence 细节已由 ADR-021 于 2026-10-01 关闭）
 - 日期：2026-07-13
 - 决策者：产品负责人
 - 影响阶段：4.x 财报与 SEC、6.x 通知
@@ -64,6 +64,26 @@ SEC 文件事实由 Filing 保存，FilingEarningsLink 关联 EarningsEvent。�
 
 ## 仍待确认
 
-- 首版分类规则允许使用的 exhibit 类型和文本证据清单；
+- 首版分类规则允许使用的 exhibit 类型和文本证据清单：已由 ADR-021 关闭为 metadata-only
+  v1，仅使用 `Filing.reported_items` 与 `FilingDocument.document_type`，allowlist 为
+  `EX-99.1` / `EX-99`，不下载 filing body；
 - REVIEW_REQUIRED 在用户页面是否展示，还是只对管理员可见；
 - 待复核记录的处理时限。
+
+## 修订：4.5A metadata-only release classification（ADR-021，2026-10-01）
+
+ADR-021 已把本 ADR 的 release evidence 问题正式冻结为：
+
+- v1 不下载、不解析、不持久化 filing body；Stage 4.4 raw/body boundary 不变；
+- `Filing.reported_items` 来源于 SEC submissions `filings.recent.items`，parser version
+  升级为 `sec-filings-v2`；
+- supported exhibit allowlist 只有 `EX-99.1` / `EX-99`；
+- 8-K 含 2.02 且有 allowlisted exhibit → YES；明确不含 2.02 → NO；items 缺失/不可解析、
+  含 2.02 但无支持 exhibit、仅 unsupported EX-99.x，以及所有 6-K → REVIEW_REQUIRED；
+- 10-Q / 10-K / 20-F / 40-F 的 release classification 为 NULL；
+- `RELEASE_FILING` / `PERIODIC_FILING` 由 earnings app 的 `FilingEarningsLink` 表达；
+- 任何 Filing 都不推进或倒退 `EarningsEvent.status`；release filing 可用性由
+  `has_release_filing` 独立派生。
+
+完整 matching、review、replay 与 schema contract 见
+`docs/decisions/ADR-021-filing-earnings-link-classification-matching-review-replay.md`。

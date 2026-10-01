@@ -22,10 +22,10 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 | 能力 | 首选来源类型 | 关键输入 | 标准化输出 | 选择状态 |
 |---|---|---|---|---|
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
-| SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument；FilingEarningsLink 留待 4.5 | 官方公开 submissions 与目录 metadata；4.4 已实现，真实访问 smoke 待执行 |
+| SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、reported_items、documents | Filing、FilingDocument；FilingEarningsLink / FilingEarningsDecision 由 4.5A contract 冻结 | 官方公开 submissions 与目录 metadata；4.4 已实现，真实访问 smoke 待执行；4.5A READY FOR IMPLEMENTATION，尚未实现 |
 | 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native、ADR-015 v1 或 ADR-020 v2） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015 / ADR-020） | **AV v2 candidate-entry 技术契约与个人用途许可已 PASS（ADR-020）；implementation 已实现、验证并 merge（PR #51）；公开 / 多用户 / 商业 canonical 供应商仍待产品确认** |
 | 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）** |
-| IR 官方确认 | 公司 IR 页面或有限 IR Provider | 正式日期、电话会、新闻稿链接 | 确认状态、发布日期、来源证据 | 首批公司清单与抓取方式待确认 |
+| IR 官方确认 | 官方 IR page / feed 或 licensed vendor API | 正式日期、电话会、新闻稿链接 | InvestorRelationsObservation → InvestorRelationsDecision → 既有 schedule / lifecycle service（ADR-022） | **4.5B CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED；实际公司 allowlist 与逐来源许可待确认** |
 | S&P 500 | 官方公告、合法 API 或受控导入 | 证券/ticker、公告日、生效日、成分快照 | SecurityListing 级 IndexMembership、IndexChangeLeg | **来源与许可待产品确认** |
 | Nasdaq 100 | 官方公告、合法 API 或受控导入 | 同上 | 同上 | **来源与许可待产品确认** |
 | Dow 30 | 官方公告、合法 API 或受控导入 | 同上 | 同上 | **来源与许可待产品确认** |
@@ -171,36 +171,111 @@ HTTP 基础层使用必须注入的 transport 协议；Stage 4.4 为 SEC 公共�
 
 - Filing 按规范化 accession number 全局去重；
 - CIK 用于公司确定性匹配；
-- FilingEarningsLink 按报告期、表单类型、时间窗口和规则版本匹配；
-- `RELEASE_FILING` 与 `PERIODIC_FILING` 独立，不改变 EarningsEvent.status。
+- 4.5A 的输入是 persisted SEC metadata：form type、period_of_report、reported_items、
+  FilingDocument.document_type、accepted_at 和 SourceEvidence；
+- `reported_items` 来源于 `filings.recent.items`，parser version 为 `sec-filings-v2`；
+  canonical form 为空字符串或逗号分隔的 `n.nn` item codes；
+- v1 release classification 不下载 filing body，不使用 excerpt、body hash 或正文持久化；
+  Stage 4.4 raw boundary 不变；
+- matching 只在同一 Company 的 canonical EarningsEvent 内进行，使用
+  `filing-earnings-match-v1`；release window 是 reference date D 的 `[D-1, D+1]`
+  ET 自然日；
+- `RELEASE_FILING` 与 `PERIODIC_FILING` 独立，不改变 EarningsEvent.status；
+- review、replay 与 decision 契约见 ADR-021。4.5A 当前状态为
+  `CONTRACT FROZEN / READY FOR IMPLEMENTATION`，尚未实现。
+
+### 4.4 IR 官方确认
+
+> 状态：4.5B `CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`。本节只描述
+> source scope 与许可门，不表示任何真实公司或来源已批准。
+
+v1 只允许：
+
+```text
+official company IR press-release / event pages
+official IR feed (RSS / JSON)
+explicitly licensed vendor API
+```
+
+禁止 general web crawler、arbitrary search-engine scraping 和 multi-site discovery
+crawler。
+
+Initial company scope：
+
+- operator-maintained explicit allowlist，最多 50 家公司；
+- 每家公司必须已有 `Company.investor_relations_url`；
+- 只允许 approved official host 或 approved vendor；
+- run 必须持久化 frozen scope：scope_version、ordered company_ids、source_keys 和
+  canonical scope digest；
+- replay MUST NOT 重新评估 current allowlist。
+
+每个 IR 来源在 live 前必须逐项记录：
+
+```text
+authentication
+robots
+terms
+automated access permission
+caching
+retention
+derived data
+private display
+public display
+redistribution
+rate limits
+deletion obligations
+reviewer
+reviewed_at
+final conclusion
+```
+
+任一项 unknown / ambiguous / stale → `LIVE BLOCKED`。fixture-first 仍允许。
+
+未来数据流：
+
+```text
+Provider
+→ RawDataRecord / RawDataObservation
+→ parser
+→ InvestorRelationsObservation
+→ InvestorRelationsDecision
+→ existing schedule / lifecycle service
+```
+
+Provider 不写领域表，不创建 SyncRun、raw record 或 decision。Provider absence MUST NOT
+触发 cancellation、deletion 或 downgrade。具体公司清单、official source 和逐来源许可
+仍未决定，不得在文档中编造批准结论；完整契约见 ADR-022。
 
 ## 5. 来源优先级与冲突
 
 默认原则是直接官方证据优先于第三方预计数据。Stage 4.2 的 third-party earnings calendar
 authority 已由 ADR-010 冻结：
 
-| 字段 | 4.2 third-party calendar | 4.2 manual decision | 4.4 / 4.5 future authority |
+| 字段 | 4.2 third-party calendar | 4.2 manual decision | 4.5B future authority（ADR-022） |
 |---|---|---|---|
-| `estimated_release` | 可自动写，必须经 schedule service | 可修正，append-only decision | IR/SEC 高 authority 可替代 |
-| `release_session` | 可自动写，必须经 schedule service | 可修正，append-only decision | IR/SEC 高 authority 可替代 |
-| `confirmed_release` | MUST NOT 自动写 | 人工审计后可写 | IR 4.5 authority |
-| `earnings_release` | MUST NOT 自动写 | 人工审计后可写 | SEC 4.4/4.5 authority |
-| `conference_call` | MUST NOT 自动写 | 人工审计后可写 | IR 4.5 authority |
-| status | MUST NOT 自动推进或 cancel | 未来 correction，必须审计 | 4.4/4.5 affirmative evidence |
-| period_end_date / period_type / fiscal metadata | 只能作为 candidate fact | 可修正，必须审计 | 4.4/4.5 可补充 identity 证据 |
+| `estimated_release` | 可自动写，必须经 schedule service | 可修正，append-only decision | IR only explicit tentative / manual |
+| `release_session` | 可自动写，必须经 schedule service | 可修正，append-only decision | IR refine when explicit / manual |
+| `confirmed_release` | MUST NOT 自动写 | 人工审计后可写 | IR AUTO official explicit / manual |
+| `earnings_release` | MUST NOT 自动写 | 人工审计后可写 | IR AUTO explicit results release / manual |
+| `conference_call` | MUST NOT 自动写 | 人工审计后可写 | IR AUTO explicit call notice / manual |
+| status | MUST NOT 自动推进或 cancel | 未来 correction，必须审计 | IR: scheduled_confirmed / released / explicit cancelled；manual；SEC Filing NO |
+| period_end_date / period_type / fiscal metadata | 只能作为 candidate fact | 可修正，必须审计 | IR / SEC / approved manual 可补充 exact facts；冲突 fail closed |
 
 - provider absence MUST NOT 触发 cancellation、deletion 或任何 status mutation；
 - 有效的最新 resolved manual decision 优先于 4.2 third-party calendar；
 - Stage 4.2 MUST NOT 引入可变 locked flag；authority MUST 从 append-only decision history 推导；
-- 只有新 manual decision 明确 supersede，或 4.4/4.5 更高 authority contract 允许替代时，
+- 只有新 manual decision 明确 supersede，或 4.5B 更高 authority contract 允许替代时，
   人工结果才可被覆盖。
 
 ADR-020 补充：AV v2 candidate 的 `period_type` 保持 NULL，直到 SEC / IR / approved manual
 evidence / future exact provider 补齐；不得把 incomplete candidate 仅凭
 `Company + period_end_date` 视为 canonical duplicate，也不得 destructive merge。
 
-发生冲突时应保存所有 SourceEvidence、当前选中证据、选择规则版本和 append-only reconciliation
-decision。管理员修正必须写原因；IR / SEC 高 authority 来源的字段级矩阵最晚在 4.4/4.5 前确认。
+发生冲突时应保存所有 SourceEvidence、当前选中证据、选择规则版本和 append-only
+reconciliation / IR decision。管理员修正必须写原因。4.5B 的 IR field authority 已由
+ADR-022 冻结为 `manual > IR > SEC filing state > third-party calendar`，只在来源对相应
+字段有权限时适用；SEC Filing 不推进 EarningsEvent lifecycle。4.5A 的
+`has_release_filing` / `has_periodic_filing` 由 ADR-021 的 Filing link 独立派生。
 
 SourceEvidence 不直接依赖领域 app：目标使用受限 `target_type` 和 UUID，目标是否存在由后续领域 service 校验。其 evidence_key 由 RawDataRecord、目标、字段、规范化 JSON 值和 normalizer version 生成；同一 RawDataRecord 的相同标准化事实重跑时复用现有证据，不同 RawDataRecord 则分别留证。SyncRun 不进入 evidence_key，但证据写入必须引用该 SyncRun 对 RawDataRecord 的 RawDataObservation，并拒绝包含 API key、Authorization、密码、session 或 Token 的 JSON。
 
@@ -253,6 +328,11 @@ local master-data linkage、long-term retention 与 candidate earnings-event use
 负责人转述的后续书面澄清覆盖，范围仍是严格个人、私有、单用户、非商业。公开 / 多用户 /
 商业用途仍不在范围内；4.2F-B implementation 已实现并验证，等待独立 merge gate。
 
+4.5B 的 IR 来源在 live 前必须额外完成 ADR-022 §3 的逐来源 checklist（authentication、
+robots、terms、automated access、caching、retention、derived data、private/public
+display、redistribution、rate limits、deletion、reviewer、reviewed_at、conclusion）。
+任一项 unknown 即为 `LIVE BLOCKED`；当前没有任何真实公司或来源在本文件中被批准。
+
 ## 9. 失败保护与验收
 
 - 指数快照为空或成分数量异常下降时，停止差异落库，不批量生成 REMOVED；
@@ -271,9 +351,13 @@ local master-data linkage、long-term retention 与 candidate earnings-event use
 - 财报日历 canonical 供应商、四个指数来源和各自许可；Alpha Vantage Free 的个人私有
   Mode A reference 与 ADR-020 candidate-entry 个人用途已获准，implementation 已实现并
   验证；公开 / 多用户 / 商业用途仍需单独审查；
-- 首批 IR 公司清单与允许的抓取方式；
-- IR / SEC 高 authority 来源的字段级冲突矩阵与复核流程（4.4 / 4.5 前）；4.2 第三方
-  calendar 字段权限与 append-only manual decision authority 已由 ADR-010 确定；
+- 首批 IR 公司清单与每家公司允许的 official source / feed / vendor；4.5B contract 已由
+  ADR-022 冻结，live Provider 保持 `LIVE BLOCKED`，不得用 fixture 或候选来源冒充批准；
+- IR / SEC 高 authority 来源的字段级冲突矩阵与复核流程：IR / manual / SEC filing state /
+  third-party calendar 的字段级 authority 已由 ADR-022 冻结；4.2 第三方 calendar 字段权限
+  与 append-only manual decision authority 已由 ADR-010 确定；
+- release filing metadata-only classification 与 `EX-99.1` / `EX-99` allowlist 已由
+  ADR-021 冻结；REVIEW_REQUIRED 的展示范围与复核时限仍待产品确认；
 - Provider 限速、失败重试和成本阈值；
 - 原始响应保留期限、长期容量/删除政策，以及 1 MiB 初始保护值是否需要按已许可数据源调整；
 - 生产平台是否能支持计划频率及最长运行时间。

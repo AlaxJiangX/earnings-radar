@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）已完成，4.2D-1 selector/snapshot core 与 4.2D-2 candidate/company matching core 均已实现、merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；Stage 4.3（财报列表与公司详情基础页）已实现、验证并 merge（PR #53，merge `7009156`）；SEC Filing（阶段 4.4）已实现、验证并 merge（PR #55，merge `bda12ff`）；自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）已完成，4.2D-1 selector/snapshot core 与 4.2D-2 candidate/company matching core 均已实现、merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；Stage 4.3（财报列表与公司详情基础页）已实现、验证并 merge（PR #53，merge `7009156`）；SEC Filing（阶段 4.4）已实现、验证并 merge（PR #55，merge `bda12ff`）；Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A（CONTRACT FROZEN / READY FOR IMPLEMENTATION）与 4.5B（CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED），两者均尚未实现；自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -602,21 +602,77 @@ capability 声明。后续书面澄清解决了个人用途的 normalized / cand
 
 状态：Stage 4.4 = IMPLEMENTED / VERIFIED / MERGED（PR #55，merge `bda12ff`；本地 fixture-first 与完整测试通过；真实 SEC smoke 尚未执行）。
 
-#### 4.5 财报与 Filing 关联、IR 有限确认
+#### 4.5A Filing ↔ Earnings Link & Classification
 
-交付：FilingEarningsLink、规则版本/置信度、首批 IR Provider。
+状态：`CONTRACT FROZEN / READY FOR IMPLEMENTATION`。权威契约见 ADR-021；本阶段尚未实现。
+
+交付：Filing.reported_items、FilingEarningsLink、FilingEarningsDecision、deterministic
+periodic / release matching、metadata-only release classification、manual review
+authority、replay / idempotency 与 selector-derived filing state。
 
 验收标准：
 
-- 8-K 和定期报告可按规则关联财报事件；
-- 不确定关联可复核且不会静默覆盖；
-- IR 官方确认可将 SCHEDULED_ESTIMATED 推进至 SCHEDULED_CONFIRMED；
-- release filing 与 periodic filing 由 FilingEarningsLink 独立表达，不改变 EarningsEvent.status；
-- release filing 使用 YES/NO/REVIEW_REQUIRED，并保存分类原因和规则版本；
-- 只有 YES 推导 has_release_filing，REVIEW_REQUIRED 不触发“已提交”通知；
-- 页面查询可同时得到“财报已发布、8-K 已提交、10-Q 待提交”；
-- 首批 IR 公司范围有清单；
-- 所有字段可回溯到原始来源。
+- `reported_items` 从 SEC submissions `filings.recent.items` 解析，parser version 为
+  `sec-filings-v2`；历史 Filing 保持空字符串，不猜测；controlled backfill 必须从
+  persisted raw 重放并写审计 / DataChange；
+- 10-Q 匹配 `period_of_report + Q1/Q2/Q3`；10-K / 20-F / 40-F 匹配
+  `period_of_report + FY + includes_q4=true`；
+- 8-K / 6-K release matching 使用
+  `earnings_release > confirmed_release > estimated_release`，窗口为 reference date D
+  的 `[D-1, D+1]` ET 自然日；
+- release classification metadata-only：8-K 含 2.02 且至少一个 `EX-99.1` / `EX-99` →
+  YES；明确不含 2.02 → NO；items 缺失/不可解析、含 2.02 但无支持 exhibit、仅
+  unsupported EX-99.x、所有 6-K → REVIEW_REQUIRED；
+- `candidate-only`、0 candidate、多 candidate 和 cancelled canonical 的 review /
+  no-match 路径有测试；
+- FilingEarningsDecision append-only，manual > automatic，manual leaf 阻塞 automatic
+  supersession；rule upgrade 不覆盖 manual leaf；
+- 同一输入连续执行两次不新增 link / decision / DataChange / AuditRecord；
+- selector 返回 `has_release_filing` / `has_periodic_filing`、form type、accepted_at、
+  filing_url、classification、review_status、classification_reason、rule versions 和
+  current decision id，并按 accepted_at + filing_id 稳定排序；
+- 不下载 filing body、不持久化正文、不修改 EarningsEvent.status；
+- 4.5A 不修改 templates / pages。
+
+#### 4.5B IR Confirmation
+
+状态：`CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`。权威契约见 ADR-022；本阶段尚未实现。
+
+交付：InvestorRelationsObservation / InvestorRelationsDecision contract shape、
+official IR authority、schedule confirmation、conflict / absence / cancellation 与 replay。
+
+验收标准：
+
+- v1 只允许 official IR press-release / event page、official IR feed（RSS / JSON）或
+  explicitly licensed vendor API；禁止 general crawler、search-engine scraping 和
+  multi-site discovery crawler；
+- operator allowlist 最多 50 家公司，每家公司必须已有
+  `Company.investor_relations_url`；
+- run 持久化 frozen scope（scope_version、ordered company_ids、source_keys、canonical
+  digest）；replay 不重新评估 current allowlist；
+- Provider → RawDataRecord → RawDataObservation → parse → observation → decision →
+  既有 schedule / lifecycle service；Provider 不写领域表，不创建 SyncRun 或 audit row；
+- authority matrix 为 `manual > IR > SEC filing state > third-party calendar`，只在来源
+  对相应字段有权限时适用；
+- same-authority conflict → `review_required`；IR absence 不取消、不降级、不删除；
+  SEC Filing 不推进 EarningsEvent lifecycle；
+- conference-call-only 只更新 `conference_call`，不确认 release schedule；
+- cancellation 只允许 explicit official IR 或 manual explicit；conference call
+  cancellation != EarningsEvent cancellation；
+- replay zero network、persisted raw only、manual leaf 不被覆盖；
+- observation / decision schema、authority、conflict 和 replay 均有 fixture-first 测试。
+
+Live gate（未满足前不得进入 production ingestion）：
+
+- 实际 IR company allowlist；
+- 每家公司 approved official source / URL / feed / vendor；
+- 每个来源的 authentication、robots、terms、automated access、caching、retention、
+  derived data、private display、public display、redistribution、rate limits、
+  deletion、reviewer、reviewed_at 与 conclusion；
+- 任一 unknown → `LIVE BLOCKED`；fixture-first 不受阻塞。
+
+状态汇总：4.5A = `CONTRACT FROZEN / READY FOR IMPLEMENTATION`；4.5B =
+`CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`。不得把两者标记为 implemented。
 
 ### 阶段 5：自选股与个人页面
 
@@ -813,12 +869,12 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 决策 | 最晚确认阶段 |
 |---|---|
 | 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前 |
-| 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture；ADR-020 已冻结 AV v2 candidate-entry technical contract；个人用途书面澄清已完成，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；公开 / 多用户 / 商业仍待单独审查 |
+| 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture；ADR-020 已冻结 AV v2 candidate-entry technical contract；个人用途书面澄清已完成，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；4.5B IR contract 已由 ADR-022 冻结，实际 IR company allowlist 与逐来源许可未定，live Provider 保持 `LIVE BLOCKED`；公开 / 多用户 / 商业仍待单独审查 |
 | 邮件服务、摘要时间、重试规则 | 6.4 前 |
 | 跨 Provider 合并阈值与重复核对 | 已由 ADR-010 确定为 exact-only；不实现 fuzzy auto-merge；FY/52-53 周规则由 ADR-001 确定 |
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
-| release filing 证据清单、复核展示和时限 | 4.5 前；三态分类已由 ADR-003 确定 |
-| 来源冲突与人工锁定策略 | 4.2 第三方 calendar 字段权限与 append-only manual decision authority 已由 ADR-010 确定；IR/SEC 高 authority 矩阵最晚 4.4/4.5 前；Company 主数据仍按 2.3 |
+| release filing 证据清单、复核展示和时限 | metadata-only exhibit allowlist 已由 ADR-021 关闭为 `EX-99.1` / `EX-99`；REVIEW_REQUIRED 展示范围与复核时限仍待确认 |
+| 来源冲突与人工锁定策略 | 4.2 third-party calendar 权限与 append-only manual decision authority 已由 ADR-010 冻结；IR / manual / SEC filing state / third-party calendar 的 4.5B 字段级 authority 已由 ADR-022 冻结；SEC Filing 不推进 lifecycle；Company 主数据仍按 2.3 |
 | 提前一天的时区/DST 语义 | 6.1 前 |
 | 原始/通知/审计数据保留 | 8.1 前 |
 | 新鲜度与 alpha/beta 门槛的后续调整 | 仅在 alpha 实测支持时修订 ADR-004 |
