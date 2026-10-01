@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）已完成，4.2D-1 selector/snapshot core 与 4.2D-2 candidate/company matching core 均已实现、merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；Stage 4.3（财报列表与公司详情基础页）已实现并验证，等待 independent pre-merge / merge gate；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–3.4 已完成；阶段 3.2 真实指数 Provider 仍受来源/许可确认门阻塞；阶段 4.1A（EarningsEvent 核心领域模型）、4.1B（EarningsDateChange）、4.1C（EarningsEvent Status Lifecycle）和 4.1D（Candidate Promotion）均已完成，Stage 4.1 财报事件领域基础完成；Stage 4.2A（Earnings Calendar Observation、External Identity 与 Reconciliation Contract Ratification）已完成，ADR-010 已接受；Stage 4.2B（Earnings Calendar Observation & Reconciliation Schema Foundation）已完成；Stage 4.2C（Fixture-First Earnings Calendar Ingestion & Replay）已完成并通过 merge 后复验；Stage 4.2D（Monitoring-Pool Selector & Candidate Foundation）已完成，4.2D-1 selector/snapshot core 与 4.2D-2 candidate/company matching core 均已实现、merge 并通过 merge 后定向复验；4.2E Reconciliation / Dedup / Conflict / Review / Manual Decision Authority 已完成、已 merge（PR #43，merge `55c36a7`）并通过合并后定向复验；ADR-015 已接受，4.2F 不再强制 Provider-native event ID；2026-09-29 Alpha Vantage Free canonical focused gate 结论为 REJECTED（见 ADR-016），4.2F 已按 ADR-017 拆分为 4.2F-A Zero Data Cost reference calendar 与 4.2F-B canonical live sync；4.2F-A planning gate 已完成并接受 ADR-018；2026-09-30 Alpha Vantage Free 的个人私有 Mode A reference license gate（ADR-019）结论为 PASS，4.2F-A 已实现、验证并合并（PR #48，merge `2bd0399`）；4.2F-B Alpha Vantage adaptation contract gate 已完成并接受 ADR-020，后续书面澄清解决了个人用途的 normalized / candidate 许可，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；Stage 4.3（财报列表与公司详情基础页）已实现、验证并 merge（PR #53，merge `7009156`）；SEC Filing（阶段 4.4）、自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -586,8 +586,7 @@ capability 声明。后续书面澄清解决了个人用途的 normalized / cand
 - DST 边界有测试；
 - 列表查询无明显 N+1。
 
-状态：Stage 4.3 = IMPLEMENTED / VERIFIED / PENDING MERGE（隔离分支
-`codex/4.3-earnings-company-pages`；等待 Stage 4.3 Independent Pre-Merge / Merge Gate）。
+状态：Stage 4.3 = IMPLEMENTED / VERIFIED / MERGED（PR #53，merge `7009156`）。
 
 #### 4.4 SEC Provider 与 Filing
 
