@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from threading import Barrier, Event
@@ -25,6 +26,7 @@ from filings.sync import SecSyncError, SecSyncResult, _sec_run_ownership, sync_s
 from indexes.models import IndexMembership, MarketIndex
 from providers.http import HttpTransport, TransportRequest, TransportResponse
 from providers.sec_edgar import SecEdgarProvider
+from tests.filings.sec_sync_helpers import FilingSpec, SecFilingTransport
 from tests.filings.test_sec_provider_and_parsing import index_body, submissions_body
 
 AS_OF = date(2026, 9, 30)
@@ -111,6 +113,7 @@ def _run(
     transport: FixtureTransport,
     key: str,
     company_ids: tuple[uuid.UUID, ...] | None = None,
+    on_filing_persisted: Callable[[Filing, SyncRun], None] | None = None,
 ) -> SecSyncResult:
     if company_ids is None:
         company_ids = tuple(
@@ -130,6 +133,7 @@ def _run(
         pool_selector_version=snapshot.selector_version,
         pool_hash=snapshot.pool_hash,
         idempotency_key=key,
+        on_filing_persisted=on_filing_persisted,
     )
 
 
@@ -139,6 +143,7 @@ def _run_with_scope(
     company_ids: tuple[uuid.UUID, ...],
     transport: HttpTransport,
     key: str,
+    on_filing_persisted: Callable[[Filing, SyncRun], None] | None = None,
 ) -> SecSyncResult:
     provider = SecEdgarProvider(user_agent="Earnings Radar test@example.org", transport=transport)
     return sync_sec_filings(
@@ -149,6 +154,7 @@ def _run_with_scope(
         pool_selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
         pool_hash=_SCOPE_POOL_HASH,
         idempotency_key=key,
+        on_filing_persisted=on_filing_persisted,
     )
 
 
@@ -498,3 +504,145 @@ def test_duplicate_company_ids_fail_closed_without_starting_a_run() -> None:
 
     assert not SyncRun.objects.exists()
     assert transport.requests == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_on_filing_persisted_hook_runs_before_run_finalization() -> None:
+    company = Company.objects.create(legal_name="Hook", display_name="Hook", cik="0000001234")
+    source = _source()
+    transport = SecFilingTransport(FilingSpec(form="10-Q", period_of_report="2026-03-31"))
+    seen: list[tuple[uuid.UUID, uuid.UUID, str]] = []
+
+    def hook(filing: Filing, sync_run: SyncRun) -> None:
+        persisted = SyncRun.objects.get(pk=sync_run.pk)
+        seen.append((filing.pk, sync_run.pk, persisted.status))
+
+    result = _run_with_scope(
+        source=source,
+        company_ids=(company.pk,),
+        transport=transport,
+        key="hook-live",
+        on_filing_persisted=hook,
+    )
+
+    assert result.sync_run.status == SyncRun.Status.SUCCEEDED
+    filing = Filing.objects.get()
+    assert seen == [(filing.pk, result.sync_run.pk, SyncRun.Status.RUNNING)]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_on_filing_persisted_hook_not_called_for_complete_skip() -> None:
+    _, source, snapshot = _setup()
+    first = _run(source=source, snapshot=snapshot, transport=FixtureTransport(), key="initial")
+    assert first.sync_run.status == SyncRun.Status.SUCCEEDED
+    calls: list[uuid.UUID] = []
+
+    second = _run(
+        source=source,
+        snapshot=snapshot,
+        transport=FixtureTransport(),
+        key="skip",
+        on_filing_persisted=lambda filing, sync_run: calls.append(filing.pk),
+    )
+
+    assert second.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert second.sync_run.skipped_count == 1
+    assert calls == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_on_filing_persisted_hook_failure_marks_partial_and_keeps_filing() -> None:
+    _, source, snapshot = _setup()
+
+    def hook(filing: Filing, sync_run: SyncRun) -> None:
+        del filing, sync_run
+        raise RuntimeError("fixture hook failure")
+
+    result = _run(
+        source=source,
+        snapshot=snapshot,
+        transport=FixtureTransport(),
+        key="hook-fail",
+        on_filing_persisted=hook,
+    )
+
+    assert result.sync_run.status == SyncRun.Status.PARTIAL
+    assert result.sync_run.failed_count == 1
+    assert "RuntimeError" in result.sync_run.error_summary
+    assert Filing.objects.count() == 1
+
+
+@pytest.mark.django_db(transaction=True)
+def test_on_filing_persisted_hook_not_called_when_record_filing_fails() -> None:
+    _, source, snapshot = _setup()
+    calls: list[uuid.UUID] = []
+
+    result = _run(
+        source=source,
+        snapshot=snapshot,
+        transport=FixtureTransport(broken_index=True),
+        key="hook-no-persist",
+        on_filing_persisted=lambda filing, sync_run: calls.append(filing.pk),
+    )
+
+    assert result.sync_run.status == SyncRun.Status.PARTIAL
+    assert result.sync_run.failed_count == 1
+    assert not Filing.objects.exists()
+    assert calls == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_on_filing_persisted_hook_failure_does_not_block_later_filings() -> None:
+    first = Company.objects.create(legal_name="First", display_name="First", cik="0000001234")
+    second = Company.objects.create(legal_name="Second", display_name="Second", cik="0000005678")
+    source = _source()
+    transport = SecFilingTransport(FilingSpec(form="10-Q", period_of_report="2026-03-31"))
+    calls: list[uuid.UUID] = []
+
+    def hook(filing: Filing, sync_run: SyncRun) -> None:
+        del sync_run
+        calls.append(filing.pk)
+        if len(calls) == 1:
+            raise RuntimeError("first hook failure")
+
+    result = _run_with_scope(
+        source=source,
+        company_ids=(first.pk, second.pk),
+        transport=transport,
+        key="hook-continue",
+        on_filing_persisted=hook,
+    )
+
+    assert result.sync_run.status == SyncRun.Status.PARTIAL
+    assert result.sync_run.failed_count == 1
+    assert Filing.objects.count() == 2
+    assert len(calls) == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_successful_idempotent_run_does_not_call_hook() -> None:
+    _, source, snapshot = _setup()
+    calls: list[uuid.UUID] = []
+
+    def hook(filing: Filing, sync_run: SyncRun) -> None:
+        del sync_run
+        calls.append(filing.pk)
+
+    first = _run(
+        source=source,
+        snapshot=snapshot,
+        transport=FixtureTransport(),
+        key="same-key",
+        on_filing_persisted=hook,
+    )
+    second = _run(
+        source=source,
+        snapshot=snapshot,
+        transport=FixtureTransport(),
+        key="same-key",
+        on_filing_persisted=hook,
+    )
+
+    assert first.run_created is True
+    assert second.run_created is False
+    assert len(calls) == 1

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -26,6 +26,7 @@ from audit.services import (
 )
 from companies.models import Company
 from companies.services import normalize_cik
+from filings.models import Filing
 from filings.parsing import PARSER_VERSION, SecMetadataError, parse_filing_index, parse_submissions
 from filings.services import filing_is_complete, record_filing
 from providers.base import Provider
@@ -80,8 +81,14 @@ def sync_sec_filings(
     pool_selector_version: str,
     pool_hash: str,
     idempotency_key: str,
+    on_filing_persisted: Callable[[Filing, SyncRun], None] | None = None,
 ) -> SecSyncResult:
-    """Fetch only Companies authorized by one caller-resolved monitoring-pool scope."""
+    """Fetch only Companies authorized by one caller-resolved monitoring-pool scope.
+
+    ``on_filing_persisted`` runs after one Filing transaction committed and
+    before the SEC run is finalized.  Hook failures are isolated per Filing and
+    count as run failures; they never roll back the persisted Filing.
+    """
 
     if (
         provider.provider_key != SEC_PROVIDER_KEY
@@ -102,6 +109,8 @@ def sync_sec_filings(
         pool_selector_version=pool_selector_version,
         pool_hash=pool_hash,
     )
+    if on_filing_persisted is not None and not callable(on_filing_persisted):
+        raise SecSyncError("on_filing_persisted must be callable or None.")
     with _sec_run_ownership():
         scope = {
             "monitoring_pool_as_of": pool_as_of.isoformat(),
@@ -188,6 +197,8 @@ def sync_sec_filings(
                             created_delta=int(written.filing_created) + written.documents_created,
                             skipped_delta=int(not written.filing_created),
                         )
+                        if on_filing_persisted is not None:
+                            on_filing_persisted(written.filing, run)
                     except Exception as error:
                         failures += 1
                         if len(failure_details) < 10:

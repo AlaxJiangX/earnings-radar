@@ -1,4 +1,4 @@
-"""Stage 4.5A-I1 SEC sync command migration and CLI contract tests."""
+"""SEC sync command contract tests for Stage 4.5A-I1 and I2."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from django.core.management import call_command, get_commands
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from audit.models import DataSource, SyncRun
+from audit.models import AuditRecord, DataSource, SyncRun
 from companies.models import Company, SecurityListing
 from earnings.management.commands import sync_sec_filings as sync_sec_filings_command
-from earnings.models import MonitoringPoolSnapshot
+from earnings.models import FilingEarningsDecision, MonitoringPoolSnapshot
 from earnings.services import EARNINGS_MONITORING_POOL_SELECTOR_VERSION, select_monitoring_pool
 from filings.models import Filing
 from filings.sync import SEC_JOB_TYPE
@@ -123,6 +123,9 @@ def test_command_runs_explicit_snapshot_and_keeps_frozen_scope(
     }
     assert Filing.objects.count() == 1
     assert f"SEC run {run.pk}: succeeded" in output
+    assert (
+        "matching evaluated=1; release=0; periodic=0; review=0; no_match=1; manual=0; failures=0"
+    ) in output
 
 
 @pytest.mark.django_db(transaction=True)
@@ -178,6 +181,9 @@ def test_command_idempotency_key_reuses_succeeded_run(
     assert len(transport.requests) == 2
     assert f"SEC run {run.pk}" in first_output
     assert f"SEC run {run.pk}" in second_output
+    assert "matching evaluated=1" in first_output
+    assert "matching evaluated=0" in second_output
+    assert FilingEarningsDecision.objects.count() == 1
 
 
 @pytest.mark.django_db
@@ -235,3 +241,60 @@ def test_command_rejects_retry_and_snapshot_together(monkeypatch: pytest.MonkeyP
             retry_run=str(failed.pk),
             snapshot_id=str(snapshot.pk),
         )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_command_match_only_replays_without_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, source, snapshot = _setup()
+    _patch_provider(monkeypatch, FixtureTransport())
+    _call(source_key=source.key, snapshot_id=str(snapshot.pk))
+    run = SyncRun.objects.get(job_type=SEC_JOB_TYPE)
+    decision_count = FilingEarningsDecision.objects.count()
+    audit_count = AuditRecord.objects.count()
+
+    def fail_provider(**options: object) -> SecEdgarProvider:
+        del options
+        raise AssertionError("match-only must not construct the SEC provider")
+
+    monkeypatch.setattr(sync_sec_filings_command, "SecEdgarProvider", fail_provider)
+
+    output = _call(source_key=source.key, match_only=True, sync_run=str(run.pk))
+
+    assert "filing matching replay" in output
+    assert "evaluated=1" in output
+    assert "failures=0" in output
+    assert SyncRun.objects.filter(job_type=SEC_JOB_TYPE).count() == 1
+    assert FilingEarningsDecision.objects.count() == decision_count
+    assert AuditRecord.objects.count() == audit_count
+
+
+@pytest.mark.django_db(transaction=True)
+def test_command_match_only_requires_sync_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, source, _ = _setup()
+    _patch_provider(monkeypatch, FixtureTransport())
+
+    with pytest.raises(CommandError, match="requires --sync-run"):
+        _call(source_key=source.key, match_only=True)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_command_match_only_rejects_live_scope_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, source, snapshot = _setup()
+    _patch_provider(monkeypatch, FixtureTransport())
+
+    with pytest.raises(CommandError, match="accepts only"):
+        _call(
+            source_key=source.key,
+            match_only=True,
+            sync_run=str(uuid.uuid4()),
+            snapshot_id=str(snapshot.pk),
+        )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_command_sync_run_requires_match_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, source, _ = _setup()
+    _patch_provider(monkeypatch, FixtureTransport())
+
+    with pytest.raises(CommandError, match="requires --match-only"):
+        _call(source_key=source.key, sync_run=str(uuid.uuid4()))
