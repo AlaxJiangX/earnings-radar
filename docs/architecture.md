@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2 已建立 Provider 契约、HTTP 传输接口和完全离线的 Fake/fixture；阶段 2.3 已建立 `companies` app 的 Company/SecurityListing 稳定身份、受控写入 Service 与只读 Admin；阶段 3.1 已建立四指数目录、证券级 IndexMembership 生命周期与到期激活；阶段 3.2B 已建立人工指数快照契约及“先保存原始响应、再注入 parser”的离线编排基础；阶段 4.1 已建立 EarningsEvent / EarningsDateChange / status lifecycle / candidate promotion；阶段 4.2A 已批准 ADR-010，阶段 4.2B 已落地 EarningsCalendarObservation / EarningsReconciliationDecision schema foundation，阶段 4.2C 已完成 fixture-first parser / ingestion / pagination / ownership / provider context 与 offline replay，并通过 merge 后复验；阶段 4.2D-1 已完成 selector/snapshot core，阶段 4.2D-2 已按 ADR-013 实现并 merge candidate/company matching core，且通过 merge 后定向复验；阶段 4.2E reconciliation workflow 已实现并通过 PR #43 merge；4.2F-A reference calendar 已实现、验证并 merge；4.2F-B Alpha Vantage adaptation contract 已由 ADR-020 冻结（technical PASS），后续书面澄清解决了个人用途的 normalized / candidate / canonical-pipeline storage 许可；4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）。阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #55，merge `bda12ff`）。Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`），4.5B 仍为 `CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED` 且尚未实现。当前 main 已包含 candidate-only Alpha Vantage canonical provider adapter 与 sync service，以及 4.5A 的 FilingEarningsLink / FilingEarningsDecision / matching / classification / selector 实现；仍没有通用 v1 canonical live Provider command、IR observation / decision 或通知领域模型。
+当前实现进度：阶段 2.2–4.4 的既有能力已按路线图落地并 merge；阶段 4.2 已完成 fixture-first calendar ingestion / replay、monitoring pool、candidate matching 与 reconciliation workflow，4.2F-A / 4.2F-B 已实现、验证并 merge（PR #48 / #51）；阶段 4.3 财报页面与阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #53 / #55）。Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`）；4.5B IR Confirmation 的 fixture-first 能力（fixture Provider / parser、raw-first ingestion、InvestorRelationsObservation / InvestorRelationsDecision、authority / confirmation / cancellation / conflict 与 zero-network replay）已实现并验证，状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / LIVE BLOCKED / PENDING MERGE`。当前分支仍未实现通用 v1 canonical live Provider command、真实 IR live source、通知领域模型与 Stage 5/6 能力。
 
 ## 1. 架构目标与边界
 
@@ -275,7 +275,7 @@ merge gate。
 `docs/decisions/ADR-019-alpha-vantage-mode-a-reference-license-gate.md` 与
 `docs/decisions/ADR-020-alpha-vantage-canonical-entry-adaptation.md`。
 
-### 4.6 Filing ↔ Earnings Link 与 IR 确认契约（4.5 Contract Documentation；4.5A IMPLEMENTED / MERGED；4.5B FIXTURE-FIRST / LIVE BLOCKED）
+### 4.6 Filing ↔ Earnings Link 与 IR 确认契约（4.5A IMPLEMENTED / MERGED；4.5B FIXTURE-FIRST IMPLEMENTED / LIVE BLOCKED）
 
 Stage 4.5 已正式拆分为 4.5A 与 4.5B。权威契约分别为 ADR-021 与 ADR-022；本节只说明
 ownership 与数据流，不复制完整 decision table。
@@ -291,7 +291,7 @@ earnings app
   FilingEarningsLink / FilingEarningsDecision
   matching / release classification / review / replay
   has_release_filing / has_periodic_filing selector
-  InvestorRelationsObservation / InvestorRelationsDecision (4.5B future)
+  InvestorRelationsObservation / InvestorRelationsDecision (4.5B fixture-first)
   IR confirmation orchestration
 ```
 
@@ -375,6 +375,25 @@ IR Provider
 - same-authority conflict 进入 review_required；
 - provider absence 不取消、不降级、不删除；
 - SEC Filing 不推进 EarningsEvent lifecycle。
+
+4.5B 的 fixture-first implementation 已落地：`providers/fixture_ir.py` 提供零网络
+`FixtureInvestorRelationsProvider`；`earnings/ir_parsing.py` 提供固定 parser version 的
+fixture parser 与 `internal:ir:v1:` source identity；`earnings/services/ir_observation.py`
+与 `ir_decision.py` 是 append-only observation / decision 写入原语；
+`ir_ingestion.py` 负责 raw-first 单 payload 摄取；`ir_confirmation.py` 负责 authority /
+confirmation / release / cancellation / conflict 评估并只调用既有
+`update_earnings_schedule` / `confirm_earnings_event` / `mark_earnings_released` /
+`cancel_earnings_event`；`ir_sync.py` 负责 `earnings.ir_confirmation` SyncRun 的 frozen
+scope（`scope_version` / ordered `company_ids` / `source_keys` / `scope_digest`）与
+zero-network replay。Provider 不写数据库；同一 raw + parser + source identity 只产生一条
+observation；decision key 不含 wall clock；manual decision leaf 阻塞自动覆盖，但自动评估仍
+追加 blocked/ignored history。replay 只读取 source run 的 persisted raw manifest 与 persisted
+scope，不重新评估当前 allowlist，也不访问 IR URL 或网络。
+
+IR 的 `estimated_release` 只在来源明确为 tentative schedule 时写入，并复用
+`confirmed_schedule` decision type + `match_factors` 中的 `tentative_schedule` outcome 留痕；
+该既有 enum 不扩张。所有 IR schedule / status 写入均生成 DataChange、EarningsDateChange
+（如适用）、AuditRecord 与指向 EarningsEvent 的 SourceEvidence。
 
 #### 4.6.4 Live gate
 

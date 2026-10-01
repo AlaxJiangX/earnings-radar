@@ -8,6 +8,8 @@ from earnings.models import (
     EarningsEvent,
     FilingEarningsDecision,
     FilingEarningsLink,
+    InvestorRelationsDecision,
+    InvestorRelationsObservation,
 )
 
 
@@ -164,5 +166,82 @@ class FilingEarningsLinkAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
         self,
         request: HttpRequest,
         obj: FilingEarningsLink | None = None,
+    ) -> bool:
+        return False
+
+
+@admin.register(InvestorRelationsObservation)
+class InvestorRelationsObservationAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    list_display = (
+        "company",
+        "item_type",
+        "period_type",
+        "period_end_date",
+        "source",
+        "raw_position",
+        "created_at",
+    )
+    list_filter = ("item_type", "period_type", "source")
+    search_fields = (
+        "=company__cik",
+        "company__display_name",
+        "source_event_identity",
+        "=raw_data_record__content_hash",
+    )
+    ordering = ("-created_at",)
+    list_select_related = ("company", "source", "raw_data_record")
+    readonly_fields = tuple(field.name for field in InvestorRelationsObservation._meta.fields)
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(
+        self,
+        request: HttpRequest,
+        obj: InvestorRelationsObservation | None = None,
+    ) -> bool:
+        return False
+
+    def has_delete_permission(
+        self,
+        request: HttpRequest,
+        obj: InvestorRelationsObservation | None = None,
+    ) -> bool:
+        return False
+
+
+@admin.register(InvestorRelationsDecision)
+class InvestorRelationsDecisionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    list_display = (
+        "observation",
+        "target_event",
+        "decision_type",
+        "status",
+        "decided_at",
+    )
+    list_filter = ("decision_type", "status")
+    search_fields = (
+        "=decision_key",
+        "=observation__id",
+        "=target_event__id",
+    )
+    ordering = ("-decided_at",)
+    list_select_related = ("observation", "target_event", "actor_user", "sync_run")
+    readonly_fields = tuple(field.name for field in InvestorRelationsDecision._meta.fields)
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(
+        self,
+        request: HttpRequest,
+        obj: InvestorRelationsDecision | None = None,
+    ) -> bool:
+        return False
+
+    def has_delete_permission(
+        self,
+        request: HttpRequest,
+        obj: InvestorRelationsDecision | None = None,
     ) -> bool:
         return False
