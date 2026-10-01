@@ -170,6 +170,7 @@ def sync_sec_filings(
                         mark_raw_data_parsed(index_raw.pk, parser_version=PARSER_VERSION)
                         written = record_filing(
                             company=company,
+                            requested_cik=cik,
                             metadata=filing_metadata,
                             documents=documents,
                             submissions_raw=raw,

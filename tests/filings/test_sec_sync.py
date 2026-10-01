@@ -8,9 +8,11 @@ from threading import Barrier, Event
 import pytest
 from django.db import IntegrityError, close_old_connections, transaction
 
+from accounts.models import User
 from audit.constants import RAW_DATA_PAYLOAD_DB_LIMIT_BYTES
 from audit.models import DataSource, RawDataObservation, RawDataRecord, SourceEvidence, SyncRun
 from companies.models import Company, SecurityListing
+from companies.services import update_company
 from earnings.models import MonitoringPoolSnapshot
 from earnings.services import EARNINGS_MONITORING_POOL_SELECTOR_VERSION, select_monitoring_pool
 from filings.models import Filing, FilingDocument
@@ -138,6 +140,81 @@ def test_frozen_pool_sync_raw_first_provenance_and_repeated_runs() -> None:
     replay = _run(source=source, snapshot=snapshot, transport=transport, key="second")
     assert replay.run_created is False
     assert len(transport.requests) == 3
+
+
+@pytest.mark.django_db(transaction=True)
+def test_cik_change_during_fetch_rejects_wrong_filing_ownership() -> None:
+    company, source, snapshot = _setup()
+    actor = User.objects.create_user(email="sec-reviewer@example.org", password="fixture-only")
+
+    class CikChangingTransport(FixtureTransport):
+        def send(self, request: TransportRequest) -> TransportResponse:
+            response = super().send(request)
+            if request.url.endswith("index.json"):
+                update_company(
+                    company=company,
+                    changes={"cik": "0000005678"},
+                    actor_user=actor,
+                    reason="Verified issuer identity correction.",
+                    request_id="sec-cik-correction",
+                )
+            return response
+
+    transport = CikChangingTransport()
+    result = _run(source=source, snapshot=snapshot, transport=transport, key="cik-drift")
+    assert Company.objects.get(pk=company.pk).cik == "0000005678"
+    assert result.sync_run.status == SyncRun.Status.PARTIAL
+    assert result.sync_run.failed_count == 1
+    assert "FilingIntegrityError" in result.sync_run.error_summary
+    assert Filing.objects.count() == 0
+    assert FilingDocument.objects.count() == 0
+    assert SourceEvidence.objects.count() == 0
+    assert RawDataRecord.objects.count() == 2
+    assert RawDataObservation.objects.filter(sync_run=result.sync_run).count() == 2
+    assert all(
+        "0000001234" in request.url or "/1234/" in request.url for request in transport.requests
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_missing_primary_retries_directory_then_recovers_without_duplicates() -> None:
+    _, source, snapshot = _setup()
+    first = _run(source=source, snapshot=snapshot, transport=FixtureTransport(), key="initial")
+    assert first.sync_run.status == SyncRun.Status.SUCCEEDED
+    filing = Filing.objects.get()
+    # Model-only fixture damage simulates an incomplete persisted directory record.
+    FilingDocument.objects.filter(filing=filing, filename=filing.primary_document).delete()
+    assert list(filing.documents.values_list("filename", flat=True)) == ["exhibit.htm"]
+
+    failed_transport = FixtureTransport(broken_index=True)
+    failed = _run(source=source, snapshot=snapshot, transport=failed_transport, key="retry-bad")
+    assert failed.sync_run.status == SyncRun.Status.PARTIAL
+    assert failed.sync_run.failed_count == 1
+    assert failed.sync_run.fetched_count == 2
+    assert len(failed_transport.requests) == 2
+    assert list(filing.documents.values_list("filename", flat=True)) == ["exhibit.htm"]
+
+    recovered_transport = FixtureTransport()
+    recovered = _run(source=source, snapshot=snapshot, transport=recovered_transport, key="recover")
+    assert recovered.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert recovered.sync_run.fetched_count == 2
+    assert recovered.sync_run.created_count == 1
+    assert Filing.objects.count() == 1
+    assert FilingDocument.objects.count() == 2
+    primary = FilingDocument.objects.get(filing=filing, filename=filing.primary_document)
+    assert primary.source_evidence is not None
+    assert primary.source_evidence.sync_run_id == recovered.sync_run.pk
+    assert RawDataObservation.objects.filter(
+        sync_run=recovered.sync_run, raw_data_record=primary.source_evidence.raw_data_record
+    ).exists()
+    assert FilingDocument.objects.filter(filing=filing, filename="exhibit.htm").count() == 1
+
+    completed_transport = FixtureTransport()
+    complete = _run(source=source, snapshot=snapshot, transport=completed_transport, key="done")
+    assert complete.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert complete.sync_run.fetched_count == 1
+    assert len(completed_transport.requests) == 1
+    assert FilingDocument.objects.count() == 2
 
 
 @pytest.mark.django_db(transaction=True)

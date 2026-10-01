@@ -13,6 +13,7 @@ from audit.services import (
     resolve_source_evidence_reference,
 )
 from companies.models import Company
+from companies.services import normalize_cik
 from filings.models import Filing, FilingDocument
 from filings.parsing import PARSER_VERSION, DocumentMetadata, FilingMetadata
 
@@ -35,14 +36,40 @@ def filing_is_complete(*, metadata: FilingMetadata, company_id: object) -> bool:
     if filing is None:
         return False
     _verify_filing(filing=filing, metadata=metadata, company_id=company_id)
-    if filing.source_evidence_id is None:
+    filing_evidence = filing.source_evidence
+    if filing_evidence is None:
         raise FilingIntegrityError("Existing Filing is missing its source evidence.")
-    return FilingDocument.objects.filter(filing=filing).exists()
+    resolve_source_evidence_reference(
+        source_evidence=filing_evidence,
+        sync_run=None,
+        target_type=DomainTargetType.FILING,
+        target_id=filing.pk,
+    )
+    primary = (
+        FilingDocument.objects.filter(filing=filing, filename=filing.primary_document)
+        .select_related("source_evidence")
+        .first()
+    )
+    if primary is None:
+        return False
+    primary_evidence = primary.source_evidence
+    if primary.url != filing.filing_url or primary_evidence is None:
+        raise FilingIntegrityError(
+            "Existing primary FilingDocument metadata or evidence is invalid."
+        )
+    resolve_source_evidence_reference(
+        source_evidence=primary_evidence,
+        sync_run=None,
+        target_type=DomainTargetType.FILING_DOCUMENT,
+        target_id=primary.pk,
+    )
+    return True
 
 
 def record_filing(
     *,
     company: Company,
+    requested_cik: str,
     metadata: FilingMetadata,
     documents: tuple[DocumentMetadata, ...],
     submissions_raw: RawDataRecord,
@@ -51,10 +78,12 @@ def record_filing(
 ) -> FilingWriteResult:
     """Write one accession atomically after both SEC metadata responses were observed."""
 
+    if not isinstance(requested_cik, str) or normalize_cik(requested_cik) != requested_cik:
+        raise FilingIntegrityError("Requested SEC CIK is not canonical.")
     with transaction.atomic():
-        current_company = Company.objects.get(pk=company.pk)
-        if not current_company.cik:
-            raise FilingIntegrityError("Filing Company has no persisted CIK.")
+        current_company = Company.objects.select_for_update().get(pk=company.pk)
+        if current_company.cik != requested_cik:
+            raise FilingIntegrityError("Company CIK changed after the SEC request.")
         if not documents or metadata.primary_document not in {item.filename for item in documents}:
             raise FilingIntegrityError("Filing has no verified primary document.")
         defaults = {
