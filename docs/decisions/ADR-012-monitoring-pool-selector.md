@@ -696,8 +696,10 @@ Performance contract：
    ticker、provider symbol 或 bulk request。属于 4.2F。
 2. `OPEN DECISION`：scheduled command 在美东午夜附近如何确定 `as_of`。selector 本身只接受
    显式 date，调用方时钟策略必须在 4.2D-1 integration 中固定并测试。
-3. `DEFERRED`：Stage 5 将 active WatchlistItem 并入 universe 时，如何版本化 mixed-source
-   selector，且不破坏 4.2 caller contract。
+3. `RESOLVED BY ADR-023`（2026-10-02）：Stage 5 将 active WatchlistItem 并入 universe 时，
+   如何版本化 mixed-source selector，且不破坏 4.2 caller contract。ADR-023 冻结 v2
+   explicit watchlist input、listing basis / marker、独立 hash contract、v1 字节级兼容与
+   resolver 版本分派。
 4. `DEFERRED`：snapshot/member retention、archive 与 capacity policy，按数据保留决策阶段处理。
 5. `DEFERRED`：per-Company manual include/exclude；没有已批准 model 前不得实现。
 

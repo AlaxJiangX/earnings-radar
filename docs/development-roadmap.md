@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；Stage 5.1 Watchlist / Monitoring-Pool v2 contract 已由 ADR-023 冻结（2026-10-02，评审基线 `3795359`），实现尚未开始；自选股与个人页面（阶段 5）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -732,15 +732,37 @@ Live gate（未满足前不得进入 production ingestion）：
 
 #### 5.1 Watchlist 与监控池
 
-交付：WatchlistItem、普通/重点、自选开关及监控状态重算。
+状态：`CONTRACT FROZEN / NOT IMPLEMENTED`。权威契约见
+`docs/decisions/ADR-023-watchlist-monitoring-pool-contract.md`。
+
+交付：WatchlistItem、普通/重点、自选开关、软删除 / reactivation、`(user, company)`
+唯一、跨用户隔离、Company 监控状态重算、Monitoring-Pool v2 selector、v1 字节级兼容与
+Provider basis marker 兼容。
+
+Stage 5.1 拆成两个可独立审查的切片：
+
+- **5.1A Watchlist Domain & Monitoring Status Recompute**：`watchlists` app + migration、
+  add / remove / priority / alerts service、AuditRecord `watchlist_item` target、
+  `companies.services` 显式 facts 重算原语、`watchlists -> indexes.selectors` 只读重算、
+  v2 selector / resolver / persistence contract；
+- **5.1B Monitoring-Pool v2 Composition & Provider Compatibility**：earnings 命令 / 编排层
+  只读调用 watchlists selector、把 v2 contract 写入 SyncRun scope、reference / Alpha
+  Vantage / candidate matching 容忍 marker、skipped-member diagnostics、retry / replay
+  不重选 pool。该切片以存在或同时实现 calendar command / orchestration caller 为前置；
+  在此之前 v2 snapshot 只允许测试使用。
 
 验收标准：
 
-- 用户可添加、移除并改变优先级；
+- 用户可添加、移除、改变优先级并独立开关 alerts；
 - 用户只能操作自己的条目；
-- 同一公司重复添加不重复；
-- 公司在任一指数或任一有效自选股中即继续监控；
-- 全部退出后停止未来普通同步但历史不删除。
+- 同一公司重复添加不重复；active 重加幂等 no-op；inactive 重加复用原行并保留原级别；
+- 公司在任一启用指数或任一有效自选股中即继续监控，按 Company 去重；
+- 全部退出后停止未来普通同步但历史不删除；历史自选 as-of 重建不在 MVP 承诺内；
+- remove / reactivation 在同一事务重算 Company 状态；priority / alerts 不改变 member set；
+- v1 selector basis / hash 字节级回归通过；v2 输入去重 / 排序 / 未知 Company / marker /
+  listing 变化 / snapshot 复用测试通过；
+- snapshot、basis、SyncRun scope 不含 user_id、email、item id、priority 或 alerts；
+- Provider 消费 v2 marker 时不 fail 整轮，并产生可观测跳过诊断。
 
 #### 5.2 仪表盘和自选股页面
 
@@ -929,8 +951,13 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
 | release filing 证据清单、复核展示和时限 | metadata-only exhibit allowlist 已由 ADR-021 关闭为 `EX-99.1` / `EX-99`；REVIEW_REQUIRED 展示范围与复核时限仍待确认 |
 | 来源冲突与人工锁定策略 | 4.2 third-party calendar 权限与 append-only manual decision authority 已由 ADR-010 冻结；IR / manual / SEC filing state / third-party calendar 的 4.5B 字段级 authority 已由 ADR-022 冻结；SEC Filing 不推进 lifecycle；Company 主数据仍按 2.3 |
+| `pending_identity` 判定事实 | 5.1A 实现前（ADR-023 §13 PD-1） |
+| US-listing canonical 判据 | 5.1A 前（ADR-023 §13 PD-2）；5.1A 只强制存在有效 SecurityListing |
+| watchlist 数量上限与滥用防护 | 8.4 公开注册前（ADR-023 §13 PD-3） |
+| 移除自选时待发送通知的处理 | 6.1 / 6.2（ADR-023 §13 PD-4） |
+| 零指数 / 仅自选模式 | MVP 不实现；需要时先 supersede ADR-023 §13 PD-5，并迁移 `enabled_index_codes` 非空约束 |
 | 提前一天的时区/DST 语义 | 6.1 前 |
-| 原始/通知/审计数据保留 | 8.1 前 |
+| 原始/通知/审计数据保留、账号删除与 watchlist 匿名化 | 8.1 前（ADR-023 §13 PD-6） |
 | 新鲜度与 alpha/beta 门槛的后续调整 | 仅在 alpha 实测支持时修订 ADR-004 |
 | 生产平台及 Cron 能力 | 8.1 前 |
 
