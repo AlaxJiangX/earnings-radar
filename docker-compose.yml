@@ -33,6 +33,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-earnings_radar}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-password}
       POSTGRES_HOST: db
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-}
+      SEC_MAX_REQUESTS_PER_SECOND: ${SEC_MAX_REQUESTS_PER_SECOND:-4}
       POSTGRES_PORT: 5432
     depends_on:
       db:

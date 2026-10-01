@@ -91,6 +91,7 @@ INSTALLED_APPS = [
     "companies.apps.CompaniesConfig",
     "indexes.apps.IndexesConfig",
     "earnings.apps.EarningsConfig",
+    "filings.apps.FilingsConfig",
 ]
 
 MIDDLEWARE = [
@@ -157,6 +158,9 @@ RAW_DATA_MAX_PAYLOAD_BYTES = env_positive_int(
     default=RAW_DATA_PAYLOAD_DB_LIMIT_BYTES,
     maximum=RAW_DATA_PAYLOAD_DB_LIMIT_BYTES,
 )
+
+SEC_USER_AGENT = os.getenv("SEC_USER_AGENT", "").strip()
+SEC_MAX_REQUESTS_PER_SECOND = env_positive_int("SEC_MAX_REQUESTS_PER_SECOND", default=4, maximum=9)
 
 EARNINGS_CALENDAR_STALE_AFTER_SECONDS = env_positive_int(
     "EARNINGS_CALENDAR_STALE_AFTER_SECONDS",

@@ -22,7 +22,7 @@ MVP 只接入支撑以下能力的数据：公司/CIK/证券身份、四个基�
 | 能力 | 首选来源类型 | 关键输入 | 标准化输出 | 选择状态 |
 |---|---|---|---|---|
 | 公司、CIK | SEC 官方数据 | CIK、发行人名称、ticker 映射 | Company、SecurityListing 识别证据 | SEC 为官方基线；具体 endpoint 待确认 |
-| SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument、FilingEarningsLink 候选 | 官方来源；访问策略待实现前核对 |
+| SEC 文件 | SEC EDGAR | accession number、form、accepted_at、period、documents | Filing、FilingDocument；FilingEarningsLink 留待 4.5 | 官方公开 submissions 与目录 metadata；4.4 已实现，真实访问 smoke 待执行 |
 | 财报日历（canonical） | 合法第三方 API | 预计日期、时段、财年/期间、source event identity（Provider-native、ADR-015 v1 或 ADR-020 v2） | EarningsCalendarObservation → reconciliation → 预计安排（ADR-010 / ADR-015 / ADR-020） | **AV v2 candidate-entry 技术契约与个人用途许可已 PASS（ADR-020）；implementation 已实现、验证并 merge（PR #51）；公开 / 多用户 / 商业 canonical 供应商仍待产品确认** |
 | 财报日历（Mode A reference） | Alpha Vantage Free `EARNINGS_CALENDAR` | symbol、预计日期、时段及原始响应 | 只读 reference rows；不进入 canonical 流水线（ADR-018） | **个人、私有、单用户、非商业用途的许可 gate PASS（ADR-019）** |
 | IR 官方确认 | 公司 IR 页面或有限 IR Provider | 正式日期、电话会、新闻稿链接 | 确认状态、发布日期、来源证据 | 首批公司清单与抓取方式待确认 |
@@ -40,7 +40,7 @@ Vantage Free 个人私有 Mode A reference 用途。该例外不授予公开展�
 
 | 能力 | 候选项 | 当前结论 |
 |---|---|---|
-| SEC/CIK/Filings | [SEC EDGAR API 概览](https://www.sec.gov/files/edgar/filer-information/api-overview.pdf)、SEC 官方 submissions/filing 数据 | 官方候选；仍需人工核对访问政策、User-Agent、限速、缓存和再展示要求 |
+| SEC/CIK/Filings | [SEC EDGAR API](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)、[SEC 自动访问政策](https://www.sec.gov/search-filings/edgar-search-assistance/accessing-edgar-data)、SEC 官方 submissions/filing 数据 | 公共 API 不要求 API key；自动访问使用可识别 User-Agent 与联系邮箱；SEC 公平访问上限为跨机器合计 10 requests/s，4.4 配置为每进程最多 9 requests/s，默认 4；部署时必须协调所有机器的总速率 |
 | S&P 500 / Dow 30 | [S&P DJI Index Announcements](https://www.spglobal.com/spdji/en/index-announcements/)、获许可供应商、受控人工导入 | 候选；成分明细、历史、自动化访问与公开再展示许可均未确认 |
 | Nasdaq 100 | Nasdaq Global Index Watch/官方公告、获许可供应商、受控人工导入 | 候选；GIW/API 权限、下载自动化、缓存和再展示许可均未确认 |
 | Russell 2000 | [FTSE Russell Index Notices](https://www.lseg.com/en/ftse-russell/index-resources/notices)、[Russell 2000 页面](https://www.lseg.com/en/ftse-russell/indices/russell-2000-index)、获许可供应商、受控人工导入 | 候选；部分完整公告可能需要订阅，成分数据使用与再分发许可未确认 |
@@ -121,9 +121,9 @@ Provider 只返回安全的结构化原始结果，不直接创建 SyncRun、Raw
 
 ProviderResult 包含 provider key/version、capability、scope、请求开始时间、安全来源 URL、HTTP status、content type、原始 bytes、抓取时间、安全请求身份、稳定指纹和安全 metadata。ProviderRequest/Result 不含 DataSource、SyncRun 或任何领域模型。
 
-HTTP 基础层使用必须注入的 transport 协议，当前不提供真实网络实现，也没有新增 HTTP 依赖。连接和读取超时是两个显式值；User-Agent 必填；响应上限不超过 1 MiB；URL userinfo 被拒绝，fragment 被丢弃，敏感 query/header 值在持久结构和指纹中统一脱敏，安全分页条件继续参与指纹。
+HTTP 基础层使用必须注入的 transport 协议；Stage 4.4 为 SEC 公共端点增加无凭据、仅限官方主机及路径的 HTTPS transport，未新增 HTTP 依赖。连接和读取超时是两个显式值；User-Agent 必填；响应上限不超过 1 MiB；URL userinfo 被拒绝，fragment 被丢弃，敏感 query/header 值在持久结构和指纹中统一脱敏，安全分页条件继续参与指纹。
 
-错误映射为：timeout/408 → `ProviderTimeoutError`，429 → `ProviderRateLimitError`，5xx/临时传输失败 → `ProviderTemporaryError`，401/403 → `ProviderAuthenticationError`，其他非成功状态 → `ProviderPermanentError`，无效数据 → `ProviderValidationError`，超限 → `ProviderResponseTooLargeError`。只有 timeout、rate limit 和 temporary 可以有限重试；retry-after 只保留解析后的非负秒数。
+通用错误映射为：timeout/408 → `ProviderTimeoutError`，429 → `ProviderRateLimitError`，5xx/临时传输失败 → `ProviderTemporaryError`，401/403 → `ProviderAuthenticationError`，其他非成功状态 → `ProviderPermanentError`，无效数据 → `ProviderValidationError`，超限 → `ProviderResponseTooLargeError`。SEC 公共端点的 403 作为临时访问限制按 `ProviderRateLimitError` 有限重试；401 仍按认证失败处理。只有 timeout、rate limit 和 temporary 可以有限重试；retry-after 只保留解析后的非负秒数。
 
 测试 Fake 覆盖成功、空响应、超时、429、500、404、认证失败、无效 JSON、超限、敏感 URL、敏感响应和含模拟 Token 的传输错误。全部公司和内容均为人工虚构；普通 CI 阻断真实 HTTP，不使用真实 Key、用户数据、SEC 大型全文或第三方数据集。
 

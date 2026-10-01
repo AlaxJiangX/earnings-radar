@@ -69,6 +69,7 @@ class HttpClientConfig:
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     user_agent: str = DEFAULT_PROVIDER_USER_AGENT
     max_response_bytes: int = RAW_DATA_PAYLOAD_DB_LIMIT_BYTES
+    forbidden_as_rate_limit: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -95,6 +96,8 @@ class HttpClientConfig:
         except AuditSecurityError as error:
             raise ValueError(str(error)) from None
         object.__setattr__(self, "user_agent", normalized_user_agent)
+        if not isinstance(self.forbidden_as_rate_limit, bool):
+            raise ValueError("forbidden_as_rate_limit must be a boolean.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,7 +260,7 @@ class ProviderHttpClient:
                 limit_bytes=self.config.max_response_bytes,
                 observed_bytes=observed_size,
             )
-        _raise_for_status(response)
+        _raise_for_status(response, forbidden_as_rate_limit=self.config.forbidden_as_rate_limit)
         try:
             ensure_payload_has_no_credentials(response.body)
         except AuditSecurityError:
@@ -291,10 +294,18 @@ class ProviderHttpClient:
         return min(exponential, self.config.retry_policy.max_delay_seconds)
 
 
-def _raise_for_status(response: TransportResponse) -> None:
+def _raise_for_status(
+    response: TransportResponse, *, forbidden_as_rate_limit: bool = False
+) -> None:
     status = response.status_code
     if 200 <= status <= 299:
         return
+    if status == 403 and forbidden_as_rate_limit:
+        raise ProviderRateLimitError(
+            "Provider temporarily restricted access with HTTP 403.",
+            http_status=status,
+            retry_after_seconds=_parse_retry_after(response.headers),
+        )
     if status in {401, 403}:
         raise ProviderAuthenticationError(
             f"Provider authentication failed with HTTP {status}.",
