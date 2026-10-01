@@ -15,10 +15,14 @@ from audit.models import DataSource, SyncRun
 from earnings.models import MonitoringPoolSnapshot
 from earnings.services.monitoring_pool import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
-    resolve_monitoring_pool_snapshot_contract,
     select_monitoring_pool,
 )
-from filings.sync import SEC_JOB_TYPE, sync_sec_filings
+from earnings.services.sec_filing_sync import (
+    SecFilingMatchingSummary,
+    execute_sec_filing_sync,
+    replay_filing_earnings_matching,
+)
+from filings.sync import SEC_JOB_TYPE
 from indexes.models import MarketIndex
 from providers.sec_edgar import SecEdgarProvider
 
@@ -32,6 +36,8 @@ class Command(BaseCommand):
         parser.add_argument("--snapshot-id", type=UUID)
         parser.add_argument("--retry-run", type=UUID)
         parser.add_argument("--idempotency-key")
+        parser.add_argument("--match-only", action="store_true")
+        parser.add_argument("--sync-run", type=UUID)
 
     def handle(self, *args: object, **options: object) -> None:
         del args
@@ -41,17 +47,27 @@ class Command(BaseCommand):
         except DataSource.DoesNotExist:
             raise CommandError("SEC DataSource does not exist.") from None
         try:
+            match_only = cast(bool, options["match_only"])
+            sync_run_id = cast(UUID | None, options["sync_run"])
+            if match_only:
+                replay_run_id = self._replay_scope(options, sync_run_id=sync_run_id)
+                replay = replay_filing_earnings_matching(
+                    source=source,
+                    sync_run_id=replay_run_id,
+                )
+                self.stdout.write(
+                    self._matching_line(replay.sync_run, replay.matching, replay=True)
+                )
+                if replay.matching.matching_failures:
+                    raise CommandError("SEC filing matching replay ended with failures.")
+                return
+            if sync_run_id is not None:
+                raise CommandError("--sync-run requires --match-only.")
             provider = SecEdgarProvider(
                 user_agent=settings.SEC_USER_AGENT,
                 max_requests_per_second=settings.SEC_MAX_REQUESTS_PER_SECOND,
             )
             snapshot = self._resolve_snapshot(options)
-            pool = resolve_monitoring_pool_snapshot_contract(
-                as_of=snapshot.as_of_date,
-                selector_version=snapshot.selector_version,
-                pool_hash=snapshot.pool_hash,
-            )
-            company_ids = tuple(member.company_id for member in pool.members)
             now = timezone.now().astimezone(UTC)
             bucket = now.replace(minute=(now.minute // 10) * 10, second=0, microsecond=0)
             retry_id = cast(UUID | None, options["retry_run"])
@@ -63,24 +79,54 @@ class Command(BaseCommand):
                 else f"sec-retry-v1:{retry_id}:{bucket.isoformat()}"
             )
             key = cast(str | None, options["idempotency_key"]) or default_key
-            result = sync_sec_filings(
+            orchestration = execute_sec_filing_sync(
                 source=source,
                 provider=provider,
-                company_ids=company_ids,
-                pool_as_of=snapshot.as_of_date,
-                pool_selector_version=snapshot.selector_version,
-                pool_hash=snapshot.pool_hash,
+                snapshot=snapshot,
                 idempotency_key=key,
             )
         except (ValueError, RuntimeError) as error:
             raise CommandError(str(error)) from None
-        run = result.sync_run
+        run = orchestration.sec_sync_result.sync_run
         self.stdout.write(
             f"SEC run {run.pk}: {run.status}; fetched={run.fetched_count}; "
             f"created={run.created_count}; skipped={run.skipped_count}; failed={run.failed_count}"
         )
+        self.stdout.write(self._matching_line(run, orchestration.matching, replay=False))
         if run.status != SyncRun.Status.SUCCEEDED:
             raise CommandError(f"SEC synchronization ended {run.status}.")
+
+    @staticmethod
+    def _matching_line(
+        run: SyncRun,
+        summary: SecFilingMatchingSummary,
+        *,
+        replay: bool,
+    ) -> str:
+        prefix = f"filing matching replay run={run.pk}" if replay else "matching"
+        return (
+            f"{prefix} evaluated={summary.filings_evaluated}; "
+            f"release={summary.matched_release}; periodic={summary.matched_periodic}; "
+            f"review={summary.review_required}; no_match={summary.no_match}; "
+            f"manual={summary.manual_authority}; failures={summary.matching_failures}"
+        )
+
+    @staticmethod
+    def _replay_scope(
+        options: dict[str, object],
+        *,
+        sync_run_id: UUID | None,
+    ) -> UUID:
+        if sync_run_id is None:
+            raise CommandError("--match-only requires --sync-run.")
+        if (
+            options["snapshot_id"] is not None
+            or options["retry_run"] is not None
+            or options["as_of"] is not None
+            or options["idempotency_key"] is not None
+        ):
+            raise CommandError("--match-only accepts only --source-key and --sync-run.")
+        return sync_run_id
 
     def _resolve_snapshot(self, options: dict[str, object]) -> MonitoringPoolSnapshot:
         retry_id = cast(UUID | None, options["retry_run"])

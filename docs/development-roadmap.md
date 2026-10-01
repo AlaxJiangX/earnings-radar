@@ -650,6 +650,31 @@ schema / migration。
 边界：只修依赖方向；`SEC Filing -> evaluate_filing_earnings_link` matching orchestration
 尚未实现，下一阶段为 `4.5A-I2 — SEC Filing Matching Orchestration`。
 
+#### 4.5A-I2 SEC Filing Matching Orchestration
+
+状态：`IMPLEMENTED / VERIFIED / PENDING MERGE`。
+
+交付：`sync_sec_filings` live 路径经 earnings orchestration 调用 `filings.sync`，在同一 SEC
+SyncRun finalization 之前，对本次 `record_filing(...)` 成功的 Filing 自动执行
+`evaluate_filing_earnings_link`；`--match-only --sync-run <id>` 提供 persisted-only matching
+replay。
+
+验收标准：
+
+- live SEC sync 自动触发 4.5A matching，使用同一个 `filings.sec_edgar` SyncRun，且 matching
+  在 run terminal finalization 之前完成；
+- business `review_required` / `no_match` / `manual_authority` 不增加 `failed_count`，run 可
+  SUCCEEDED；只有 matching technical failure 计入 `failed_count` 并使 run partial/failed，
+  且不阻止其他 Filing；
+- hook 只针对本次 `record_filing(...)` 成功的 Filing，不针对 `filing_is_complete(...)` 直接
+  skip 的历史 Filing；
+- match-only replay 不访问网络、不新建 SyncRun、不重选 monitoring pool；重复 replay 不产生
+  重复 FilingEarningsDecision / FilingEarningsLink / DataChange / AuditRecord；
+- `filings` 不 import `earnings`，I1 boundary test 继续通过；
+- 无 schema / migration。
+
+边界：不改变 ADR-021 matching 规则、4.5A 主阶段状态或 4.5B 状态。
+
 #### 4.5B IR Confirmation
 
 状态：`CONTRACT FROZEN / FIXTURE-FIRST ONLY / LIVE BLOCKED`。权威契约见 ADR-022；本阶段尚未实现。

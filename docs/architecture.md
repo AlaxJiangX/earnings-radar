@@ -313,7 +313,24 @@ earnings management/orchestration layer
 
 `filings` MUST NOT import `earnings`，也不得自行解析 monitoring pool 或读取
 `MonitoringPoolSnapshot`；SEC sync 只消费调用方明确授权、保留 canonical 顺序的 Company ID
-集合与 frozen scope metadata。Filing → Earnings matching 的自动编排（4.5A-I2）尚未实现。
+集合与 frozen scope metadata。
+
+Filing → Earnings matching 的自动编排位于 earnings SEC orchestration：
+
+```text
+earnings SEC orchestration
+  -> filings SEC sync
+  -> persisted Filing callback (same SEC SyncRun, run still RUNNING)
+  -> evaluate_filing_earnings_link
+  -> FilingEarningsDecision / FilingEarningsLink
+  -> run finalization
+```
+
+matching 业务结果（matched_release_filing / matched_periodic_filing /
+review_required / no_match / manual_authority）不增加 run failed_count；只有 technical
+failure 计入 failed_count 并使 run partial/failed，且不阻止其他 Filing。
+`sync_sec_filings --match-only --sync-run <id>` 提供 persisted-only replay：零网络、不新建
+SyncRun、不重选 monitoring pool。
 
 #### 4.6.2 4.5A 数据流
 

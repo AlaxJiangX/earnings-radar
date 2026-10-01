@@ -231,6 +231,15 @@ from earnings.services.reference_calendar_sync import (
     ReferenceSyncResult,
     execute_reference_calendar_sync,
 )
+from earnings.services.sec_filing_sync import (
+    SecFilingMatchingError,
+    SecFilingMatchingSummary,
+    SecFilingOrchestrationResult,
+    SecFilingReplayError,
+    SecFilingReplayResult,
+    execute_sec_filing_sync,
+    replay_filing_earnings_matching,
+)
 
 __all__ = [
     "ALPHA_VANTAGE_COMPANY_MATCHER_VERSION_V2",
@@ -318,6 +327,11 @@ __all__ = [
     "FilingEarningsReviewIntegrityError",
     "FilingEarningsReviewResult",
     "FilingEarningsServiceError",
+    "SecFilingMatchingError",
+    "SecFilingMatchingSummary",
+    "SecFilingOrchestrationResult",
+    "SecFilingReplayError",
+    "SecFilingReplayResult",
     "EarningsPromotionCollision",
     "EarningsPromotionIntegrityError",
     "EarningsPromotionServiceError",
@@ -403,6 +417,7 @@ __all__ = [
     "resolve_alpha_vantage_provider_symbol",
     "execute_reference_calendar_sync",
     "evaluate_filing_earnings_link",
+    "execute_sec_filing_sync",
     "filing_relation_type_for_form",
     "select_monitoring_pool",
     "retire_stale_earnings_calendar_replay_run",
@@ -412,6 +427,7 @@ __all__ = [
     "resolve_earnings_reconciliation_manually",
     "reinstate_earnings_event",
     "reject_filing_earnings_link",
+    "replay_filing_earnings_matching",
     "transition_earnings_status",
     "update_earnings_schedule",
     "verify_alpha_vantage_canonical_replay",
