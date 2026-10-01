@@ -8,13 +8,14 @@
   `77932b698b9ded8baaeb90be14f0a8b2d43b1738`；`origin/main`
   `ead1e18fce7fd667b039aff482fe63907957e3b6`；原始 workspace 的 `M Dockerfile` 未触碰
 - 影响阶段：4.2F canonical-primary 保持 BLOCKED；AV v2 candidate-entry adaptation 由
-  ADR-020 冻结，implementation 仍待许可澄清
+  ADR-020 冻结；后续书面澄清已解决个人用途许可，公开 / 多用户 / 商业仍待另行协议
 
 > 修订说明（ADR-020）：ADR-020 在严格个人、私有、单用户、非商业的 candidate-only
 > adaptation 范围内重新评估了本 ADR 的部分拒绝理由。AV v2 source identity、frozen
 > snapshot symbol matching、forward-only window 与 candidate-only promotion firewall
 > 已由 ADR-020 冻结；本 ADR 对 canonical-primary、公开、多用户、商业与再分发的拒绝
-> 保持不变，许可澄清前的 implementation 仍保持 BLOCKED。
+> 保持不变；后续书面澄清已解决同一 strictly personal/private/single-user/non-commercial
+> 范围内的 normalized / candidate 许可，公开 / 多用户 / 商业仍保持 BLOCKED。
 
 ## 1. 范围与问题
 
