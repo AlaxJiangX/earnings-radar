@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 import pytest
@@ -7,13 +8,16 @@ import pytest
 import companies.services as company_services
 from accounts.models import User
 from audit.models import AuditRecord, DataChange, SyncRun
-from companies.models import Company
+from companies.models import Company, SecurityListing
+from companies.selectors import company_identity_pending_as_of
 from companies.services import (
     MONITORING_STATUS_RULE_VERSION,
     CompanyServiceError,
     recalculate_company_monitoring_status,
     update_company,
 )
+
+AS_OF = date(2026, 10, 18)
 
 
 @pytest.fixture
@@ -65,6 +69,49 @@ def test_recompute_monitoring_status_truth_table(
     assert {change.change.rule_version for change in result.data_changes if change.change} == {
         MONITORING_STATUS_RULE_VERSION
     }
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("cik", "listing_effective_from", "listing_effective_to", "expected"),
+    (
+        ("0000000001", None, None, False),
+        ("0000000001", AS_OF, None, False),
+        (None, AS_OF, None, False),
+        (None, date(2026, 1, 1), AS_OF, True),
+        (None, date(2026, 10, 19), None, True),
+        (None, None, None, True),
+    ),
+)
+def test_company_identity_pending_as_of_truth_table(
+    cik: str | None,
+    listing_effective_from: date | None,
+    listing_effective_to: date | None,
+    expected: bool,
+) -> None:
+    company = Company.objects.create(
+        legal_name=f"Identity {cik} {listing_effective_from}",
+        display_name=f"Identity {cik} {listing_effective_from}",
+        cik=cik,
+    )
+    if listing_effective_from is not None:
+        SecurityListing.objects.create(
+            company=company,
+            ticker=f"I{uuid.uuid4().hex[:5].upper()}",
+            exchange="NYSE",
+            security_name="Identity fixture",
+            security_type="common_stock",
+            effective_from=listing_effective_from,
+            effective_to=listing_effective_to,
+        )
+
+    assert company_identity_pending_as_of(company_id=company.pk, as_of=AS_OF) is expected
+
+
+@pytest.mark.django_db
+def test_company_identity_pending_as_of_rejects_missing_company() -> None:
+    with pytest.raises(Company.DoesNotExist):
+        company_identity_pending_as_of(company_id=uuid.uuid4(), as_of=AS_OF)
 
 
 @pytest.mark.django_db

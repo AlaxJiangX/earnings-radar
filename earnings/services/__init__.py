@@ -250,6 +250,13 @@ from earnings.services.monitoring_pool import (
     resolve_monitoring_pool_snapshot_contract,
     select_monitoring_pool,
 )
+from earnings.services.monitoring_pool_composition import (
+    MONITORING_POOL_COMPOSITION_REASON,
+    CurrentMonitoringPoolComposition,
+    MonitoringCompositionRecomputeResult,
+    compose_current_monitoring_pool,
+    recompute_monitoring_pool_composition,
+)
 from earnings.services.promotion import (
     EARNINGS_CANDIDATE_PROMOTION_RULE_VERSION,
     PROMOTION_IDENTITY_FIELDS,
@@ -323,6 +330,7 @@ __all__ = [
     "MATCH_RULE_VERSION",
     "EARNINGS_MONITORING_POOL_SELECTOR_VERSION",
     "EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2",
+    "MONITORING_POOL_COMPOSITION_REASON",
     "EARNINGS_INCOMPLETE_CANDIDATE_IDENTITY_VERSION_V2",
     "EARNINGS_SOURCE_EVENT_IDENTITY_VERSION_V2",
     "REFERENCE_CALENDAR_JOB_TYPE",
@@ -441,6 +449,8 @@ __all__ = [
     "MonitoringPoolSelectionResult",
     "MonitoringPoolSelectorError",
     "MonitoringPoolSnapshotReference",
+    "CurrentMonitoringPoolComposition",
+    "MonitoringCompositionRecomputeResult",
     "PoolMemberDiagnostic",
     "ReferenceCalendarSyncError",
     "ReferenceCalendarView",
@@ -489,6 +499,8 @@ __all__ = [
     "filing_relation_type_for_form",
     "is_watchlist_marker_basis",
     "monitoring_pool_member_diagnostics",
+    "compose_current_monitoring_pool",
+    "recompute_monitoring_pool_composition",
     "select_monitoring_pool",
     "retire_stale_earnings_calendar_replay_run",
     "record_earnings_reconciliation_decision",

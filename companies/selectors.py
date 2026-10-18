@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
-from django.db.models import Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from companies.models import Company, SecurityListing
 
@@ -64,6 +64,34 @@ def company_listings(
     for listing in rows:
         grouped.setdefault(listing.company_id, []).append(listing)
     return {company_id: tuple(items) for company_id, items in grouped.items()}
+
+
+def company_identity_pending_as_of(
+    *,
+    company_id: UUID,
+    as_of: date,
+) -> bool:
+    """Return the canonical PD-1 identity-pending fact for a Company as of a date."""
+
+    if isinstance(as_of, datetime) or not isinstance(as_of, date):
+        raise ValueError("as_of must be a date.")
+    try:
+        cik, has_effective_listing = (
+            Company.objects.filter(pk=company_id)
+            .annotate(
+                has_effective_listing=Exists(
+                    SecurityListing.objects.filter(
+                        company_id=OuterRef("pk"),
+                        effective_from__lte=as_of,
+                    ).filter(Q(effective_to__isnull=True) | Q(effective_to__gt=as_of))
+                )
+            )
+            .values_list("cik", "has_effective_listing")
+            .get()
+        )
+    except Company.DoesNotExist as error:
+        raise Company.DoesNotExist("Company does not exist.") from error
+    return cik is None and not has_effective_listing
 
 
 def primary_listing(listings: tuple[SecurityListing, ...]) -> SecurityListing | None:

@@ -12,6 +12,7 @@ from django.utils import timezone
 from audit.models import AuditRecord
 from audit.services import record_user_action
 from companies.models import Company, SecurityListing
+from companies.selectors import company_identity_pending_as_of
 from companies.services import (
     CompanyMonitoringStatusResult,
     recalculate_company_monitoring_status,
@@ -49,7 +50,6 @@ def add_watchlist_item(
     user: User,
     company_id: uuid.UUID,
     as_of: date,
-    identity_pending: bool,
     reason: str,
     request_id: str,
     priority_level: str = WatchlistItem.PriorityLevel.NORMAL,
@@ -58,10 +58,6 @@ def add_watchlist_item(
     _validate_user(user)
     normalized_company_id = _require_uuid(company_id, value_name="company_id")
     normalized_as_of = _require_date(as_of)
-    normalized_identity_pending = _require_bool(
-        identity_pending,
-        value_name="identity_pending",
-    )
     normalized_priority = _normalize_priority(priority_level)
 
     with transaction.atomic():
@@ -125,7 +121,6 @@ def add_watchlist_item(
         monitoring_result = _recompute_company(
             company_id=item.company_id,
             as_of=normalized_as_of,
-            identity_pending=normalized_identity_pending,
             user=user,
             reason=reason,
             request_id=request_id,
@@ -139,7 +134,6 @@ def remove_watchlist_item(
     user: User,
     item_id: uuid.UUID,
     as_of: date,
-    identity_pending: bool,
     reason: str,
     request_id: str,
     ip_address: str | None = None,
@@ -147,10 +141,6 @@ def remove_watchlist_item(
     _validate_user(user)
     normalized_item_id = _require_uuid(item_id, value_name="item_id")
     normalized_as_of = _require_date(as_of)
-    normalized_identity_pending = _require_bool(
-        identity_pending,
-        value_name="identity_pending",
-    )
     with transaction.atomic():
         company_id = _company_id_for_item(normalized_item_id)
         company = _lock_company_for_watchlist_mutation(company_id)
@@ -177,7 +167,6 @@ def remove_watchlist_item(
         monitoring_result = _recompute_company(
             company_id=item.company_id,
             as_of=normalized_as_of,
-            identity_pending=normalized_identity_pending,
             user=user,
             reason=reason,
             request_id=request_id,
@@ -303,7 +292,6 @@ def _recompute_company(
     *,
     company_id: uuid.UUID,
     as_of: date,
-    identity_pending: bool,
     user: User,
     reason: str,
     request_id: str,
@@ -318,6 +306,10 @@ def _recompute_company(
         as_of_date=as_of,
         is_enabled=True,
     ).exists()
+    identity_pending = company_identity_pending_as_of(
+        company_id=company_id,
+        as_of=as_of,
+    )
     return recalculate_company_monitoring_status(
         company_id=company_id,
         as_of=as_of,
