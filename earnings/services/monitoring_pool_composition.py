@@ -96,27 +96,35 @@ def recompute_monitoring_pool_composition(
     if not affected_company_ids:
         return MonitoringCompositionRecomputeResult(composition, ())
 
-    active_watchlist_company_ids = set(
-        get_active_watchlist_company_ids(company_ids=affected_company_ids)
-    )
-    identity_pending_facts = company_identity_pending_facts_as_of(
-        company_ids=affected_company_ids,
-        as_of=composition.selection.as_of_date,
-    )
-    enabled_index_company_ids = set(
-        memberships_for_companies(
-            company_ids=affected_company_ids,
-            as_of_date=composition.selection.as_of_date,
-            is_enabled=True,
-        )
-        .values_list("security_listing__company_id", flat=True)
-        .distinct()
-    )
     stable_request_id = request_id or (
         f"monitoring-pool-composition:{sync_run.pk}:{composition.selection.snapshot.pk}"
     )
     results: list[CompanyMonitoringStatusResult] = []
     with transaction.atomic():
+        locked_company_ids = tuple(
+            Company.objects.select_for_update()
+            .filter(id__in=affected_company_ids)
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
+        if set(locked_company_ids) != set(affected_company_ids):
+            raise Company.DoesNotExist("One or more affected Companies do not exist.")
+        active_watchlist_company_ids = set(
+            get_active_watchlist_company_ids(company_ids=affected_company_ids)
+        )
+        identity_pending_facts = company_identity_pending_facts_as_of(
+            company_ids=affected_company_ids,
+            as_of=composition.selection.as_of_date,
+        )
+        enabled_index_company_ids = set(
+            memberships_for_companies(
+                company_ids=affected_company_ids,
+                as_of_date=composition.selection.as_of_date,
+                is_enabled=True,
+            )
+            .values_list("security_listing__company_id", flat=True)
+            .distinct()
+        )
         for company_id in affected_company_ids:
             results.append(
                 recalculate_company_monitoring_status(

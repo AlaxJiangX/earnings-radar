@@ -9,8 +9,8 @@ from datetime import date
 import pytest
 from django.db import connection
 
-from audit.models import DataChange, DataSource, SyncRun
-from audit.services import record_data_change, start_sync_run
+from audit.models import AuditRecord, DataChange, DataSource, SyncRun
+from audit.services import record_data_change, record_system_action, start_sync_run
 from companies.models import Company, SecurityListing
 from companies.services import IDENTITY_RULE_VERSION, transition_security_listing
 from earnings.models import MonitoringPoolMember, MonitoringPoolSnapshot
@@ -696,6 +696,41 @@ def test_v2_resolver_accepts_audited_system_listing_transition() -> None:
         pool_hash=result.monitoring_pool_hash,
     )
     assert resolved.snapshot.pk == result.snapshot.pk
+
+
+@pytest.mark.django_db
+def test_v2_resolver_rejects_wrong_listing_audit_action() -> None:
+    _index()
+    company = _company("wrong-listing-action")
+    listing = _listing(company, "wrong-listing-action")
+    result = _select_v2((company.pk,))
+    sync_run = _data_change_sync_run("wrong-listing-action")
+    SecurityListing.objects.filter(pk=listing.pk).update(effective_to=date(2026, 9, 1))
+    record_data_change(
+        target_type=DataChange.TargetType.SECURITY_LISTING,
+        target_id=listing.pk,
+        field_name="effective_to",
+        old_value=None,
+        new_value="2026-09-01",
+        rule_version=IDENTITY_RULE_VERSION,
+        sync_run=sync_run,
+    )
+    record_system_action(
+        sync_run=sync_run,
+        action=AuditRecord.Action.MANUAL_CORRECTION,
+        target_type=AuditRecord.TargetType.SECURITY_LISTING,
+        target_id=listing.pk,
+        before={"effective_to": None},
+        after={"effective_to": "2026-09-01"},
+        request_id="wrong-listing-action",
+    )
+
+    with pytest.raises(MonitoringPoolIntegrityError, match="incomplete or unaudited"):
+        resolve_monitoring_pool_snapshot_contract(
+            as_of=result.as_of_date,
+            selector_version=result.selector_version,
+            pool_hash=result.monitoring_pool_hash,
+        )
 
 
 @pytest.mark.django_db

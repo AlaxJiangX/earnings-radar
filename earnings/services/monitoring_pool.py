@@ -1001,15 +1001,20 @@ def _audited_listing_interval_change(
         return False
     if change.change_key != expected_key:
         return False
+    expected_action = (
+        AuditRecord.Action.MANUAL_CORRECTION
+        if change.actor_user_id is not None
+        else AuditRecord.Action.UPDATE
+    )
     for audit in audits:
         before = audit.before if isinstance(audit.before, dict) else {}
         after = audit.after if isinstance(audit.after, dict) else {}
         if (
-            audit.actor_user_id == change.actor_user_id
+            audit.action == expected_action
+            and audit.actor_user_id == change.actor_user_id
             and audit.sync_run_id == change.sync_run_id
             and (
-                audit.reason == change.reason
-                or (change.actor_user_id is None and not audit.reason)
+                audit.reason == change.reason or (change.actor_user_id is None and not audit.reason)
             )
             and before.get(change.field_name) == change.old_value
             and after.get(change.field_name) == change.new_value
