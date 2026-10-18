@@ -64,6 +64,7 @@ class AuditRecordTargetType(models.TextChoices):
         "Investor relations observation",
     )
     INVESTOR_RELATIONS_DECISION = "investor_relations_decision", "Investor relations decision"
+    WATCHLIST_ITEM = "watchlist_item", "Watchlist item"
 
 
 DOMAIN_TARGET_TYPE_VALUES = tuple(value for value, _ in DomainTargetType.choices)

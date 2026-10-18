@@ -90,6 +90,7 @@ INSTALLED_APPS = [
     "audit.apps.AuditConfig",
     "companies.apps.CompaniesConfig",
     "indexes.apps.IndexesConfig",
+    "watchlists.apps.WatchlistsConfig",
     "earnings.apps.EarningsConfig",
     "filings.apps.FilingsConfig",
 ]

@@ -234,6 +234,7 @@ from earnings.services.lifecycle import (
 )
 from earnings.services.monitoring_pool import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
     InvalidMonitoringPoolSelectorInput,
     MonitoringPoolIntegrityError,
     MonitoringPoolSelectionResult,
@@ -316,6 +317,7 @@ __all__ = [
     "CLASSIFICATION_RULE_VERSION",
     "MATCH_RULE_VERSION",
     "EARNINGS_MONITORING_POOL_SELECTOR_VERSION",
+    "EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2",
     "EARNINGS_INCOMPLETE_CANDIDATE_IDENTITY_VERSION_V2",
     "EARNINGS_SOURCE_EVENT_IDENTITY_VERSION_V2",
     "REFERENCE_CALENDAR_JOB_TYPE",
