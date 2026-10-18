@@ -941,6 +941,27 @@ def close_memberships_for_listing(
     )
 
     with transaction.atomic():
+        affected_index_ids = tuple(
+            sorted(
+                set(
+                    IndexMembership.objects.filter(
+                        security_listing=listing,
+                    ).values_list("index_id", flat=True)
+                ),
+                key=str,
+            )
+        )
+        if affected_index_ids:
+            locked_index_ids = tuple(
+                MarketIndex.objects.select_for_update()
+                .filter(id__in=affected_index_ids)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
+            if set(locked_index_ids) != set(affected_index_ids):
+                raise MembershipIntegrityConflict(
+                    "Listing membership closure references a missing MarketIndex."
+                )
         Company.objects.select_for_update().get(pk=listing.company_id)
         locked_listing = SecurityListing.objects.select_for_update().get(pk=listing.pk)
 
