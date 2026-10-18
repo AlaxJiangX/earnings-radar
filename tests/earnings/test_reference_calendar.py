@@ -21,6 +21,12 @@ from earnings.models import (
     EarningsReconciliationDecision,
 )
 from earnings.reference_calendar_parser import ReferenceParseStatus, parse_reference_calendar
+from earnings.services import reference_calendar_sync as reference_calendar_sync_module
+from earnings.services.monitoring_pool import (
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+    select_monitoring_pool,
+)
 from earnings.services.reference_calendar_projection import (
     latest_reference_calendar,
     project_reference_calendar,
@@ -139,6 +145,49 @@ def test_empty_response_is_success_with_unknown_coverage() -> None:
     assert projection.provider_coverage_end is None
 
 
+@pytest.mark.django_db(transaction=True)
+def test_v2_watchlist_marker_is_diagnostic_without_blocking_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, indexed_company = _pool()
+    marker_company = Company.objects.create(
+        legal_name="Marker Inc",
+        display_name="Marker",
+    )
+    v2_pool = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(marker_company.pk,),
+    )
+    monkeypatch.setattr(
+        reference_calendar_sync_module,
+        "select_monitoring_pool",
+        lambda **_kwargs: v2_pool,
+    )
+    provider = AlphaVantageReferenceProvider(
+        api_key="fixture-key",
+        transport=CsvTransport(HEADER + b"AAA,Alpha,2026-10-01,,,USD,pre-market\n"),
+    )
+
+    result = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+    )
+    projection = project_reference_calendar(result.sync_run.pk)
+
+    assert projection.status == "COMPLETE"
+    assert [row.company_id for row in projection.rows] == [indexed_company.pk]
+    assert projection.diagnostics.invalid_basis == 0
+    assert len(projection.diagnostics.skipped_members) == 1
+    skipped = projection.diagnostics.skipped_members[0]
+    assert skipped.company_id == marker_company.pk
+    assert skipped.reason == WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON
+    assert skipped.source == "watchlist"
+
+
 def _pool() -> tuple[DataSource, Company]:
     source = DataSource.objects.create(
         key="alpha-vantage-free",
@@ -216,6 +265,7 @@ def test_reference_sync_replay_is_read_only_and_idempotent(
     assert projection.rows[0].company_id == company.pk
     assert projection.rows[0].session == "post_market"
     assert projection.diagnostics.out_of_pool == 1
+    assert projection.diagnostics.skipped_members == ()
     assert projection.rows[0].row_key == repeated.rows[0].row_key
     assert projection.freshness == "fresh"
     assert repeated.freshness == "stale"

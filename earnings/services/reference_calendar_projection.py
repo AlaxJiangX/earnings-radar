@@ -19,7 +19,12 @@ from earnings.reference_calendar_parser import (
     ReferenceParseStatus,
     parse_reference_calendar,
 )
-from earnings.services.monitoring_pool import resolve_monitoring_pool_snapshot_contract
+from earnings.services.monitoring_pool import (
+    PoolMemberDiagnostic,
+    is_watchlist_marker_basis,
+    monitoring_pool_member_diagnostics,
+    resolve_monitoring_pool_snapshot_contract,
+)
 from providers.alpha_vantage_reference import AlphaVantageReferenceProvider
 
 REFERENCE_CALENDAR_JOB_TYPE = "earnings.calendar_reference_window"
@@ -70,6 +75,7 @@ class ReferenceDiagnostics:
     invalid_row: int = 0
     duplicate: int = 0
     invalid_basis: int = 0
+    skipped_members: tuple[PoolMemberDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +167,12 @@ def project_reference_calendar(
             run.pk,
             "FAILED",
             (),
-            ReferenceDiagnostics(),
+            ReferenceDiagnostics(
+                skipped_members=monitoring_pool_member_diagnostics(
+                    frozen.members,
+                    selector_version=frozen.snapshot.selector_version,
+                )
+            ),
             start,
             end,
             None,
@@ -213,13 +224,22 @@ def project_reference_calendar(
     if status not in {"COMPLETE", "EMPTY"}:
         freshness = "unavailable"
     rows: tuple[ReferenceProjectionRow, ...] = ()
-    diagnostics = ReferenceDiagnostics(invalid_row=parsed.invalid_row_count)
+    skipped_members = monitoring_pool_member_diagnostics(
+        frozen.members,
+        selector_version=frozen.snapshot.selector_version,
+    )
+    diagnostics = ReferenceDiagnostics(
+        invalid_row=parsed.invalid_row_count,
+        skipped_members=skipped_members,
+    )
     if status == "COMPLETE":
         rows, diagnostics = _match_rows(
             parsed.rows,
             frozen.members,
             snapshot_id=str(frozen.snapshot.pk),
             as_of=frozen.snapshot.as_of_date,
+            selector_version=frozen.snapshot.selector_version,
+            skipped_members=skipped_members,
             start=start,
             end=end,
             provider_key=scope["provider_key"],
@@ -281,6 +301,8 @@ def _match_rows(
     *,
     snapshot_id: str,
     as_of: date,
+    selector_version: str,
+    skipped_members: tuple[PoolMemberDiagnostic, ...],
     start: date,
     end: date,
     provider_key: str,
@@ -293,6 +315,8 @@ def _match_rows(
     listing_ids: set[UUID] = set()
     for member in members:
         for basis in member.basis:
+            if is_watchlist_marker_basis(basis, selector_version=selector_version):
+                continue
             try:
                 listing_ids.add(UUID(basis["security_listing_id"]))
             except (TypeError, ValueError, KeyError):
@@ -306,6 +330,8 @@ def _match_rows(
     for member in members:
         valid: list[SecurityListing] = []
         for basis in member.basis:
+            if is_watchlist_marker_basis(basis, selector_version=selector_version):
+                continue
             listing = listings.get(UUID(basis["security_listing_id"]))
             if (
                 listing is None
@@ -377,5 +403,10 @@ def _match_rows(
         )
     )
     return tuple(projected), ReferenceDiagnostics(
-        out_of_pool, ambiguous, invalid_row_count, duplicate, invalid_basis
+        out_of_pool=out_of_pool,
+        ambiguous=ambiguous,
+        invalid_row=invalid_row_count,
+        duplicate=duplicate,
+        invalid_basis=invalid_basis,
+        skipped_members=skipped_members,
     )

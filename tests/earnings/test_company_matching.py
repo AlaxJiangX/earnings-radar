@@ -37,6 +37,8 @@ from earnings.services import (
     EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
     EARNINGS_COMPANY_MATCHER_VERSION,
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
     CandidateCreationResult,
     CandidateMatchingIntegrityError,
     CompanyMatchOutcome,
@@ -66,6 +68,15 @@ class _Scenario:
     snapshot: MonitoringPoolSnapshot
     run: SyncRun
     raw_record: RawDataRecord
+    observation: EarningsCalendarObservation
+
+
+@dataclass(frozen=True, slots=True)
+class _MarkerScenario:
+    source: DataSource
+    company: Company
+    snapshot: MonitoringPoolSnapshot
+    run: SyncRun
     observation: EarningsCalendarObservation
 
 
@@ -300,6 +311,33 @@ def _scenario(
     return _Scenario(source, company, listing, snapshot, run, raw_record, observation)
 
 
+def _marker_scenario(
+    suffix: str,
+    *,
+    cik: str | None,
+    ticker: str = "",
+) -> _MarkerScenario:
+    source = _source(suffix)
+    company = _company(suffix, cik=cik)
+    _market_index()
+    snapshot = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(company.pk,),
+    ).snapshot
+    run = _run(source=source, snapshot=snapshot, suffix=suffix)
+    observation = _observation(
+        source=source,
+        run=run,
+        cik=cik or "",
+        ticker=ticker,
+        exchange="NYSE" if ticker else "",
+        provider_symbol=ticker,
+    )
+    return _MarkerScenario(source, company, snapshot, run, observation)
+
+
 def _match(
     scenario: _Scenario,
     *,
@@ -309,6 +347,14 @@ def _match(
         sync_run=scenario.run,
         observation=scenario.observation,
         matcher_version=matcher_version,
+    )
+
+
+def _match_marker(scenario: _MarkerScenario) -> CandidateCreationResult:
+    return create_earnings_candidate_for_observation(
+        sync_run=scenario.run,
+        observation=scenario.observation,
+        matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
     )
 
 
@@ -382,6 +428,7 @@ def test_exact_cik_matches_in_pool_and_persists_candidate_lineage() -> None:
     assert _factor(result)["matched_security_listing_ids"] == []
     assert result.source_evidence.normalized_value == result.decision.match_factors
     assert result.source_evidence.confidence == Decimal("0.9000")
+    assert result.skipped_pool_members == ()
     assert (
         AuditRecord.objects.filter(
             sync_run=scenario.run,
@@ -391,6 +438,50 @@ def test_exact_cik_matches_in_pool_and_persists_candidate_lineage() -> None:
         ).count()
         == 1
     )
+
+
+@pytest.mark.django_db
+def test_marker_pool_member_still_matches_by_exact_cik() -> None:
+    scenario = _marker_scenario("marker-cik", cik="0000000999")
+
+    result = _match_marker(scenario)
+
+    assert result.outcome is CompanyMatchOutcome.MATCHED
+    assert result.candidate is not None
+    assert result.candidate.company_id == scenario.company.pk
+    assert _factor(result)["match_strategy"] == "cik"
+    assert len(result.skipped_pool_members) == 1
+    assert result.skipped_pool_members[0].company_id == scenario.company.pk
+    assert result.skipped_pool_members[0].reason == WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON
+
+
+@pytest.mark.django_db
+def test_marker_pool_member_ignores_later_listing_and_keeps_company_in_pool() -> None:
+    scenario = _marker_scenario("marker-listing", cik=None, ticker="LATE")
+    late_listing = _listing(
+        scenario.company,
+        ticker="LATE",
+        exchange="NYSE",
+        effective_from=LISTING_FROM,
+    )
+
+    result = _match_marker(scenario)
+    snapshot_reference = resolve_monitoring_pool_snapshot(scenario.run)
+    facts = candidate_matching_module._build_match_facts(
+        sync_run=scenario.run,
+        observation=scenario.observation,
+        snapshot_reference=snapshot_reference,
+        matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
+    )
+
+    assert result.outcome is CompanyMatchOutcome.UNMATCHED
+    assert result.candidate is None
+    assert tuple(company.pk for company in facts.pool_companies) == (scenario.company.pk,)
+    assert facts.pool_listings == ()
+    assert facts.listing_matches == ()
+    assert len(result.skipped_pool_members) == 1
+    assert result.skipped_pool_members[0].company_id == scenario.company.pk
+    assert late_listing.company_id == scenario.company.pk
 
 
 @pytest.mark.django_db

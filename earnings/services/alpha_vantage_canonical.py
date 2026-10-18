@@ -76,6 +76,9 @@ from earnings.services.calendar_sync_identity import (
 from earnings.services.date_changes import update_earnings_schedule
 from earnings.services.monitoring_pool import (
     MonitoringPoolSnapshotReference,
+    PoolMemberDiagnostic,
+    is_watchlist_marker_basis,
+    monitoring_pool_member_diagnostics,
     resolve_monitoring_pool_snapshot,
     resolve_monitoring_pool_snapshot_contract,
 )
@@ -154,6 +157,7 @@ class AlphaVantageCanonicalSyncResult:
     candidate_reused_count: int
     skipped_count: int
     failed_count: int
+    skipped_members: tuple[PoolMemberDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,6 +383,10 @@ def execute_alpha_vantage_canonical_sync(
         selector_version=selector_version,
         pool_hash=monitoring_pool_hash,
     )
+    skipped_members = monitoring_pool_member_diagnostics(
+        snapshot_reference.members,
+        selector_version=snapshot_reference.snapshot.selector_version,
+    )
     window_kind = (
         EarningsCalendarWindowKind.MANUAL
         if request_id is not None
@@ -468,6 +476,7 @@ def execute_alpha_vantage_canonical_sync(
                     candidate_reused_count=0,
                     skipped_count=0,
                     failed_count=1,
+                    skipped_members=skipped_members,
                 )
             mark_raw_data_parsed(
                 raw.record.pk,
@@ -481,6 +490,7 @@ def execute_alpha_vantage_canonical_sync(
                 snapshot_reference=snapshot_reference,
                 parsed=parsed,
                 provider=active_provider,
+                skipped_members=skipped_members,
             )
         except ProviderError:
             mark_sync_run_failed(
@@ -607,6 +617,7 @@ def _process_parsed_rows(
     snapshot_reference: MonitoringPoolSnapshotReference,
     parsed: AlphaVantageCanonicalParseResult,
     provider: AlphaVantageCanonicalProvider,
+    skipped_members: tuple[PoolMemberDiagnostic, ...],
 ) -> AlphaVantageCanonicalSyncResult:
     resolved_groups: dict[str, list[tuple[AlphaVantageCanonicalRow, CompanyResolution]]] = {}
     skipped = 0
@@ -707,6 +718,7 @@ def _process_parsed_rows(
         candidate_reused_count=candidate_reused,
         skipped_count=skipped,
         failed_count=failed,
+        skipped_members=skipped_members,
     )
 
 
@@ -1121,11 +1133,14 @@ def _basis_company_by_listing(
     snapshot_reference: MonitoringPoolSnapshotReference,
 ) -> dict[UUID, UUID]:
     mapping: dict[UUID, UUID] = {}
+    selector_version = snapshot_reference.snapshot.selector_version
     for member in snapshot_reference.members:
         basis_rows = member.basis
         if not isinstance(basis_rows, list) or not basis_rows:
             raise AlphaVantageCanonicalIntegrityError("Frozen snapshot basis is invalid.")
         for basis in basis_rows:
+            if is_watchlist_marker_basis(basis, selector_version=selector_version):
+                continue
             if not isinstance(basis, dict) or "security_listing_id" not in basis:
                 raise AlphaVantageCanonicalIntegrityError("Frozen snapshot basis row is invalid.")
             try:
@@ -1209,6 +1224,7 @@ def _retire_stale_canonical_runs(*, source_id: UUID) -> None:
 
 
 def _result_from_existing(run: SyncRun) -> AlphaVantageCanonicalSyncResult:
+    snapshot_reference = resolve_monitoring_pool_snapshot(run)
     return AlphaVantageCanonicalSyncResult(
         sync_run=run,
         created=False,
@@ -1218,6 +1234,10 @@ def _result_from_existing(run: SyncRun) -> AlphaVantageCanonicalSyncResult:
         candidate_reused_count=run.updated_count,
         skipped_count=run.skipped_count,
         failed_count=run.failed_count,
+        skipped_members=monitoring_pool_member_diagnostics(
+            snapshot_reference.members,
+            selector_version=snapshot_reference.snapshot.selector_version,
+        ),
     )
 
 

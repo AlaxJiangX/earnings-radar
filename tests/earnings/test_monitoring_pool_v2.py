@@ -14,9 +14,14 @@ from earnings.models import MonitoringPoolMember, MonitoringPoolSnapshot
 from earnings.services import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+    WATCHLIST_MARKER_SOURCE,
     InvalidMonitoringPoolSelectorInput,
     MonitoringPoolIntegrityError,
     MonitoringPoolSelectionResult,
+    PoolMemberDiagnostic,
+    is_watchlist_marker_basis,
+    monitoring_pool_member_diagnostics,
     resolve_monitoring_pool_snapshot_contract,
     select_monitoring_pool,
 )
@@ -93,6 +98,59 @@ def _select_v2(company_ids: Iterable[uuid.UUID]) -> MonitoringPoolSelectionResul
         selector_version=V2,
         enabled_index_codes=("SP500",),
         watchlist_company_ids=company_ids,
+    )
+
+
+def test_watchlist_marker_classifier_is_exact_and_v2_only() -> None:
+    marker = {"source": "watchlist"}
+
+    assert is_watchlist_marker_basis(marker, selector_version=V2) is True
+    assert (
+        is_watchlist_marker_basis(
+            marker,
+            selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        )
+        is False
+    )
+    for malformed in (
+        {},
+        {"source": "index"},
+        {"source": "watchlist", "security_listing_id": None},
+        {"source": "watchlist", "unexpected": "value"},
+        None,
+    ):
+        assert is_watchlist_marker_basis(malformed, selector_version=V2) is False
+
+
+def test_watchlist_marker_diagnostics_are_stably_sorted_and_deduplicated() -> None:
+    higher = uuid.UUID("00000000-0000-0000-0000-000000000002")
+    lower = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    members = (
+        MonitoringPoolMember(company_id=higher, ordinal=0, basis=[{"source": "watchlist"}]),
+        MonitoringPoolMember(company_id=lower, ordinal=1, basis=[{"source": "watchlist"}]),
+        MonitoringPoolMember(company_id=higher, ordinal=2, basis=[{"source": "watchlist"}]),
+    )
+
+    diagnostics = monitoring_pool_member_diagnostics(members, selector_version=V2)
+
+    assert diagnostics == (
+        PoolMemberDiagnostic(
+            company_id=lower,
+            reason=WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+            source=WATCHLIST_MARKER_SOURCE,
+        ),
+        PoolMemberDiagnostic(
+            company_id=higher,
+            reason=WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+            source=WATCHLIST_MARKER_SOURCE,
+        ),
+    )
+    assert (
+        monitoring_pool_member_diagnostics(
+            members,
+            selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        )
+        == ()
     )
 
 
@@ -229,6 +287,44 @@ def test_v2_rejects_invalid_basis_source() -> None:
     )
 
     with pytest.raises(MonitoringPoolIntegrityError, match="source is invalid"):
+        resolve_monitoring_pool_snapshot_contract(
+            as_of=AS_OF,
+            selector_version=V2,
+            pool_hash="b" * 64,
+        )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "basis",
+    (
+        {"source": "index"},
+        {"source": "watchlist", "effective_from": "2026-01-01", "effective_to": None},
+        {"source": "watchlist", "security_listing_id": None},
+        {"source": "watchlist", "unexpected": "value"},
+        {"source": "unknown"},
+    ),
+)
+def test_v2_resolver_rejects_malformed_marker_like_basis(
+    basis: dict[str, object],
+) -> None:
+    company = _company(f"malformed-{uuid.uuid4().hex[:8]}")
+    snapshot = MonitoringPoolSnapshot.objects.create(
+        as_of_date=AS_OF,
+        selector_version=V2,
+        enabled_index_codes=["SP500"],
+        input_revision="a" * 64,
+        pool_hash="b" * 64,
+        member_count=1,
+    )
+    MonitoringPoolMember.objects.create(
+        snapshot=snapshot,
+        company=company,
+        ordinal=0,
+        basis=[basis],
+    )
+
+    with pytest.raises(MonitoringPoolIntegrityError):
         resolve_monitoring_pool_snapshot_contract(
             as_of=AS_OF,
             selector_version=V2,

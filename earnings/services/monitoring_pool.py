@@ -35,6 +35,8 @@ EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2 = "earnings-monitoring-pool-v2"
 MONITORING_POOL_HASH_CONTRACT_VERSION = "earnings-monitoring-pool-hash-v1"
 MONITORING_POOL_HASH_CONTRACT_VERSION_V2 = "earnings-monitoring-pool-hash-v2"
 MONITORING_POOL_INPUT_CONTRACT_VERSION_V2 = "earnings-monitoring-pool-input-v2"
+WATCHLIST_MARKER_SOURCE = "watchlist"
+WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON = "watchlist_marker_no_effective_listing"
 
 
 class MonitoringPoolSelectorError(ValueError):
@@ -51,6 +53,13 @@ class UnknownMonitoringPoolSelectorVersion(MonitoringPoolSelectorError):
 
 class MonitoringPoolIntegrityError(RuntimeError):
     """Raised when persisted selector data or source temporal facts are inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class PoolMemberDiagnostic:
+    company_id: UUID
+    reason: str
+    source: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +98,47 @@ class MonitoringPoolSelectionResult:
     @property
     def member_count(self) -> int:
         return self.snapshot.member_count
+
+
+def is_watchlist_marker_basis(
+    value: object,
+    *,
+    selector_version: str,
+) -> bool:
+    """Recognize only the canonical v2 watchlist marker row."""
+
+    return (
+        selector_version == EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2
+        and isinstance(value, dict)
+        and value == {"source": WATCHLIST_MARKER_SOURCE}
+    )
+
+
+def monitoring_pool_member_diagnostics(
+    members: Iterable[MonitoringPoolMember],
+    *,
+    selector_version: str,
+) -> tuple[PoolMemberDiagnostic, ...]:
+    """Return stable, one-per-Company diagnostics for marker-only members."""
+
+    if selector_version != EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2:
+        return ()
+    company_ids = {
+        member.company_id
+        for member in members
+        if any(
+            is_watchlist_marker_basis(row, selector_version=selector_version)
+            for row in member.basis
+        )
+    }
+    return tuple(
+        PoolMemberDiagnostic(
+            company_id=company_id,
+            reason=WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+            source=WATCHLIST_MARKER_SOURCE,
+        )
+        for company_id in sorted(company_ids, key=str)
+    )
 
 
 def resolve_monitoring_pool_snapshot(sync_run: SyncRun) -> MonitoringPoolSnapshotReference:

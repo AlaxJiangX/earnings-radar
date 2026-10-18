@@ -41,6 +41,8 @@ from earnings.services import (
 )
 from earnings.services.monitoring_pool import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
     select_monitoring_pool,
 )
 from indexes.models import IndexMembership, MarketIndex
@@ -231,6 +233,37 @@ def test_v2_identity_excludes_mutable_scheduling_facts() -> None:
     assert EARNINGS_SOURCE_EVENT_IDENTITY_VERSION_V2 == "earnings-source-event-identity-v2"
     assert nominal_window_end(date(2026, 9, 30)) == date(2026, 12, 29)
     assert nominal_window_end(date(2026, 1, 31)) == date(2026, 4, 29)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_v2_watchlist_marker_is_skipped_without_changing_row_skip_count() -> None:
+    source = _source()
+    indexed_company, indexed_listing = _company_with_listing(ticker="AAA")
+    _membership(indexed_listing)
+    marker_company = Company.objects.create(
+        legal_name="Marker Inc",
+        display_name="Marker",
+    )
+    snapshot = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(marker_company.pk,),
+    ).snapshot
+
+    result = _execute(
+        source=source,
+        snapshot=snapshot,
+        provider=_provider(HEADER + b"AAA,Alpha,2026-10-01,2026-09-30,1.23,USD,post-market\n"),
+    )
+
+    assert result.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert result.skipped_count == 0
+    assert len(result.skipped_members) == 1
+    assert result.skipped_members[0].company_id == marker_company.pk
+    assert result.skipped_members[0].reason == WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON
+    assert result.skipped_members[0].source == "watchlist"
+    assert EarningsEvent.objects.get().company_id == indexed_company.pk
 
 
 @pytest.mark.django_db(transaction=True)
@@ -467,6 +500,7 @@ def test_symbol_reuse_across_snapshots_fails_closed() -> None:
         provider=_provider(HEADER + b"AAA,Alpha,2026-10-01,2026-09-30,1.23,USD,post-market\n"),
     )
     assert first.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert first.skipped_members == ()
     assert EarningsEvent.objects.count() == 1
 
     IndexMembership.objects.filter(security_listing=listing_a).update(
