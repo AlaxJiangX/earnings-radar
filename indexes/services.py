@@ -703,13 +703,29 @@ def correct_membership(
         ).get(pk=membership.pk)
         old_company_id = membership_meta["security_listing__company_id"]
         replacement_listing = replacement_values.get("security_listing")
+        replacement_index = replacement_values.get("index")
         replacement_company_id = (
             replacement_listing.company_id
             if isinstance(replacement_listing, SecurityListing)
             else old_company_id
         )
         affected_company_ids = tuple(sorted({old_company_id, replacement_company_id}, key=str))
-        MarketIndex.objects.select_for_update().get(pk=membership_meta["index_id"])
+        replacement_index_id = (
+            replacement_index.pk
+            if isinstance(replacement_index, MarketIndex)
+            else membership_meta["index_id"]
+        )
+        index_ids = {membership_meta["index_id"], replacement_index_id}
+        locked_index_ids = set(
+            MarketIndex.objects.select_for_update()
+            .filter(pk__in=index_ids)
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
+        if locked_index_ids != index_ids:
+            raise MembershipIntegrityConflict(
+                "Membership correction references a missing MarketIndex."
+            )
         locked_company_ids = tuple(
             Company.objects.select_for_update()
             .filter(id__in=affected_company_ids)
