@@ -122,10 +122,18 @@ class _MatchFacts:
     hints: _NormalizedHints
     pool_companies: tuple[Company, ...]
     pool_listings: tuple[SecurityListing, ...]
+    pool_listing_intervals: dict[uuid.UUID, tuple[date, date | None]]
     cik_companies: tuple[Company, ...]
     listing_matches: tuple[SecurityListing, ...]
     matching_input_revision: str
     skipped_pool_members: tuple[PoolMemberDiagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _BasisRow:
+    listing_id: uuid.UUID
+    effective_from: date
+    effective_to: date | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,7 +326,12 @@ def _build_match_facts(
 ) -> _MatchFacts:
     snapshot = snapshot_reference.snapshot
     hints = _normalize_hints(observation)
-    pool_companies, pool_listings, skipped_pool_members = _load_pool_facts(snapshot_reference)
+    (
+        pool_companies,
+        pool_listings,
+        pool_listing_intervals,
+        skipped_pool_members,
+    ) = _load_pool_facts(snapshot_reference)
     cik_companies = _load_exact_cik_companies(
         normalized_cik=hints.cik,
     )
@@ -352,6 +365,7 @@ def _build_match_facts(
         hints=hints,
         pool_companies=pool_companies,
         pool_listings=pool_listings,
+        pool_listing_intervals=pool_listing_intervals,
         cik_companies=cik_companies,
         listing_matches=listing_matches,
         matcher_version=matcher_version,
@@ -361,6 +375,7 @@ def _build_match_facts(
         hints=hints,
         pool_companies=pool_companies,
         pool_listings=pool_listings,
+        pool_listing_intervals=pool_listing_intervals,
         cik_companies=cik_companies,
         listing_matches=listing_matches,
         matching_input_revision=matching_input_revision,
@@ -386,6 +401,7 @@ def _load_pool_facts(
 ) -> tuple[
     tuple[Company, ...],
     tuple[SecurityListing, ...],
+    dict[uuid.UUID, tuple[date, date | None]],
     tuple[PoolMemberDiagnostic, ...],
 ]:
     snapshot = snapshot_reference.snapshot
@@ -414,6 +430,7 @@ def _load_pool_facts(
             "Monitoring pool snapshot references a missing SecurityListing."
         )
 
+    pool_listing_intervals: dict[uuid.UUID, tuple[date, date | None]] = {}
     pool_listings = tuple(
         sorted(
             basis_listings.values(),
@@ -432,12 +449,16 @@ def _load_pool_facts(
                 "Monitoring pool member has no frozen listing basis."
             )
         for basis_row in basis:
-            basis_listing = basis_listings.get(basis_row["security_listing_id"])
+            basis_listing = basis_listings.get(basis_row.listing_id)
             if basis_listing is None or basis_listing.company_id != member.company_id:
                 raise CandidateMatchingIntegrityError(
                     "Monitoring pool basis does not match its member Company."
                 )
-    return companies, pool_listings, skipped_pool_members
+            pool_listing_intervals[basis_row.listing_id] = (
+                basis_row.effective_from,
+                basis_row.effective_to,
+            )
+    return companies, pool_listings, pool_listing_intervals, skipped_pool_members
 
 
 def _basis_listing_ids(
@@ -452,7 +473,7 @@ def _basis_listing_ids(
             as_of=None,
             selector_version=selector_version,
         ):
-            listing_ids.add(basis["security_listing_id"])
+            listing_ids.add(basis.listing_id)
     return listing_ids
 
 
@@ -461,11 +482,11 @@ def _validated_basis(
     *,
     as_of: date | None,
     selector_version: str,
-) -> list[dict[str, uuid.UUID]]:
+) -> list[_BasisRow]:
     value = member.basis
     if not isinstance(value, list) or not value:
         raise CandidateMatchingIntegrityError("Monitoring pool basis is empty.")
-    result: list[dict[str, uuid.UUID]] = []
+    result: list[_BasisRow] = []
     for row in value:
         if not isinstance(row, dict):
             raise CandidateMatchingIntegrityError("Monitoring pool basis row is invalid.")
@@ -491,9 +512,11 @@ def _validated_basis(
                 "Monitoring pool basis is not effective at snapshot as-of."
             )
         result.append(
-            {
-                "security_listing_id": listing_id,
-            }
+            _BasisRow(
+                listing_id=listing_id,
+                effective_from=effective_from,
+                effective_to=effective_to,
+            )
         )
     return result
 
@@ -532,6 +555,7 @@ def _build_matching_input_revision(
     hints: _NormalizedHints,
     pool_companies: tuple[Company, ...],
     pool_listings: tuple[SecurityListing, ...],
+    pool_listing_intervals: dict[uuid.UUID, tuple[date, date | None]],
     cik_companies: tuple[Company, ...],
     listing_matches: tuple[SecurityListing, ...],
     matcher_version: str,
@@ -562,7 +586,13 @@ def _build_matching_input_revision(
             key=lambda row: row["company_id"],
         ),
         "pool_listings": sorted(
-            (_listing_fact(listing) for listing in pool_listings),
+            (
+                _frozen_listing_fact(
+                    listing,
+                    interval=pool_listing_intervals[listing.pk],
+                )
+                for listing in pool_listings
+            ),
             key=lambda row: (row["company_id"], row["security_listing_id"]),
         ),
         "exact_external_cik_companies": sorted(
@@ -573,7 +603,11 @@ def _build_matching_input_revision(
             key=lambda row: row["company_id"],
         ),
         "exact_external_listing_matches": sorted(
-            (_listing_fact(listing) for listing in listing_matches),
+            (
+                _listing_fact(listing)
+                for listing in listing_matches
+                if listing.pk not in pool_listing_intervals
+            ),
             key=lambda row: (row["company_id"], row["security_listing_id"]),
         ),
     }
@@ -588,6 +622,22 @@ def _listing_fact(listing: SecurityListing) -> dict[str, str | None]:
         "exchange": listing.exchange,
         "effective_from": listing.effective_from.isoformat(),
         "effective_to": listing.effective_to.isoformat() if listing.effective_to else None,
+    }
+
+
+def _frozen_listing_fact(
+    listing: SecurityListing,
+    *,
+    interval: tuple[date, date | None],
+) -> dict[str, str | None]:
+    effective_from, effective_to = interval
+    return {
+        "company_id": str(listing.company_id),
+        "security_listing_id": str(listing.pk),
+        "ticker": listing.ticker,
+        "exchange": listing.exchange,
+        "effective_from": effective_from.isoformat(),
+        "effective_to": effective_to.isoformat() if effective_to else None,
     }
 
 

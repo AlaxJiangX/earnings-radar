@@ -77,6 +77,26 @@ def set_index_enabled(
             raise MarketIndexNotFound(
                 f"MarketIndex with code {normalized_code!r} does not exist."
             ) from exc
+        affected_company_ids = tuple(
+            sorted(
+                set(
+                    IndexMembership.objects.filter(index=market_index).values_list(
+                        "security_listing__company_id",
+                        flat=True,
+                    )
+                ),
+                key=str,
+            )
+        )
+        if affected_company_ids:
+            locked_company_ids = tuple(
+                Company.objects.select_for_update()
+                .filter(id__in=affected_company_ids)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
+            if set(locked_company_ids) != set(affected_company_ids):
+                raise MembershipIntegrityConflict("Index toggle references a missing Company.")
 
         if market_index.is_enabled == enabled:
             return IndexToggleResult(
@@ -302,8 +322,8 @@ def create_index_membership(
 
     with transaction.atomic():
         # Re-read + lock domain parents
-        Company.objects.select_for_update().get(pk=security_listing.company_id)
         index_obj = _locked_market_index(index)
+        Company.objects.select_for_update().get(pk=security_listing.company_id)
         listing_obj = _locked_security_listing(security_listing)
         _validate_membership_within_listing(
             effective_from=effective_from,
@@ -677,11 +697,27 @@ def correct_membership(
     resolved_evidence = context.source_evidence
 
     with transaction.atomic():
-        company_id = IndexMembership.objects.values_list(
+        membership_meta = IndexMembership.objects.values(
+            "index_id",
             "security_listing__company_id",
-            flat=True,
         ).get(pk=membership.pk)
-        Company.objects.select_for_update().get(pk=company_id)
+        old_company_id = membership_meta["security_listing__company_id"]
+        replacement_listing = replacement_values.get("security_listing")
+        replacement_company_id = (
+            replacement_listing.company_id
+            if isinstance(replacement_listing, SecurityListing)
+            else old_company_id
+        )
+        affected_company_ids = tuple(sorted({old_company_id, replacement_company_id}, key=str))
+        MarketIndex.objects.select_for_update().get(pk=membership_meta["index_id"])
+        locked_company_ids = tuple(
+            Company.objects.select_for_update()
+            .filter(id__in=affected_company_ids)
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
+        if set(locked_company_ids) != set(affected_company_ids):
+            raise MembershipIntegrityConflict("Membership correction references a missing Company.")
         old = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
         # Prevent double-correction

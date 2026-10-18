@@ -516,6 +516,7 @@ def test_ticker_matching_uses_frozen_listing_interval_after_backdated_transition
         exchange="NYSE",
     )
     scenario = _Scenario(source, company, listing, snapshot, run, raw_record, observation)
+    first = _match(scenario)
     actor = User.objects.create_user(
         email="matching-frozen-listing@example.com",
         password="fixture-password-only",
@@ -537,12 +538,15 @@ def test_ticker_matching_uses_frozen_listing_interval_after_backdated_transition
         request_id="matching-frozen-listing-transition",
     )
 
-    result = _match(scenario)
+    second = _match(scenario)
 
-    assert result.outcome is CompanyMatchOutcome.MATCHED
-    assert result.candidate is not None
-    assert result.candidate.company_id == company.pk
-    assert _factor(result)["matched_security_listing_ids"] == [str(listing.pk)]
+    assert first.outcome is second.outcome is CompanyMatchOutcome.MATCHED
+    assert first.candidate is not None
+    assert second.candidate is not None
+    assert first.candidate.pk == second.candidate.pk
+    assert first.matching_input_revision == second.matching_input_revision
+    assert first.candidate.company_id == company.pk
+    assert _factor(second)["matched_security_listing_ids"] == [str(listing.pk)]
 
 
 @pytest.mark.django_db
@@ -1093,6 +1097,7 @@ def test_matching_input_revision_is_order_independent_and_version_sensitive() ->
         hints=facts.hints,
         pool_companies=tuple(reversed(facts.pool_companies)),
         pool_listings=tuple(reversed(facts.pool_listings)),
+        pool_listing_intervals=facts.pool_listing_intervals,
         cik_companies=facts.cik_companies,
         listing_matches=facts.listing_matches,
         matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
@@ -1104,6 +1109,7 @@ def test_matching_input_revision_is_order_independent_and_version_sensitive() ->
         hints=facts.hints,
         pool_companies=facts.pool_companies,
         pool_listings=facts.pool_listings,
+        pool_listing_intervals=facts.pool_listing_intervals,
         cik_companies=facts.cik_companies,
         listing_matches=facts.listing_matches,
         matcher_version="earnings-company-match-v2",
@@ -1124,6 +1130,7 @@ def test_matching_input_revision_is_order_independent_and_version_sensitive() ->
         hints=facts.hints,
         pool_companies=facts.pool_companies,
         pool_listings=facts.pool_listings,
+        pool_listing_intervals=facts.pool_listing_intervals,
         cik_companies=facts.cik_companies,
         listing_matches=facts.listing_matches,
         matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
