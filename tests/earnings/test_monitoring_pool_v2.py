@@ -12,7 +12,7 @@ from django.db import connection
 from audit.models import DataChange, DataSource, SyncRun
 from audit.services import record_data_change, start_sync_run
 from companies.models import Company, SecurityListing
-from companies.services import IDENTITY_RULE_VERSION
+from companies.services import IDENTITY_RULE_VERSION, transition_security_listing
 from earnings.models import MonitoringPoolMember, MonitoringPoolSnapshot
 from earnings.services import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
@@ -668,6 +668,34 @@ def test_v2_resolver_rejects_incomplete_listing_interval_audit_chain() -> None:
             selector_version=result.selector_version,
             pool_hash=result.monitoring_pool_hash,
         )
+
+
+@pytest.mark.django_db
+def test_v2_resolver_accepts_audited_system_listing_transition() -> None:
+    _index()
+    company = _company("audited-system-interval")
+    listing = _listing(company, "audited-system-interval")
+    result = _select_v2((company.pk,))
+    sync_run = _data_change_sync_run("audited-system-transition")
+
+    transition = transition_security_listing(
+        listing=listing,
+        transition_date=date(2026, 9, 1),
+        ticker="SYSTEM",
+        exchange="NYSE",
+        sync_run=sync_run,
+        reason="System listing transition.",
+        request_id="system-listing-transition",
+    )
+
+    assert transition.prior_audit_record is not None
+    assert transition.prior_audit_record.reason == "System listing transition."
+    resolved = resolve_monitoring_pool_snapshot_contract(
+        as_of=result.as_of_date,
+        selector_version=result.selector_version,
+        pool_hash=result.monitoring_pool_hash,
+    )
+    assert resolved.snapshot.pk == result.snapshot.pk
 
 
 @pytest.mark.django_db

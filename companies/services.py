@@ -1132,6 +1132,7 @@ def _record_action(
             before=dict(before),
             after=dict(after),
             request_id=context.request_id,
+            reason=context.reason,
         )
     return result.record
 

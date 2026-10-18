@@ -1007,7 +1007,10 @@ def _audited_listing_interval_change(
         if (
             audit.actor_user_id == change.actor_user_id
             and audit.sync_run_id == change.sync_run_id
-            and audit.reason == change.reason
+            and (
+                audit.reason == change.reason
+                or (change.actor_user_id is None and not audit.reason)
+            )
             and before.get(change.field_name) == change.old_value
             and after.get(change.field_name) == change.new_value
             and (change.actor_user_id is None or audit.request_id == change.origin_key)
