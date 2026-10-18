@@ -25,6 +25,7 @@ from earnings.services import (
     MonitoringPoolIntegrityError,
     MonitoringPoolSelectionResult,
     UnknownMonitoringPoolSelectorVersion,
+    resolve_monitoring_pool_snapshot_contract,
     select_monitoring_pool,
 )
 from indexes.models import IndexMembership, MarketIndex
@@ -346,7 +347,7 @@ def test_unknown_enabled_index_code_is_rejected() -> None:
 @pytest.mark.django_db
 def test_unknown_selector_version_is_rejected() -> None:
     with pytest.raises(UnknownMonitoringPoolSelectorVersion):
-        _select(selector_version="earnings-monitoring-pool-v2")
+        _select(selector_version="earnings-monitoring-pool-v3")
 
 
 def test_datetime_as_of_is_rejected() -> None:
@@ -735,6 +736,121 @@ def test_concurrent_same_selector_contract_creates_one_snapshot() -> None:
     assert sum(result.created for result in results) == 1
     assert MonitoringPoolSnapshot.objects.count() == 1
     assert MonitoringPoolMember.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_v1_resolver_preserves_noncanonical_member_order() -> None:
+    index = _market_index("SP500")
+    higher_company = _company(
+        "v1-order-higher",
+        company_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
+    )
+    lower_company = _company(
+        "v1-order-lower",
+        company_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+    )
+    higher_listing = _listing(higher_company, "v1-order-higher")
+    lower_listing = _listing(lower_company, "v1-order-lower")
+    higher_membership = _membership(index=index, listing=higher_listing)
+    lower_membership = _membership(index=index, listing=lower_listing)
+
+    def manifest_row(
+        company: Company,
+        listing: SecurityListing,
+        membership: IndexMembership,
+    ) -> dict[str, object]:
+        return {
+            "company_id": str(company.pk),
+            "index_code": index.code,
+            "security_listing_id": str(listing.pk),
+            "membership_effective_from": membership.effective_from.isoformat(),
+            "membership_effective_to": (
+                membership.effective_to.isoformat() if membership.effective_to is not None else None
+            ),
+            "listing_effective_from": listing.effective_from.isoformat(),
+            "listing_effective_to": (
+                listing.effective_to.isoformat() if listing.effective_to is not None else None
+            ),
+        }
+
+    input_revision = _canonical_sha256(
+        {
+            "enabled_index_codes": [index.code],
+            "memberships": [
+                manifest_row(lower_company, lower_listing, lower_membership),
+                manifest_row(higher_company, higher_listing, higher_membership),
+            ],
+        }
+    )
+    higher_basis = [
+        {
+            "index_code": index.code,
+            "security_listing_id": str(higher_listing.pk),
+            "effective_from": higher_membership.effective_from.isoformat(),
+            "effective_to": (
+                higher_membership.effective_to.isoformat()
+                if higher_membership.effective_to is not None
+                else None
+            ),
+        }
+    ]
+    lower_basis = [
+        {
+            "index_code": index.code,
+            "security_listing_id": str(lower_listing.pk),
+            "effective_from": lower_membership.effective_from.isoformat(),
+            "effective_to": (
+                lower_membership.effective_to.isoformat()
+                if lower_membership.effective_to is not None
+                else None
+            ),
+        }
+    ]
+    members = [
+        {"company_id": str(higher_company.pk), "basis": higher_basis},
+        {"company_id": str(lower_company.pk), "basis": lower_basis},
+    ]
+    pool_hash = _canonical_sha256(
+        {
+            "contract": "earnings-monitoring-pool-hash-v1",
+            "selector_version": EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+            "as_of": AS_OF.isoformat(),
+            "enabled_index_codes": [index.code],
+            "input_revision": input_revision,
+            "members": members,
+        }
+    )
+    snapshot = MonitoringPoolSnapshot.objects.create(
+        as_of_date=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        enabled_index_codes=[index.code],
+        input_revision=input_revision,
+        pool_hash=pool_hash,
+        member_count=2,
+    )
+    MonitoringPoolMember.objects.create(
+        snapshot=snapshot,
+        company=higher_company,
+        ordinal=0,
+        basis=higher_basis,
+    )
+    MonitoringPoolMember.objects.create(
+        snapshot=snapshot,
+        company=lower_company,
+        ordinal=1,
+        basis=lower_basis,
+    )
+
+    resolved = resolve_monitoring_pool_snapshot_contract(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        pool_hash=pool_hash,
+    )
+
+    assert [member.company_id for member in resolved.members] == [
+        higher_company.pk,
+        lower_company.pk,
+    ]
 
 
 def test_retry_and_replay_modules_do_not_expose_selector() -> None:

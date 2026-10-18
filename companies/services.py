@@ -4,11 +4,12 @@ import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import TYPE_CHECKING, cast
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from audit.models import AuditRecord, DataChange, SourceEvidence, SyncRun
 from audit.security import InvalidAuditValue, SensitiveAuditData, normalize_json_without_credentials
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 
 
 IDENTITY_RULE_VERSION = "company-listing-identity-v1"
+MONITORING_STATUS_RULE_VERSION = "monitoring-status-recompute-v1"
 _CIK_RE = re.compile(r"^[0-9]{1,10}$")
 _COUNTRY_CODE_RE = re.compile(r"^[A-Z]{2}$")
 _MONTH_DAY_RE = re.compile(r"^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$")
@@ -52,6 +54,17 @@ class CompanyWriteResult:
     created: bool
     data_changes: tuple[DataChangeWriteResult, ...]
     audit_record: AuditRecord | None
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyMonitoringStatusResult:
+    company: Company
+    previous_status: str
+    current_status: str
+    status_changed: bool
+    recalculated_at: datetime
+    data_changes: tuple[DataChangeWriteResult, ...]
+    audit_record: AuditRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +236,121 @@ def update_company(
             after=after,
         )
         return CompanyWriteResult(current, False, data_changes, audit_record)
+
+
+def recalculate_company_monitoring_status(
+    *,
+    company_id: uuid.UUID,
+    as_of: date,
+    has_enabled_index_membership: bool,
+    has_active_watchlist: bool,
+    identity_pending: bool,
+    actor_user: User | None = None,
+    sync_run: SyncRun | None = None,
+    reason: str,
+    request_id: str,
+    ip_address: str | None = None,
+) -> CompanyMonitoringStatusResult:
+    """Recompute the derived Company monitoring cache from explicit caller facts."""
+
+    normalized_company_id = _normalize_optional_uuid(company_id, value_name="company_id")
+    if normalized_company_id is None:
+        raise CompanyServiceError("company_id is required.")
+    _normalize_date(as_of, value_name="as_of")
+    normalized_index_fact = _normalize_bool(
+        has_enabled_index_membership,
+        value_name="has_enabled_index_membership",
+    )
+    normalized_watchlist_fact = _normalize_bool(
+        has_active_watchlist,
+        value_name="has_active_watchlist",
+    )
+    normalized_identity_fact = _normalize_bool(
+        identity_pending,
+        value_name="identity_pending",
+    )
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise CompanyServiceError("Monitoring recompute requires a stable request_id.")
+
+    if normalized_identity_fact:
+        next_status = Company.MonitoringStatus.PENDING_IDENTITY
+    elif normalized_index_fact or normalized_watchlist_fact:
+        next_status = Company.MonitoringStatus.ACTIVE
+    else:
+        next_status = Company.MonitoringStatus.INACTIVE
+
+    with transaction.atomic():
+        try:
+            current = Company.objects.select_for_update().get(pk=normalized_company_id)
+        except Company.DoesNotExist as error:
+            raise CompanyServiceError("Company does not exist.") from error
+
+        context = _resolve_write_context(
+            target_type=DataChange.TargetType.COMPANY,
+            target_id=current.pk,
+            source_evidence=None,
+            sync_run=sync_run,
+            actor_user=actor_user,
+            reason=reason,
+            request_id=request_id,
+            ip_address=ip_address,
+            field_names=("monitoring_status", "monitoring_recalculated_at"),
+        )
+        previous_status = current.monitoring_status
+        previous_recalculated_at = current.monitoring_recalculated_at
+        before = _company_monitoring_snapshot(current)
+        recalculated_at = timezone.now()
+        current.monitoring_status = next_status
+        current.monitoring_recalculated_at = recalculated_at
+        current.save(
+            update_fields=("monitoring_status", "monitoring_recalculated_at", "updated_at")
+        )
+        after = _company_monitoring_snapshot(current)
+
+        data_changes: list[DataChangeWriteResult] = []
+        monitoring_values = (
+            ("monitoring_status", previous_status, next_status),
+            (
+                "monitoring_recalculated_at",
+                _iso_datetime_or_none(previous_recalculated_at),
+                recalculated_at.isoformat(),
+            ),
+        )
+        for field_name, old_value, new_value in monitoring_values:
+            if old_value == new_value:
+                continue
+            data_changes.append(
+                record_data_change(
+                    target_type=DataChange.TargetType.COMPANY,
+                    target_id=current.pk,
+                    field_name=field_name,
+                    old_value=old_value,
+                    new_value=new_value,
+                    rule_version=MONITORING_STATUS_RULE_VERSION,
+                    sync_run=context.sync_run,
+                    actor_user=context.actor_user,
+                    reason=context.reason,
+                    origin_key=(context.request_id if context.actor_user is not None else ""),
+                    changed_at=recalculated_at,
+                )
+            )
+        audit_record = _record_action(
+            context=context,
+            action=AuditRecord.Action.UPDATE,
+            target_type=AuditRecord.TargetType.COMPANY,
+            target_id=current.pk,
+            before=before,
+            after=after,
+        )
+        return CompanyMonitoringStatusResult(
+            company=current,
+            previous_status=previous_status,
+            current_status=next_status,
+            status_changed=previous_status != next_status,
+            recalculated_at=recalculated_at,
+            data_changes=tuple(data_changes),
+            audit_record=audit_record,
+        )
 
 
 def create_security_listing(
@@ -586,7 +714,6 @@ def _normalize_company_changes(
         "issuer_type",
         "fiscal_year_end_month_day",
         "investor_relations_url",
-        "monitoring_status",
     }
     _require_allowed_change_fields(changes, allowed=allowed, domain_name="Company")
     current: dict[str, object] = {
@@ -1020,6 +1147,17 @@ def _company_snapshot(company: Company) -> dict[str, object]:
         "investor_relations_url": company.investor_relations_url or None,
         "monitoring_status": company.monitoring_status,
     }
+
+
+def _company_monitoring_snapshot(company: Company) -> dict[str, object]:
+    return {
+        "monitoring_status": company.monitoring_status,
+        "monitoring_recalculated_at": _iso_datetime_or_none(company.monitoring_recalculated_at),
+    }
+
+
+def _iso_datetime_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 def _listing_snapshot(listing: SecurityListing) -> dict[str, object]:

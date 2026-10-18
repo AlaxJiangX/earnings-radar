@@ -88,7 +88,11 @@ def test_existing_audit_targets_still_work(sync_run) -> None:
 @pytest.mark.django_db
 @pytest.mark.parametrize(
     "target_type",
-    ("earnings_calendar_observation", "earnings_reconciliation_decision"),
+    (
+        "earnings_calendar_observation",
+        "earnings_reconciliation_decision",
+        "watchlist_item",
+    ),
 )
 def test_source_evidence_rejects_new_targets(
     sync_run,
@@ -112,7 +116,11 @@ def test_source_evidence_rejects_new_targets(
 @pytest.mark.django_db
 @pytest.mark.parametrize(
     "target_type",
-    ("earnings_calendar_observation", "earnings_reconciliation_decision"),
+    (
+        "earnings_calendar_observation",
+        "earnings_reconciliation_decision",
+        "watchlist_item",
+    ),
 )
 def test_data_change_rejects_new_targets(
     sync_run,
