@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from datetime import date
 
 import pytest
@@ -9,7 +11,10 @@ import companies.services as company_services
 from accounts.models import User
 from audit.models import AuditRecord, DataChange, SyncRun
 from companies.models import Company, SecurityListing
-from companies.selectors import company_identity_pending_as_of
+from companies.selectors import (
+    company_identity_pending_as_of,
+    company_identity_pending_facts_as_of,
+)
 from companies.services import (
     MONITORING_STATUS_RULE_VERSION,
     CompanyServiceError,
@@ -112,6 +117,57 @@ def test_company_identity_pending_as_of_truth_table(
 def test_company_identity_pending_as_of_rejects_missing_company() -> None:
     with pytest.raises(Company.DoesNotExist):
         company_identity_pending_as_of(company_id=uuid.uuid4(), as_of=AS_OF)
+
+
+@pytest.mark.django_db
+def test_company_identity_pending_facts_are_batched_and_stably_keyed() -> None:
+    pending = Company.objects.create(
+        legal_name="Batch Pending",
+        display_name="Batch Pending",
+    )
+    effective = Company.objects.create(
+        legal_name="Batch Effective",
+        display_name="Batch Effective",
+    )
+    has_cik = Company.objects.create(
+        legal_name="Batch CIK",
+        display_name="Batch CIK",
+        cik="0000000002",
+    )
+    SecurityListing.objects.create(
+        company=effective,
+        ticker="BATCH",
+        exchange="NYSE",
+        security_name="Batch listing",
+        security_type="common_stock",
+        effective_from=date(2026, 1, 1),
+    )
+    company_ids = (has_cik.pk, pending.pk, effective.pk, pending.pk)
+
+    facts = company_identity_pending_facts_as_of(company_ids=company_ids, as_of=AS_OF)
+
+    assert tuple(facts) == tuple(sorted({has_cik.pk, pending.pk, effective.pk}, key=str))
+    assert facts == {has_cik.pk: False, pending.pk: True, effective.pk: False}
+
+
+@pytest.mark.django_db
+def test_company_identity_pending_facts_use_one_query(
+    django_assert_num_queries: Callable[[int], AbstractContextManager[None]],
+) -> None:
+    first = Company.objects.create(legal_name="Query First", display_name="Query First")
+    second = Company.objects.create(
+        legal_name="Query Second",
+        display_name="Query Second",
+        cik="0000000003",
+    )
+
+    with django_assert_num_queries(1):
+        facts = company_identity_pending_facts_as_of(
+            company_ids=(first.pk, second.pk),
+            as_of=AS_OF,
+        )
+
+    assert facts == {first.pk: True, second.pk: False}
 
 
 @pytest.mark.django_db

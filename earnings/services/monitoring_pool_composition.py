@@ -8,11 +8,11 @@ from datetime import date
 from uuid import UUID
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 
 from audit.models import SyncRun
-from companies.models import Company
-from companies.selectors import company_identity_pending_as_of
+from companies.models import Company, SecurityListing
+from companies.selectors import company_identity_pending_facts_as_of
 from companies.services import (
     CompanyMonitoringStatusResult,
     recalculate_company_monitoring_status,
@@ -23,7 +23,7 @@ from earnings.services.monitoring_pool import (
     MonitoringPoolSelectionResult,
     select_monitoring_pool,
 )
-from indexes.selectors import company_indexes_as_of
+from indexes.selectors import memberships_for_companies
 from watchlists.selectors import get_active_watchlist_company_ids
 
 MONITORING_POOL_COMPOSITION_REASON = "Monitoring pool v2 composition recompute."
@@ -99,28 +99,32 @@ def recompute_monitoring_pool_composition(
     active_watchlist_company_ids = set(
         get_active_watchlist_company_ids(company_ids=affected_company_ids)
     )
+    identity_pending_facts = company_identity_pending_facts_as_of(
+        company_ids=affected_company_ids,
+        as_of=composition.selection.as_of_date,
+    )
+    enabled_index_company_ids = set(
+        memberships_for_companies(
+            company_ids=affected_company_ids,
+            as_of_date=composition.selection.as_of_date,
+            is_enabled=True,
+        )
+        .values_list("security_listing__company_id", flat=True)
+        .distinct()
+    )
     stable_request_id = request_id or (
         f"monitoring-pool-composition:{sync_run.pk}:{composition.selection.snapshot.pk}"
     )
     results: list[CompanyMonitoringStatusResult] = []
     with transaction.atomic():
         for company_id in affected_company_ids:
-            identity_pending = company_identity_pending_as_of(
-                company_id=company_id,
-                as_of=composition.selection.as_of_date,
-            )
-            has_enabled_index_membership = company_indexes_as_of(
-                company_id=company_id,
-                as_of_date=composition.selection.as_of_date,
-                is_enabled=True,
-            ).exists()
             results.append(
                 recalculate_company_monitoring_status(
                     company_id=company_id,
                     as_of=composition.selection.as_of_date,
-                    has_enabled_index_membership=has_enabled_index_membership,
+                    has_enabled_index_membership=company_id in enabled_index_company_ids,
                     has_active_watchlist=company_id in active_watchlist_company_ids,
-                    identity_pending=identity_pending,
+                    identity_pending=identity_pending_facts[company_id],
                     sync_run=sync_run,
                     reason=reason,
                     request_id=stable_request_id,
@@ -135,16 +139,8 @@ def _affected_company_ids(
     active_watchlist_company_ids: tuple[UUID, ...],
 ) -> tuple[UUID, ...]:
     current_pool_company_ids = {member.company_id for member in selection.members}
-    tracked_company_ids = set(
-        Company.objects.filter(
-            Q(
-                monitoring_status__in=(
-                    Company.MonitoringStatus.ACTIVE,
-                    Company.MonitoringStatus.PENDING_IDENTITY,
-                )
-            )
-            | Q(cik__isnull=True)
-        ).values_list("id", flat=True)
+    tracked_company_ids = _status_transition_company_ids(
+        as_of=selection.as_of_date,
     )
     prior_pool_company_ids = _latest_prior_v2_pool_company_ids(selection)
     return tuple(
@@ -155,6 +151,35 @@ def _affected_company_ids(
             | prior_pool_company_ids,
             key=str,
         )
+    )
+
+
+def _status_transition_company_ids(*, as_of: date) -> set[UUID]:
+    has_effective_listing = Exists(
+        SecurityListing.objects.filter(
+            company_id=OuterRef("pk"),
+            effective_from__lte=as_of,
+        ).filter(Q(effective_to__isnull=True) | Q(effective_to__gt=as_of))
+    )
+    return set(
+        Company.objects.annotate(has_effective_listing=has_effective_listing)
+        .filter(
+            Q(monitoring_status=Company.MonitoringStatus.ACTIVE)
+            | Q(
+                monitoring_status=Company.MonitoringStatus.PENDING_IDENTITY,
+                cik__isnull=False,
+            )
+            | Q(
+                monitoring_status=Company.MonitoringStatus.PENDING_IDENTITY,
+                has_effective_listing=True,
+            )
+            | Q(
+                monitoring_status=Company.MonitoringStatus.INACTIVE,
+                cik__isnull=True,
+                has_effective_listing=False,
+            )
+        )
+        .values_list("id", flat=True)
     )
 
 

@@ -5,7 +5,7 @@
 > 范围：MVP 技术规划；不代表已完成实现
 > 需求来源：`docs/product-requirements.md`（由本次提供的 PRD v0.1 附件原样复制，未改写内容）。
 
-当前实现进度：阶段 2.2–4.4 的既有能力已按路线图落地并 merge；阶段 4.2 已完成 fixture-first calendar ingestion / replay、monitoring pool、candidate matching 与 reconciliation workflow，4.2F-A / 4.2F-B 已实现、验证并 merge（PR #48 / #51）；阶段 4.3 财报页面与阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #53 / #55）。Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`。Stage 5.1 的 Watchlist / Monitoring-Pool v2 contract 已由 ADR-023 冻结，但实现尚未开始；当前分支仍未实现通用 v1 canonical live Provider command、真实 IR live source、通知领域模型与 Stage 5/6 能力。
+当前实现进度：阶段 2.2–4.4 的既有能力已按路线图落地并 merge；阶段 4.2 已完成 fixture-first calendar ingestion / replay、monitoring pool、candidate matching 与 reconciliation workflow，4.2F-A / 4.2F-B 已实现、验证并 merge（PR #48 / #51）；阶段 4.3 财报页面与阶段 4.4 SEC Filing / FilingDocument metadata 同步已实现、验证并 merge（PR #53 / #55）。Stage 4.5 Contract Documentation 已将原 4.5 拆分为 4.5A 与 4.5B；4.5A Filing ↔ Earnings Link & Classification 已实现、验证并 merge（PR #58，merge `8f2e214`）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`。Stage 5.1A 已实现、验证并 merge；Stage 5.1B 已完成 v2 composition、marker compatibility、Reference / SEC current activation、monitoring recompute 与 frozen retry/replay，状态为 `IMPLEMENTED / VERIFIED / PENDING FINAL PR / MERGE`。当前分支仍未实现通用 v1 canonical live Provider command、真实 IR live source、通知领域模型与 Stage 5/6 其余能力。
 
 ## 1. 架构目标与边界
 
@@ -413,19 +413,26 @@ IndexMembership 绑定 `SecurityListing`，而不是直接绑定 Company。每�
 `monitoring_status` 是公司级、可重算的派生状态：只要公司的任一有效 SecurityListing 属于任一启用指数，或公司存在任一有效用户自选股，该公司即为启用；identity 未决时按 `pending_identity` 处理。指数或自选股变化后必须重算。多个 listing 命中同一指数只计为一个公司级归属展示，但底层成员关系全部保留。退出监控池只停止未来同步和普通提醒，历史记录不删除。该决策见 `docs/decisions/ADR-002-index-migration-rules.md`。
 
 Stage 5.1 的重算边界由 ADR-023 冻结：`companies` 拥有 `monitoring_status` /
-`monitoring_recalculated_at` 字段和“显式 facts → 状态”的纯规则；`companies` 不 import
-`indexes` 或 `watchlists`。`watchlists.services` 在自选 add / remove / reactivation 的同一
-事务内，通过 `indexes.selectors` 只读取得 as-of enabled-index 事实，并把
-`has_enabled_index_membership` / `has_active_watchlist` / `identity_pending` 显式传给
-`companies.services` 重算原语。`update_company` 不得再直接修改 `monitoring_status`。
-指数成员变化不在 5.1A 同步重算；后续 pool-selection composition 必须以同一原语补齐，
-否则 `monitoring_recalculated_at` 可能滞后。
+`monitoring_recalculated_at` 字段、“显式 facts → 状态”的纯规则，以及 canonical PD-1
+identity selector；`companies` 不 import `indexes` 或 `watchlists`。
+`watchlists.services` 在自选 add / remove / reactivation 的同一事务内，通过公司 identity
+selector 与 `indexes.selectors` 只读取得 facts，再把 `has_enabled_index_membership` /
+`has_active_watchlist` / `identity_pending` 显式传给 companies 重算原语。`update_company`
+不得直接修改 `monitoring_status`。
+
+Stage 5.1B 的 earnings-owned composition 已接入新的 Reference / SEC current execution：
+current watchlist Company 集合与 enabled index policy 形成 v2 snapshot；创建 SyncRun 后，
+composition 以确定性 affected-Company 集合批量读取 identity/index/watchlist facts，并逐家
+调用同一重算原语。稳定且不属于 current/prior pool 的 Company 不重复刷新。retry / replay
+只使用 persisted scope 与 snapshot，不执行 current composition。
 
 自选进入监控池的 v2 契约同样见 ADR-023：`earnings` 的 selector 本体只接受显式
 `watchlist_company_ids`，不 import watchlists 模型或 selector；只有 earnings 的命令/编排层
 可以只读调用 watchlists 公开 selector，再把去重后的 Company UUID 集合传入 selector。
 watchlist 公司按 Company 与指数成员取并集；snapshot basis 必须为每个 member 冻结 listing
-事实（无 listing 时使用明确 marker），并保持 v1 basis / hash 的字节级兼容。
+事实（无 listing 时使用明确 marker），并保持 v1 basis / hash 的字节级兼容。marker 不产生
+provider symbol，Reference / Alpha Vantage / Candidate Matching 会返回 typed diagnostics；
+有 CIK 的 marker Company 仍可走 exact CIK matching。
 
 ### 5.2 指数同步与偏移
 

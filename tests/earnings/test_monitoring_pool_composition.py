@@ -301,6 +301,50 @@ def test_identity_resolution_recomputes_previously_pending_company() -> None:
 
 
 @pytest.mark.django_db
+def test_stable_nonpool_identity_states_do_not_recompute_on_every_run() -> None:
+    _index()
+    unresolved = _company(
+        "stable-unresolved",
+        monitoring_status=Company.MonitoringStatus.INACTIVE,
+    )
+    resolved = _company(
+        "stable-resolved",
+        cik_number=9,
+        monitoring_status=Company.MonitoringStatus.PENDING_IDENTITY,
+    )
+    stale_active = _company(
+        "stable-active",
+        cik_number=10,
+        monitoring_status=Company.MonitoringStatus.ACTIVE,
+    )
+    sync_run = _sync_run("stable")
+
+    first = _compose()
+    first_result = recompute_monitoring_pool_composition(
+        composition=first,
+        sync_run=sync_run,
+    )
+    second = _compose()
+    second_result = recompute_monitoring_pool_composition(
+        composition=second,
+        sync_run=sync_run,
+    )
+
+    expected_ids = tuple(sorted((unresolved.pk, resolved.pk, stale_active.pk), key=str))
+    assert first.affected_company_ids == expected_ids
+    assert first_result.recomputed_company_ids == expected_ids
+    assert second.affected_company_ids == ()
+    assert second_result.recomputed_company_ids == ()
+
+    unresolved.refresh_from_db()
+    resolved.refresh_from_db()
+    stale_active.refresh_from_db()
+    assert unresolved.monitoring_status == Company.MonitoringStatus.PENDING_IDENTITY
+    assert resolved.monitoring_status == Company.MonitoringStatus.INACTIVE
+    assert stale_active.monitoring_status == Company.MonitoringStatus.INACTIVE
+
+
+@pytest.mark.django_db
 def test_recompute_results_cover_each_affected_company_once() -> None:
     _index()
     user = _user("once")

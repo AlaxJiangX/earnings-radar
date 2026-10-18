@@ -1,6 +1,6 @@
 # ADR-023：Watchlist 与 Monitoring-Pool v2 Contract
 
-- 状态：已接受（技术契约）；产品未决项见 §13
+- 状态：已接受（技术契约）；Stage 5.1A / 5.1B 已实现并验证；产品未决项见 §13
 - 日期：2026-10-02
 - 决策者：产品负责人
 - 影响阶段：Stage 5.1A Watchlist Domain & Monitoring Status Recompute；Stage 5.1B Monitoring-Pool v2 Composition & Provider Compatibility
@@ -20,7 +20,8 @@ Stage 5.1 的路线图交付是 `WatchlistItem`、普通/重点、自选开关�
 - 4.2F-A reference projection、4.2F-B Alpha Vantage resolution 和 4.2D-2 candidate matching 都从 persisted `MonitoringPoolMember.basis` 读取 `security_listing_id`；
 - `watchlists` 当前不在 `INSTALLED_APPS`；审计 target choices 也不包含 `watchlist_item`。
 
-本 ADR 冻结 Stage 5.1 的领域语义、selector v2 输入/输出、版本兼容、模块依赖和迁移边界。它不实现代码，也不修改 PRD。
+本 ADR 冻结 Stage 5.1 的领域语义、selector v2 输入/输出、版本兼容、模块依赖和迁移边界；
+实现状态见 §12.2。本 ADR 不修改 PRD。
 
 ## 2. 结论摘要
 
@@ -34,7 +35,7 @@ Stage 5.1 的路线图交付是 `WatchlistItem`、普通/重点、自选开关�
 | 删除 | 软删除；重新添加复用同一行；历史由 AuditRecord 保留 |
 | 监控状态所有权 | `companies` 拥有字段与纯规则；通过显式 facts primitive 写入 |
 | 自选触发的重算 | `watchlists` service 在同一事务内读取 indexes selector 并调用 companies primitive |
-| 指数触发的重算 | 不在 5.1A 同步接线；由后续 pool-selection composition 统一重算 |
+| 指数触发的重算 | 由 earnings current-state composition 在 production execution 中统一重算 |
 | Monitoring-Pool selector | 保留 v1；新增 `earnings-monitoring-pool-v2` |
 | v2 watchlist 输入 | 调用方显式传入去重、可排序的 `watchlist_company_ids`；selector 不 import watchlists |
 | v2 basis | 每个 member 至少一行 basis；listing basis 行保留 `security_listing_id`，无 listing 时使用 marker |
@@ -251,21 +252,32 @@ has_enabled_index_membership
       ).exists()
 
 identity_pending
-    = caller 传入的显式事实（定义见 §13 PD-1）
+    = companies.selectors.company_identity_pending_as_of(
+          company_id=..., as_of=...
+      )
 ```
 
 随后调用 `companies.services` 重算原语。priority / alerts 变化不触发重算。
 
 该路径需要 `watchlists -> indexes.selectors` 只读依赖；`indexes` 不得反向 import
-`watchlists`，因此指数成员变化不在 5.1A 内同步重算。5.1B / 生产激活前必须由 pool-selection
-composition 对所有受影响 Company 执行同一重算原语，消除缓存滞后。
+`watchlists`。Stage 5.1B production composition 已完成，并对 current pool、活跃/待定
+identity transition 和 prior snapshot 相关 Company 执行同一重算原语，消除指数或池变化后
+的缓存滞后。
 
 ### 6.4 `pending_identity`
 
-`pending_identity` 的“什么算身份未决”在仓库中没有权威定义。本 ADR 冻结其优先级：
-identity_pending 为真时覆盖 active/inactive 判定；但事实判定规则保持未决（PD-1）。
-在 PD-1 关闭前，任何把 `identity_pending` 事实固定映射为 CIK 空 / listing 缺失的代码
-都不得进入实现。
+PD-1 已于 2026-10-18 关闭。canonical rule：
+
+```text
+identity_pending =
+    Company.cik IS NULL
+    AND
+    no SecurityListing effective at the requested as-of date
+```
+
+有效 listing 使用半开区间 `effective_from <= as_of < effective_to-or-infinity`；
+`identity_pending` 为真时覆盖 active/inactive 判定。该事实只由 companies selector 读取，
+由 caller 作为显式 fact 传给 `companies.services.recalculate_company_monitoring_status()`。
 
 ## 7. Monitoring-Pool v2 Selector Contract
 
@@ -552,8 +564,8 @@ Pool-selection composition 的职责：
    写入 SyncRun scope；
 4. 不重新评估 watchlist、不写入 watchlist 表、不修改 selector 内部数据。
 
-该 composition 尚未实现；在它落地前，v2 selector 只允许测试调用，生产 scheduled path
-不得声称已使用 v2。
+该 composition 已接入新的 Reference 与 SEC current execution。retry / replay 仍只
+resolve persisted SyncRun scope 与 snapshot，不重新执行 current composition。
 
 ## 10. Schema 与 Migration
 
@@ -618,6 +630,8 @@ Audit 迁移只改 `AuditRecord` 的 choices / check；不得把 `watchlist_item
 
 ### 12.2 Stage 5.1B — Monitoring-Pool v2 Composition & Provider Compatibility
 
+状态：`IMPLEMENTED / VERIFIED`（Stage 5.1B Completion Gate，2026-10-18）。
+
 前置：Stage 5.1A 完成；存在或同时实现 calendar command / orchestration caller。
 
 交付：
@@ -626,6 +640,8 @@ Audit 迁移只改 `AuditRecord` 的 choices / check；不得把 `watchlist_item
 - SyncRun scope 持久化 v2 contract；
 - reference / AV / candidate matching 的 marker 兼容；
 - skipped-member diagnostics；
+- companies-owned PD-1 selector 与 deterministic affected-Company recompute；
+- Reference / SEC current execution 的 v2 composition、manual rerun 与 SyncRun recompute；
 - retry / replay 使用 persisted contract，不重选 pool、不重读 current watchlist。
 
 验收：
@@ -640,7 +656,7 @@ Audit 迁移只改 `AuditRecord` 的 choices / check；不得把 `watchlist_item
 
 以下不是本 ADR 的技术阻塞项，但不得在对应实现中自行猜测：
 
-1. `OPEN DECISION PD-1`：什么算 `identity_pending`（CIK 空、无有效 listing，或其他规则）；
+1. `CLOSED PD-1`：canonical `identity_pending` 规则见 §6.4（2026-10-18）；
 2. `OPEN DECISION PD-2`：US-listing 的 canonical 判据（exchange allowlist / 国家策略）；
 3. `OPEN DECISION PD-3`：watchlist 数量上限与滥用防护，最晚公开注册（Stage 8.4）前确认；
 4. `DEFERRED PD-4`：移除自选时是否立即取消待发送通知，Stage 6.1 / 6.2 决定；
@@ -656,25 +672,25 @@ Audit 迁移只改 `AuditRecord` 的 choices / check；不得把 `watchlist_item
 ## 14. Gate Decision
 
 ```text
-PASS — Stage 5.1 contract is frozen
+PASS — Stage 5.1A / 5.1B implemented and verified
 ```
 
 理由：
 
-- Watchlist lifecycle、priority、alerts、delete / reactivation 与唯一约束已冻结；
-- monitoring status 的 facts primitive 与事务边界已冻结；
-- v1 selector / hash 的 byte-level 兼容已冻结；
-- v2 input、basis、input revision、pool hash、resolver 分派已冻结；
-- provider projection 的 marker 兼容要求与激活门已冻结；
-- module dependency 修订为无环只读边；
-- schema / migration 范围已列出；
-- 产品未决项已显式隔离，未冒充已确认规则。
+- Watchlist lifecycle、priority、alerts、delete / reactivation 与唯一约束已实现并验证；
+- monitoring status 的 facts primitive、PD-1 canonical rule 与事务边界已实现并验证；
+- v1 selector / hash 的 byte-level 兼容已通过 regression；
+- v2 input、basis、input revision、pool hash、resolver 分派已实现并验证；
+- provider projection 的 marker 兼容与 diagnostics 已实现并验证；
+- Reference / SEC current execution、monitoring recompute 与 frozen retry/replay 已接入；
+- module dependency 保持无环只读边；
+- schema / migration 范围无新增。
 
 下一阶段：
 
 ```text
-Stage 5.1A — Watchlist Domain & Monitoring Status Recompute
+Stage 5.1B Completion / Hardening Gate
 ```
 
-Stage 5.1B 只在 calendar command / orchestration caller 存在或同时实现时开始；不得把
-v2 snapshot 提前接入生产 provider 路径。
+完成本 ADR 的 Stage 5.1B 实现后，进入最终 Completion / Hardening Gate；完成后才进入
+Stage 5.1B Final PR / CI / Merge Gate。
