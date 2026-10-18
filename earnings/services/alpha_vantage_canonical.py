@@ -290,15 +290,18 @@ def resolve_alpha_vantage_provider_symbol(
         )
     listings = []
     for listing in basis_listings:
-        company_id, effective_from, effective_to = basis_facts_by_listing[listing.pk]
-        if listing.company_id != company_id:
+        basis_facts = basis_facts_by_listing[listing.pk]
+        if any(listing.company_id != company_id for company_id, _start, _end in basis_facts):
             raise AlphaVantageCanonicalIntegrityError(
                 "Frozen monitoring pool basis does not match its listing Company."
             )
-        if not _basis_interval_contains(
-            start=effective_from,
-            end=effective_to,
-            value=snapshot_reference.snapshot.as_of_date,
+        if not any(
+            _basis_interval_contains(
+                start=effective_from,
+                end=effective_to,
+                value=snapshot_reference.snapshot.as_of_date,
+            )
+            for _company_id, effective_from, effective_to in basis_facts
         ):
             raise AlphaVantageCanonicalIntegrityError(
                 "Frozen monitoring pool basis interval is invalid."
@@ -1139,8 +1142,8 @@ def _record_candidate_audit(
 
 def _basis_facts_by_listing(
     snapshot_reference: MonitoringPoolSnapshotReference,
-) -> dict[UUID, tuple[UUID, date, date | None]]:
-    mapping: dict[UUID, tuple[UUID, date, date | None]] = {}
+) -> dict[UUID, list[tuple[UUID, date, date | None]]]:
+    mapping: dict[UUID, list[tuple[UUID, date, date | None]]] = {}
     selector_version = snapshot_reference.snapshot.selector_version
     for member in snapshot_reference.members:
         basis_rows = member.basis
@@ -1169,12 +1172,13 @@ def _basis_facts_by_listing(
                     "Frozen snapshot basis listing interval is invalid."
                 )
             basis_facts = (member.company_id, effective_from, effective_to)
-            existing = mapping.get(listing_id)
-            if existing is not None and existing != basis_facts:
+            existing = mapping.setdefault(listing_id, [])
+            if any(company_id != member.company_id for company_id, _start, _end in existing):
                 raise AlphaVantageCanonicalIntegrityError(
                     "Frozen snapshot basis listing has conflicting identity."
                 )
-            mapping[listing_id] = basis_facts
+            if basis_facts not in existing:
+                existing.append(basis_facts)
     return mapping
 
 

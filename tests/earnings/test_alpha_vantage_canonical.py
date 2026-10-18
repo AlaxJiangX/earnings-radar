@@ -56,6 +56,7 @@ from providers.alpha_vantage_canonical import (
     AlphaVantageCanonicalProvider,
 )
 from providers.http import TransportRequest, TransportResponse
+from watchlists.models import WatchlistItem
 
 AS_OF = date(2026, 9, 30)
 HEADER = b"symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\n"
@@ -308,6 +309,37 @@ def test_alpha_vantage_symbol_uses_frozen_listing_interval_after_backdated_trans
             members=selection.members,
         ),
         provider_symbol="FROZEN",
+    )
+
+    assert resolution.company is not None
+    assert resolution.company.pk == company.pk
+    assert tuple(item.pk for item in resolution.listings) == (listing.pk,)
+
+
+@pytest.mark.django_db
+def test_alpha_vantage_accepts_multiple_basis_intervals_for_same_listing() -> None:
+    company, listing = _company_with_listing(ticker="DUAL")
+    _membership(listing)
+    index_membership = IndexMembership.objects.get(security_listing=listing)
+    IndexMembership.objects.filter(pk=index_membership.pk).update(effective_to=date(2026, 12, 31))
+    user = User.objects.create_user(
+        email="alpha-dual-basis@example.com",
+        password="fixture-password-only",
+    )
+    WatchlistItem.objects.create(user=user, company=company)
+    selection = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(company.pk,),
+    )
+
+    resolution = resolve_alpha_vantage_provider_symbol(
+        snapshot_reference=MonitoringPoolSnapshotReference(
+            snapshot=selection.snapshot,
+            members=selection.members,
+        ),
+        provider_symbol="DUAL",
     )
 
     assert resolution.company is not None

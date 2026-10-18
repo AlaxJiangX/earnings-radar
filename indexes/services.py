@@ -302,6 +302,7 @@ def create_index_membership(
 
     with transaction.atomic():
         # Re-read + lock domain parents
+        Company.objects.select_for_update().get(pk=security_listing.company_id)
         index_obj = _locked_market_index(index)
         listing_obj = _locked_security_listing(security_listing)
         _validate_membership_within_listing(
@@ -422,6 +423,11 @@ def end_membership(
     )
 
     with transaction.atomic():
+        company_id = IndexMembership.objects.values_list(
+            "security_listing__company_id",
+            flat=True,
+        ).get(pk=membership.pk)
+        Company.objects.select_for_update().get(pk=company_id)
         obj = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
         # --- Idempotency ordering (lock first, then classify) ---
@@ -548,6 +554,11 @@ def cancel_membership(
     normalized_request_id = request_id.strip()
 
     with transaction.atomic():
+        company_id = IndexMembership.objects.values_list(
+            "security_listing__company_id",
+            flat=True,
+        ).get(pk=membership.pk)
+        Company.objects.select_for_update().get(pk=company_id)
         obj = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
         # --- Idempotency: already cancelled → no-op ---
@@ -666,6 +677,11 @@ def correct_membership(
     resolved_evidence = context.source_evidence
 
     with transaction.atomic():
+        company_id = IndexMembership.objects.values_list(
+            "security_listing__company_id",
+            flat=True,
+        ).get(pk=membership.pk)
+        Company.objects.select_for_update().get(pk=company_id)
         old = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
         # Prevent double-correction
@@ -873,6 +889,7 @@ def close_memberships_for_listing(
     )
 
     with transaction.atomic():
+        Company.objects.select_for_update().get(pk=listing.company_id)
         locked_listing = SecurityListing.objects.select_for_update().get(pk=listing.pk)
 
         if new_effective_to <= locked_listing.effective_from:
@@ -1560,13 +1577,35 @@ def activate_due_memberships(
                     f"only running runs may activate memberships."
                 )
 
-        candidates = list(
-            IndexMembership.objects.select_for_update()
-            .filter(
-                status=IndexMembership.Status.ANNOUNCED,
-                effective_from__lte=resolved_date,
+        candidate_filter = {
+            "status": IndexMembership.Status.ANNOUNCED,
+            "effective_from__lte": resolved_date,
+        }
+        candidate_company_ids = tuple(
+            sorted(
+                set(
+                    IndexMembership.objects.filter(**candidate_filter).values_list(
+                        "security_listing__company_id",
+                        flat=True,
+                    )
+                ),
+                key=str,
             )
-            .order_by("pk")
+        )
+        if candidate_company_ids:
+            locked_company_ids = tuple(
+                Company.objects.select_for_update()
+                .filter(id__in=candidate_company_ids)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
+            if set(locked_company_ids) != set(candidate_company_ids):
+                raise MembershipIntegrityConflict(
+                    "Membership activation references a missing Company."
+                )
+
+        candidates = list(
+            IndexMembership.objects.select_for_update().filter(**candidate_filter).order_by("pk")
         )
 
         for obj in candidates:
