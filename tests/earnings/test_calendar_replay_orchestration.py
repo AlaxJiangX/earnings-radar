@@ -229,6 +229,14 @@ def test_offline_replay_does_not_call_monitoring_pool_selector(
         fail_selector,
     )
     monkeypatch.setattr("earnings.services.select_monitoring_pool", fail_selector)
+    monkeypatch.setattr(
+        "earnings.services.monitoring_pool_composition.compose_current_monitoring_pool",
+        fail_selector,
+    )
+    monkeypatch.setattr(
+        "watchlists.selectors.get_active_watchlist_company_ids",
+        fail_selector,
+    )
 
     result = execute_earnings_calendar_offline_replay(
         source=source,

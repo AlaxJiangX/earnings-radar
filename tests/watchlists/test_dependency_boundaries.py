@@ -33,6 +33,7 @@ def test_watchlists_does_not_import_downstream_or_provider_modules(path: Path) -
 
 def test_watchlist_recompute_uses_public_index_selector_boundary() -> None:
     imports = _imported_modules(WATCHLISTS_ROOT / "services.py")
+    assert "companies.selectors" in imports
     assert "indexes.selectors" in imports
     assert "indexes.models" not in imports
 

@@ -11,16 +11,23 @@ from django.core.management import call_command, get_commands
 from django.core.management.base import CommandError
 from django.utils import timezone
 
+import earnings.services.sec_filing_sync as sec_filing_sync_module
+from accounts.models import User
 from audit.models import AuditRecord, DataSource, SyncRun
 from companies.models import Company, SecurityListing
 from earnings.management.commands import sync_sec_filings as sync_sec_filings_command
-from earnings.models import FilingEarningsDecision, MonitoringPoolSnapshot
-from earnings.services import EARNINGS_MONITORING_POOL_SELECTOR_VERSION, select_monitoring_pool
+from earnings.models import FilingEarningsDecision, MonitoringPoolMember, MonitoringPoolSnapshot
+from earnings.services import (
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    select_monitoring_pool,
+)
 from filings.models import Filing
 from filings.sync import SEC_JOB_TYPE
 from indexes.models import IndexMembership, MarketIndex
 from providers.sec_edgar import SecEdgarProvider
 from tests.filings.test_sec_sync import FixtureTransport
+from watchlists.models import WatchlistItem
 
 AS_OF = date(2026, 9, 30)
 
@@ -62,8 +69,9 @@ def _setup(
     )
     snapshot = select_monitoring_pool(
         as_of=AS_OF,
-        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
         enabled_index_codes=("SP500",),
+        watchlist_company_ids=(),
     ).snapshot
     return company, _data_source(key=source_key), snapshot
 
@@ -118,7 +126,7 @@ def test_command_runs_explicit_snapshot_and_keeps_frozen_scope(
     assert run.status == SyncRun.Status.SUCCEEDED
     assert run.scope == {
         "monitoring_pool_as_of": AS_OF.isoformat(),
-        "selector_version": EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        "selector_version": EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
         "monitoring_pool_hash": snapshot.pool_hash,
     }
     assert Filing.objects.count() == 1
@@ -130,16 +138,63 @@ def test_command_runs_explicit_snapshot_and_keeps_frozen_scope(
 
 @pytest.mark.django_db(transaction=True)
 def test_command_default_as_of_selects_monitoring_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    _, source, _ = _setup()
+    indexed_company, source, _ = _setup()
     _patch_provider(monkeypatch, FixtureTransport())
+    user = User.objects.create_user(email="sec-composition@example.com", password="fixture")
+    marker_company = Company.objects.create(
+        legal_name="SEC Marker Inc",
+        display_name="SEC Marker",
+    )
+    WatchlistItem.objects.create(user=user, company=marker_company)
 
     output = _call(source_key=source.key, as_of=AS_OF)
 
     run = SyncRun.objects.get(job_type=SEC_JOB_TYPE)
-    snapshot = MonitoringPoolSnapshot.objects.get(as_of_date=AS_OF)
+    snapshot = MonitoringPoolSnapshot.objects.get(
+        as_of_date=AS_OF,
+        selector_version=run.scope["selector_version"],
+        pool_hash=run.scope["monitoring_pool_hash"],
+    )
     assert run.status == SyncRun.Status.SUCCEEDED
-    assert run.scope["monitoring_pool_hash"] == snapshot.pool_hash
+    assert run.scope["selector_version"] == EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2
+    assert run.scope == {
+        "monitoring_pool_as_of": AS_OF.isoformat(),
+        "selector_version": EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        "monitoring_pool_hash": snapshot.pool_hash,
+    }
+    assert set(
+        MonitoringPoolMember.objects.filter(snapshot=snapshot).values_list(
+            "company_id",
+            flat=True,
+        )
+    ) == {indexed_company.pk, marker_company.pk}
+    indexed_company.refresh_from_db()
+    marker_company.refresh_from_db()
+    assert indexed_company.monitoring_status == Company.MonitoringStatus.ACTIVE
+    assert marker_company.monitoring_status == Company.MonitoringStatus.PENDING_IDENTITY
     assert f"SEC run {run.pk}: succeeded" in output
+
+
+@pytest.mark.django_db(transaction=True)
+def test_sec_recompute_failure_stops_before_provider_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _company, source, _snapshot = _setup()
+    transport = FixtureTransport()
+    _patch_provider(monkeypatch, transport)
+    monkeypatch.setattr(
+        sec_filing_sync_module,
+        "recompute_monitoring_pool_composition",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("recompute failed")),
+    )
+
+    with pytest.raises(CommandError, match="recompute failed"):
+        _call(source_key=source.key, as_of=AS_OF)
+
+    run = SyncRun.objects.get(job_type=SEC_JOB_TYPE)
+    assert run.status == SyncRun.Status.FAILED
+    assert len(transport.requests) == 0
+    assert Filing.objects.count() == 0
 
 
 @pytest.mark.django_db(transaction=True)
@@ -153,6 +208,11 @@ def test_command_retry_run_reuses_frozen_scope(monkeypatch: pytest.MonkeyPatch) 
     assert original.status == SyncRun.Status.PARTIAL
 
     _patch_provider(monkeypatch, FixtureTransport())
+    monkeypatch.setattr(
+        sync_sec_filings_command,
+        "compose_current_monitoring_pool",
+        lambda **_kwargs: pytest.fail("SEC retry must not compose the current pool."),
+    )
     output = _call(source_key=source.key, retry_run=str(original.pk))
 
     retry = SyncRun.objects.exclude(pk=original.pk).get(job_type=SEC_JOB_TYPE)
@@ -162,21 +222,38 @@ def test_command_retry_run_reuses_frozen_scope(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.django_db(transaction=True)
+def test_command_retry_accepts_historical_v1_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    _company, source, _v2_snapshot = _setup()
+    v1_snapshot = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        enabled_index_codes=("SP500",),
+    ).snapshot
+    failed = _failed_run(source=source, pool_hash=v1_snapshot.pool_hash)
+    _patch_provider(monkeypatch, FixtureTransport())
+
+    _call(source_key=source.key, retry_run=str(failed.pk))
+
+    retried = SyncRun.objects.exclude(pk=failed.pk).get(job_type=SEC_JOB_TYPE)
+    assert retried.status == SyncRun.Status.SUCCEEDED
+    assert retried.scope["selector_version"] == EARNINGS_MONITORING_POOL_SELECTOR_VERSION
+
+
+@pytest.mark.django_db(transaction=True)
 def test_command_idempotency_key_reuses_succeeded_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _, source, snapshot = _setup()
+    company, source, _snapshot = _setup()
     transport = FixtureTransport()
     _patch_provider(monkeypatch, transport)
 
-    first_output = _call(
-        source_key=source.key, snapshot_id=str(snapshot.pk), idempotency_key="fixed-key"
-    )
-    second_output = _call(
-        source_key=source.key, snapshot_id=str(snapshot.pk), idempotency_key="fixed-key"
-    )
+    first_output = _call(source_key=source.key, as_of=AS_OF, idempotency_key="fixed-key")
+    company.refresh_from_db()
+    first_recalculated_at = company.monitoring_recalculated_at
+    second_output = _call(source_key=source.key, as_of=AS_OF, idempotency_key="fixed-key")
 
     run = SyncRun.objects.get(job_type=SEC_JOB_TYPE)
+    company.refresh_from_db()
     assert SyncRun.objects.filter(job_type=SEC_JOB_TYPE).count() == 1
     assert len(transport.requests) == 2
     assert f"SEC run {run.pk}" in first_output
@@ -184,6 +261,42 @@ def test_command_idempotency_key_reuses_succeeded_run(
     assert "matching evaluated=1" in first_output
     assert "matching evaluated=0" in second_output
     assert FilingEarningsDecision.objects.count() == 1
+    assert company.monitoring_recalculated_at == first_recalculated_at
+
+
+@pytest.mark.django_db(transaction=True)
+def test_idempotent_sec_run_repairs_identity_status_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _company, source, _snapshot = _setup()
+    user = User.objects.create_user(
+        email="sec-identity-transition@example.com",
+        password="fixture",
+    )
+    marker_company = Company.objects.create(
+        legal_name="SEC Identity Marker",
+        display_name="SEC Identity Marker",
+    )
+    WatchlistItem.objects.create(user=user, company=marker_company)
+    transport = FixtureTransport()
+    _patch_provider(monkeypatch, transport)
+
+    _call(source_key=source.key, as_of=AS_OF, idempotency_key="identity-fixed-key")
+    marker_company.refresh_from_db()
+    first_recalculated_at = marker_company.monitoring_recalculated_at
+    assert first_recalculated_at is not None
+    first_request_count = len(transport.requests)
+    marker_company.cik = "0000000005"
+    marker_company.save(update_fields=("cik", "updated_at"))
+
+    _call(source_key=source.key, as_of=AS_OF, idempotency_key="identity-fixed-key")
+
+    marker_company.refresh_from_db()
+    assert SyncRun.objects.filter(job_type=SEC_JOB_TYPE).count() == 1
+    assert marker_company.monitoring_status == Company.MonitoringStatus.ACTIVE
+    assert marker_company.monitoring_recalculated_at is not None
+    assert marker_company.monitoring_recalculated_at > first_recalculated_at
+    assert len(transport.requests) == first_request_count
 
 
 @pytest.mark.django_db
@@ -257,6 +370,11 @@ def test_command_match_only_replays_without_provider(monkeypatch: pytest.MonkeyP
         raise AssertionError("match-only must not construct the SEC provider")
 
     monkeypatch.setattr(sync_sec_filings_command, "SecEdgarProvider", fail_provider)
+    monkeypatch.setattr(
+        sync_sec_filings_command,
+        "compose_current_monitoring_pool",
+        lambda **_kwargs: pytest.fail("match-only must not compose the current pool."),
+    )
 
     output = _call(source_key=source.key, match_only=True, sync_run=str(run.pk))
 

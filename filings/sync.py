@@ -82,12 +82,15 @@ def sync_sec_filings(
     pool_hash: str,
     idempotency_key: str,
     on_filing_persisted: Callable[[Filing, SyncRun], None] | None = None,
+    on_run_started: Callable[[SyncRun], None] | None = None,
 ) -> SecSyncResult:
     """Fetch only Companies authorized by one caller-resolved monitoring-pool scope.
 
     ``on_filing_persisted`` runs after one Filing transaction committed and
     before the SEC run is finalized.  Hook failures are isolated per Filing and
     count as run failures; they never roll back the persisted Filing.
+    ``on_run_started`` runs after a new run identity is created and before
+    provider work; a failure marks the run failed and aborts the sync.
     """
 
     if (
@@ -111,6 +114,8 @@ def sync_sec_filings(
     )
     if on_filing_persisted is not None and not callable(on_filing_persisted):
         raise SecSyncError("on_filing_persisted must be callable or None.")
+    if on_run_started is not None and not callable(on_run_started):
+        raise SecSyncError("on_run_started must be callable or None.")
     with _sec_run_ownership():
         scope = {
             "monitoring_pool_as_of": pool_as_of.isoformat(),
@@ -132,6 +137,17 @@ def sync_sec_filings(
             raise SecSyncError("Existing SEC run is not successful; retry with a new key.")
 
         run = start.sync_run
+        if on_run_started is not None:
+            try:
+                on_run_started(run)
+            except Exception as error:
+                mark_sync_run_failed(
+                    run.pk,
+                    error_summary=(
+                        f"SEC run post-start initialization failed ({type(error).__name__})."
+                    ),
+                )
+                raise
         failures = 0
         failure_details: list[str] = []
         processed = 0

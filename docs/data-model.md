@@ -91,9 +91,9 @@ CIK 为空的公司不能与 SEC 文件做确定性匹配。CIK 后续合并/修
 ADR-023 进一步冻结：`monitoring_status` 是 Company 级派生缓存，重算必须通过
 `companies.services` 的“显式 facts → 状态”原语；`update_company` 不得再接受该字段变更。
 自选触发的重算由 `watchlists.services` 在自选 mutation 的同一事务内完成，并使用
-`indexes.selectors` 的 as-of enabled-index 事实。`pending_identity` 的触发事实定义仍需
-产品确认（ADR-023 §13 PD-1）；在该决策关闭前，不得把“CIK 为空”或“无 listing”自行固定
-为判定规则。
+`indexes.selectors` 的 as-of enabled-index 事实。PD-1 已关闭：`identity_pending` 仅由
+`companies.selectors` 判定为 `cik IS NULL` 且 as-of 无有效 listing；Stage 5.1B 的 earnings
+composition 会在 current execution 的 SyncRun context 中对受影响 Company 统一重算。
 
 ### 4.2 `SecurityListing`
 
@@ -171,7 +171,7 @@ Company 不直接拥有 IndexMembership。公司级指数归属由其全部有�
 
 公司监控池按公司聚合计算：`存在任一有效 listing 的启用指数 membership OR 存在任一有效 WatchlistItem`。因此某个 share class 被移除不等于公司退出监控池；必须检查公司其他 listing 和用户自选股。详见 ADR-002。
 
-Stage 5.1 的 monitoring-pool v2 contract 由 ADR-023 冻结：
+Stage 5.1 的 monitoring-pool v2 contract 已由 ADR-023 冻结并实现：
 
 - v1 selector、basis 形状、`input_revision` 与 hash 算法保持字节级兼容；
 - 新增 `earnings-monitoring-pool-v2` 与 `earnings-monitoring-pool-hash-v2`；
@@ -185,6 +185,8 @@ Stage 5.1 的 monitoring-pool v2 contract 由 ADR-023 冻结：
   provider 投影必须跳过 marker，而不是让整轮失败；
 - `input_revision` 纳入 watchlist Company 集合与 watchlist listing manifest；
 - resolver 按 `selector_version` 分派；未知版本或 canonical 形状不匹配必须 fail closed；
+- current Reference / SEC execution 使用 v2 composition；retry / replay 只使用 persisted
+  snapshot 与 scope；
 - snapshot、basis、input revision 与 hash 不包含 user_id、email、watchlist item id、
   priority_level 或 alerts_enabled。
 
@@ -1025,7 +1027,7 @@ DataChange 和 AuditRecord 都是追加式历史：模型实例拒绝更新和�
 | FilingEarningsDecision（4.5A contract） | decision_key unique；append-only；supersedes 链；manual leaf 阻塞 automatic supersession |
 | InvestorRelationsObservation（4.5B fixture-first 已实现） | raw_data_record + parser_version + source_event_identity unique；append-only；item_type shape 约束；缺 Company / period identity 不创建 observation |
 | InvestorRelationsDecision（4.5B fixture-first 已实现） | decision_key unique；append-only；supersedes 链；manual leaf 阻塞 automatic override |
-| WatchlistItem（Stage 5.1 contract，未实现） | user + company unique；priority / state check；soft delete only；active 参与 monitoring pool |
+| WatchlistItem（Stage 5.1A 已实现） | user + company unique；priority / state check；soft delete only；active 参与 monitoring pool |
 | ReminderRule | null-safe user/company/event/channel/lead unique |
 | Notification | idempotency_key unique |
 | RawDataRecord | source + request_fingerprint + content_hash unique |
@@ -1059,10 +1061,11 @@ Stage 4.2A 已由 ADR-010 冻结、不再属于待确认的决策：
 - no destructive merge、loser 保留与 canonical collision 处理；
 - monitoring pool、scope、pagination 与 replay identity。
 
-ADR-012 进一步冻结 4.2D selector：canonical unit 为 Company；Stage 4.2 universe 仅来自
+ADR-012 进一步冻结 4.2D selector：canonical unit 为 Company；Stage 4.2 universe 曾仅来自
 explicit enabled index policy 的 as-of normative IndexMembership；历史结果采用 Hybrid
 snapshot；retry/replay 不重选。4.2D-1 已实现 snapshot schema、selector core、canonical
-input revision、pool hash 与并发幂等；scheduled command integration 尚未实现。
+input revision、pool hash 与并发幂等。Stage 5.1B 已将 v2 current composition 接入 Reference /
+SEC execution，并保留 persisted retry / replay contract。
 
 ADR-013 进一步冻结 4.2D-2 matching：只允许 exact CIK 或 exact ticker + canonical
 exchange，matching date 固定为 frozen snapshot as-of；MATCHED 创建 candidate，其他结果只写
@@ -1074,12 +1077,12 @@ ADR-020 进一步冻结 Alpha Vantage Free v2 candidate-entry adaptation：techn
 PASS；个人用途的 normalized / candidate / canonical-pipeline storage 许可已由后续书面
 澄清覆盖；implementation 已实现、验证并 merge（PR #51）。详见 §6.7。
 
-ADR-023 已冻结 Stage 5.1 Watchlist / Monitoring-Pool v2 contract：WatchlistItem 生命周期、
-priority / alerts 正交语义、`(user, company)` 唯一与软删除、自选触发的
+ADR-023 的 Stage 5.1 Watchlist / Monitoring-Pool v2 contract 已实现并验证：WatchlistItem
+生命周期、priority / alerts 正交语义、`(user, company)` 唯一与软删除、自选触发的
 `monitoring_status` 重算、v1 字节级兼容、v2 explicit watchlist input / listing basis /
-marker / hash 分派、只读模块依赖与迁移边界。实现尚未开始；`pending_identity` 事实定义、
-US 资格、自选数量上限、移除时待发送通知、零指数模式与历史 as-of 重建仍按 ADR-023 §13
-待决。
+marker / hash 分派、只读模块依赖与迁移边界。PD-1 已按 CIK NULL + as-of 无有效 listing
+关闭；US 资格、自选数量上限、移除时待发送通知、零指数模式与历史 as-of 重建仍按 ADR-023
+§13 待决。
 
 Stage 4.5 Contract Documentation 已追加冻结：
 
@@ -1098,7 +1101,7 @@ Stage 4.5 Contract Documentation 已追加冻结：
 以下数据决策仍待确认：
 
 1. precision refinement / regression 是否通知用户，以及日期变化通知中的 old/new status 组成；历史记录规则已由 ADR-007 确定。
-2. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则；4.2 matching 已由 ADR-010 限定为 unique CIK 或 unique exchange+ticker as-of，其余 fail closed，但 Company 主数据合并规则仍需确认。`pending_identity` 的判定事实见 ADR-023 §13 PD-1，Stage 5.1A 前确认。
+2. 公司无 CIK、CIK 变更、ticker 重用、ADR/多上市身份的合并规则；4.2 matching 已由 ADR-010 限定为 unique CIK 或 unique exchange+ticker as-of，其余 fail closed，但 Company 主数据合并规则仍需确认。`pending_identity` 判定事实已由 ADR-023 §6.4 / PD-1 关闭。
 3. `/companies/{ticker}` 遇到历史 ticker 或跨交易所歧义时的行为。
 4. 1–7 日指数偏移候选的人工复核负责人、处理时限与默认行为。
 5. release filing 首版 exhibit/文本证据清单已由 ADR-021 关闭为 metadata-only v1（`EX-99.1` / `EX-99`）；REVIEW_REQUIRED 在用户页面的展示范围和复核时限仍待产品确认。

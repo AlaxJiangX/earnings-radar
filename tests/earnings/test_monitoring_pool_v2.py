@@ -9,14 +9,22 @@ from datetime import date
 import pytest
 from django.db import connection
 
+from audit.models import AuditRecord, DataChange, DataSource, SyncRun
+from audit.services import record_data_change, record_system_action, start_sync_run
 from companies.models import Company, SecurityListing
+from companies.services import IDENTITY_RULE_VERSION, transition_security_listing
 from earnings.models import MonitoringPoolMember, MonitoringPoolSnapshot
 from earnings.services import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+    WATCHLIST_MARKER_SOURCE,
     InvalidMonitoringPoolSelectorInput,
     MonitoringPoolIntegrityError,
     MonitoringPoolSelectionResult,
+    PoolMemberDiagnostic,
+    is_watchlist_marker_basis,
+    monitoring_pool_member_diagnostics,
     resolve_monitoring_pool_snapshot_contract,
     select_monitoring_pool,
 )
@@ -93,6 +101,59 @@ def _select_v2(company_ids: Iterable[uuid.UUID]) -> MonitoringPoolSelectionResul
         selector_version=V2,
         enabled_index_codes=("SP500",),
         watchlist_company_ids=company_ids,
+    )
+
+
+def test_watchlist_marker_classifier_is_exact_and_v2_only() -> None:
+    marker = {"source": "watchlist"}
+
+    assert is_watchlist_marker_basis(marker, selector_version=V2) is True
+    assert (
+        is_watchlist_marker_basis(
+            marker,
+            selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        )
+        is False
+    )
+    for malformed in (
+        {},
+        {"source": "index"},
+        {"source": "watchlist", "security_listing_id": None},
+        {"source": "watchlist", "unexpected": "value"},
+        None,
+    ):
+        assert is_watchlist_marker_basis(malformed, selector_version=V2) is False
+
+
+def test_watchlist_marker_diagnostics_are_stably_sorted_and_deduplicated() -> None:
+    higher = uuid.UUID("00000000-0000-0000-0000-000000000002")
+    lower = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    members = (
+        MonitoringPoolMember(company_id=higher, ordinal=0, basis=[{"source": "watchlist"}]),
+        MonitoringPoolMember(company_id=lower, ordinal=1, basis=[{"source": "watchlist"}]),
+        MonitoringPoolMember(company_id=higher, ordinal=2, basis=[{"source": "watchlist"}]),
+    )
+
+    diagnostics = monitoring_pool_member_diagnostics(members, selector_version=V2)
+
+    assert diagnostics == (
+        PoolMemberDiagnostic(
+            company_id=lower,
+            reason=WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+            source=WATCHLIST_MARKER_SOURCE,
+        ),
+        PoolMemberDiagnostic(
+            company_id=higher,
+            reason=WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+            source=WATCHLIST_MARKER_SOURCE,
+        ),
+    )
+    assert (
+        monitoring_pool_member_diagnostics(
+            members,
+            selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+        )
+        == ()
     )
 
 
@@ -229,6 +290,44 @@ def test_v2_rejects_invalid_basis_source() -> None:
     )
 
     with pytest.raises(MonitoringPoolIntegrityError, match="source is invalid"):
+        resolve_monitoring_pool_snapshot_contract(
+            as_of=AS_OF,
+            selector_version=V2,
+            pool_hash="b" * 64,
+        )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "basis",
+    (
+        {"source": "index"},
+        {"source": "watchlist", "effective_from": "2026-01-01", "effective_to": None},
+        {"source": "watchlist", "security_listing_id": None},
+        {"source": "watchlist", "unexpected": "value"},
+        {"source": "unknown"},
+    ),
+)
+def test_v2_resolver_rejects_malformed_marker_like_basis(
+    basis: dict[str, object],
+) -> None:
+    company = _company(f"malformed-{uuid.uuid4().hex[:8]}")
+    snapshot = MonitoringPoolSnapshot.objects.create(
+        as_of_date=AS_OF,
+        selector_version=V2,
+        enabled_index_codes=["SP500"],
+        input_revision="a" * 64,
+        pool_hash="b" * 64,
+        member_count=1,
+    )
+    MonitoringPoolMember.objects.create(
+        snapshot=snapshot,
+        company=company,
+        ordinal=0,
+        basis=[basis],
+    )
+
+    with pytest.raises(MonitoringPoolIntegrityError):
         resolve_monitoring_pool_snapshot_contract(
             as_of=AS_OF,
             selector_version=V2,
@@ -530,6 +629,111 @@ def test_v2_resolver_rebuilds_and_validates_the_input_revision() -> None:
 
 
 @pytest.mark.django_db
+def test_v2_resolver_rejects_unaudited_listing_interval_change() -> None:
+    _index()
+    company = _company("unaudited-interval")
+    listing = _listing(company, "unaudited-interval")
+    result = _select_v2((company.pk,))
+    SecurityListing.objects.filter(pk=listing.pk).update(effective_to=date(2026, 9, 1))
+
+    with pytest.raises(MonitoringPoolIntegrityError):
+        resolve_monitoring_pool_snapshot_contract(
+            as_of=result.as_of_date,
+            selector_version=result.selector_version,
+            pool_hash=result.monitoring_pool_hash,
+        )
+
+
+@pytest.mark.django_db
+def test_v2_resolver_rejects_incomplete_listing_interval_audit_chain() -> None:
+    _index()
+    company = _company("incomplete-interval")
+    listing = _listing(company, "incomplete-interval")
+    result = _select_v2((company.pk,))
+    sync_run = _data_change_sync_run("incomplete-listing-audit")
+    SecurityListing.objects.filter(pk=listing.pk).update(effective_to=date(2026, 9, 1))
+    record_data_change(
+        target_type=DataChange.TargetType.SECURITY_LISTING,
+        target_id=listing.pk,
+        field_name="effective_to",
+        old_value=None,
+        new_value="2026-09-01",
+        rule_version=IDENTITY_RULE_VERSION,
+        sync_run=sync_run,
+    )
+
+    with pytest.raises(MonitoringPoolIntegrityError, match="incomplete or unaudited"):
+        resolve_monitoring_pool_snapshot_contract(
+            as_of=result.as_of_date,
+            selector_version=result.selector_version,
+            pool_hash=result.monitoring_pool_hash,
+        )
+
+
+@pytest.mark.django_db
+def test_v2_resolver_accepts_audited_system_listing_transition() -> None:
+    _index()
+    company = _company("audited-system-interval")
+    listing = _listing(company, "audited-system-interval")
+    result = _select_v2((company.pk,))
+    sync_run = _data_change_sync_run("audited-system-transition")
+
+    transition = transition_security_listing(
+        listing=listing,
+        transition_date=date(2026, 9, 1),
+        ticker="SYSTEM",
+        exchange="NYSE",
+        sync_run=sync_run,
+        reason="System listing transition.",
+        request_id="system-listing-transition",
+    )
+
+    assert transition.prior_audit_record is not None
+    assert transition.prior_audit_record.reason == "System listing transition."
+    resolved = resolve_monitoring_pool_snapshot_contract(
+        as_of=result.as_of_date,
+        selector_version=result.selector_version,
+        pool_hash=result.monitoring_pool_hash,
+    )
+    assert resolved.snapshot.pk == result.snapshot.pk
+
+
+@pytest.mark.django_db
+def test_v2_resolver_rejects_wrong_listing_audit_action() -> None:
+    _index()
+    company = _company("wrong-listing-action")
+    listing = _listing(company, "wrong-listing-action")
+    result = _select_v2((company.pk,))
+    sync_run = _data_change_sync_run("wrong-listing-action")
+    SecurityListing.objects.filter(pk=listing.pk).update(effective_to=date(2026, 9, 1))
+    record_data_change(
+        target_type=DataChange.TargetType.SECURITY_LISTING,
+        target_id=listing.pk,
+        field_name="effective_to",
+        old_value=None,
+        new_value="2026-09-01",
+        rule_version=IDENTITY_RULE_VERSION,
+        sync_run=sync_run,
+    )
+    record_system_action(
+        sync_run=sync_run,
+        action=AuditRecord.Action.MANUAL_CORRECTION,
+        target_type=AuditRecord.TargetType.SECURITY_LISTING,
+        target_id=listing.pk,
+        before={"effective_to": None},
+        after={"effective_to": "2026-09-01"},
+        request_id="wrong-listing-action",
+    )
+
+    with pytest.raises(MonitoringPoolIntegrityError, match="incomplete or unaudited"):
+        resolve_monitoring_pool_snapshot_contract(
+            as_of=result.as_of_date,
+            selector_version=result.selector_version,
+            pool_hash=result.monitoring_pool_hash,
+        )
+
+
+@pytest.mark.django_db
 def test_resolver_dispatches_for_v1_and_v2_snapshots() -> None:
     company = _company("resolver")
     listing = _listing(company, "resolver")
@@ -555,3 +759,19 @@ def test_resolver_dispatches_for_v1_and_v2_snapshots() -> None:
     assert resolved_v1.snapshot.pk == v1.snapshot.pk
     assert resolved_v2.snapshot.pk == v2.snapshot.pk
     assert tuple(member.company_id for member in resolved_v2.members) == (company.pk,)
+
+
+def _data_change_sync_run(suffix: str) -> SyncRun:
+    token = uuid.uuid4().hex
+    source = DataSource.objects.create(
+        key=f"{suffix}-{token[:8]}",
+        name=f"Data change fixture {suffix}",
+        source_type=DataSource.SourceType.MANUAL,
+        base_url=f"https://{suffix}-{token[:8]}.example.test/",
+    )
+    return start_sync_run(
+        job_type="fixture.monitoring-pool-integrity",
+        source=source,
+        scope={"fixture": suffix},
+        idempotency_key=f"fixture.monitoring-pool-integrity:{token}",
+    )

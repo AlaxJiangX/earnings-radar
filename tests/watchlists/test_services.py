@@ -39,10 +39,11 @@ def _user(suffix: str) -> User:
     )
 
 
-def _company(suffix: str) -> Company:
+def _company(suffix: str, *, cik: str | None = None) -> Company:
     return Company.objects.create(
         legal_name=f"Watchlist {suffix} Inc",
         display_name=f"Watchlist {suffix}",
+        cik=cik,
     )
 
 
@@ -75,7 +76,6 @@ def _add(
         user=user,
         company_id=company.pk,
         as_of=AS_OF,
-        identity_pending=False,
         reason="watchlist test",
         request_id=request_id,
         priority_level=priority_level,
@@ -167,7 +167,6 @@ def test_reactivation_reuses_row_and_preserves_preferences_and_creation_time() -
         user=owner,
         item_id=first.item.pk,
         as_of=AS_OF,
-        identity_pending=False,
         reason="watchlist test",
         request_id="watchlist-reactivate-remove",
     )
@@ -205,7 +204,6 @@ def test_inactive_reactivation_rejects_expired_listing_without_mutating_item() -
         user=owner,
         company_id=company.pk,
         as_of=before_expiry,
-        identity_pending=False,
         reason="reactivation expired listing",
         request_id="reactivate-expired-add",
     )
@@ -213,7 +211,6 @@ def test_inactive_reactivation_rejects_expired_listing_without_mutating_item() -
         user=owner,
         item_id=active.item.pk,
         as_of=before_expiry,
-        identity_pending=False,
         reason="reactivation expired listing",
         request_id="reactivate-expired-remove",
     )
@@ -228,7 +225,6 @@ def test_inactive_reactivation_rejects_expired_listing_without_mutating_item() -
             user=owner,
             company_id=company.pk,
             as_of=date(2026, 10, 1),
-            identity_pending=False,
             reason="reactivation expired listing",
             request_id="reactivate-expired-retry",
         )
@@ -356,7 +352,6 @@ def test_concurrent_last_watchlist_removals_serialize_on_company(
                 user=user,
                 item_id=item_id,
                 as_of=AS_OF,
-                identity_pending=False,
                 reason="last removal race",
                 request_id=f"last-remove-race-{item_id}",
             )
@@ -421,7 +416,6 @@ def test_concurrent_add_and_remove_serialize_on_company(
                 user=removing_user,
                 item_id=existing.item.pk,
                 as_of=AS_OF,
-                identity_pending=False,
                 reason="add remove race",
                 request_id="add-remove-race-remove",
             )
@@ -480,7 +474,6 @@ def test_remove_is_user_scoped_soft_delete_and_idempotent() -> None:
             user=other,
             item_id=added.item.pk,
             as_of=AS_OF,
-            identity_pending=False,
             reason="watchlist test",
             request_id="watchlist-remove-cross-user",
         )
@@ -489,7 +482,6 @@ def test_remove_is_user_scoped_soft_delete_and_idempotent() -> None:
         user=owner,
         item_id=added.item.pk,
         as_of=AS_OF,
-        identity_pending=False,
         reason="watchlist test",
         request_id="watchlist-remove-owner",
     )
@@ -501,7 +493,6 @@ def test_remove_is_user_scoped_soft_delete_and_idempotent() -> None:
         user=owner,
         item_id=added.item.pk,
         as_of=AS_OF,
-        identity_pending=False,
         reason="watchlist test",
         request_id="watchlist-remove-owner",
     )
@@ -635,7 +626,6 @@ def test_last_watchlist_removal_without_index_membership_makes_company_inactive(
         user=owner,
         item_id=added.item.pk,
         as_of=AS_OF,
-        identity_pending=False,
         reason="watchlist test",
         request_id="watchlist-last-remove",
     )
@@ -643,6 +633,69 @@ def test_last_watchlist_removal_without_index_membership_makes_company_inactive(
     company.refresh_from_db()
     assert removed.monitoring_result is not None
     assert company.monitoring_status == Company.MonitoringStatus.INACTIVE
+
+
+@pytest.mark.django_db
+def test_removal_keeps_cik_present_company_out_of_pending_identity_without_listing() -> None:
+    owner = _user("cik-no-listing")
+    company = _company("cik-no-listing", cik="0000000001")
+    listing = _listing(
+        company,
+        "cik-no-listing",
+        effective_from=date(2026, 1, 1),
+        effective_to=AS_OF,
+    )
+    added = add_watchlist_item(
+        user=owner,
+        company_id=company.pk,
+        as_of=AS_OF - timedelta(days=1),
+        reason="watchlist test",
+        request_id="watchlist-cik-no-listing-add",
+    )
+
+    removed = remove_watchlist_item(
+        user=owner,
+        item_id=added.item.pk,
+        as_of=AS_OF,
+        reason="watchlist test",
+        request_id="watchlist-cik-no-listing-remove",
+    )
+
+    company.refresh_from_db()
+    assert listing.effective_to == AS_OF
+    assert removed.monitoring_result is not None
+    assert company.monitoring_status == Company.MonitoringStatus.INACTIVE
+
+
+@pytest.mark.django_db
+def test_removal_without_cik_or_effective_listing_marks_company_pending_identity() -> None:
+    owner = _user("no-cik-no-listing")
+    company = _company("no-cik-no-listing")
+    _listing(
+        company,
+        "no-cik-no-listing",
+        effective_from=date(2026, 1, 1),
+        effective_to=AS_OF,
+    )
+    added = add_watchlist_item(
+        user=owner,
+        company_id=company.pk,
+        as_of=AS_OF - timedelta(days=1),
+        reason="watchlist test",
+        request_id="watchlist-no-cik-no-listing-add",
+    )
+
+    removed = remove_watchlist_item(
+        user=owner,
+        item_id=added.item.pk,
+        as_of=AS_OF,
+        reason="watchlist test",
+        request_id="watchlist-no-cik-no-listing-remove",
+    )
+
+    company.refresh_from_db()
+    assert removed.monitoring_result is not None
+    assert company.monitoring_status == Company.MonitoringStatus.PENDING_IDENTITY
 
 
 @pytest.mark.django_db
@@ -670,7 +723,6 @@ def test_removal_keeps_company_active_when_enabled_index_membership_exists() -> 
         user=owner,
         item_id=added.item.pk,
         as_of=AS_OF,
-        identity_pending=False,
         reason="watchlist test",
         request_id="watchlist-indexed-remove",
     )
@@ -692,7 +744,6 @@ def test_removal_keeps_company_active_while_another_user_still_watches() -> None
         user=first_user,
         item_id=first.item.pk,
         as_of=AS_OF,
-        identity_pending=False,
         reason="watchlist test",
         request_id="watchlist-shared-remove",
     )

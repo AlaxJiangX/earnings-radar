@@ -40,6 +40,9 @@ from earnings.services.calendar_run_ownership import owned_calendar_run
 from earnings.services.date_changes import update_earnings_schedule
 from earnings.services.monitoring_pool import (
     MonitoringPoolSnapshotReference,
+    PoolMemberDiagnostic,
+    is_watchlist_marker_basis,
+    monitoring_pool_member_diagnostics,
     resolve_monitoring_pool_snapshot,
 )
 from earnings.services.reconciliation import (
@@ -94,6 +97,7 @@ class CandidateCreationResult:
     source_evidence: SourceEvidence | None
     decision_created: bool
     candidate_created: bool
+    skipped_pool_members: tuple[PoolMemberDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,9 +122,18 @@ class _MatchFacts:
     hints: _NormalizedHints
     pool_companies: tuple[Company, ...]
     pool_listings: tuple[SecurityListing, ...]
+    pool_listing_intervals: dict[uuid.UUID, tuple[date, date | None]]
     cik_companies: tuple[Company, ...]
     listing_matches: tuple[SecurityListing, ...]
     matching_input_revision: str
+    skipped_pool_members: tuple[PoolMemberDiagnostic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _BasisRow:
+    listing_id: uuid.UUID
+    effective_from: date
+    effective_to: date | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +225,7 @@ def create_earnings_candidate_for_observation(
             candidate_id=candidate_id,
             match_factors=match_factors,
             decision=existing,
+            skipped_pool_members=facts.skipped_pool_members,
         )
 
     if evaluation.outcome is CompanyMatchOutcome.MATCHED:
@@ -229,6 +243,7 @@ def create_earnings_candidate_for_observation(
             match_factors=match_factors,
             decision_key=decision_key,
             candidate_id=candidate_id,
+            skipped_pool_members=facts.skipped_pool_members,
         )
 
     return _create_non_match_decision(
@@ -245,6 +260,7 @@ def create_earnings_candidate_for_observation(
         decision_status=decision_status,
         decision_key=decision_key,
         reason_code=evaluation.reason_code,
+        skipped_pool_members=facts.skipped_pool_members,
     )
 
 
@@ -310,14 +326,37 @@ def _build_match_facts(
 ) -> _MatchFacts:
     snapshot = snapshot_reference.snapshot
     hints = _normalize_hints(observation)
-    pool_companies, pool_listings = _load_pool_facts(snapshot_reference)
+    (
+        pool_companies,
+        pool_listings,
+        pool_listing_intervals,
+        skipped_pool_members,
+    ) = _load_pool_facts(snapshot_reference)
     cik_companies = _load_exact_cik_companies(
         normalized_cik=hints.cik,
     )
-    listing_matches = _load_exact_listing_matches(
-        ticker=hints.ticker,
-        exchange=hints.exchange,
-        as_of=snapshot.as_of_date,
+    pool_company_ids = {company.pk for company in pool_companies}
+    pool_listing_matches = tuple(
+        listing
+        for listing in pool_listings
+        if listing.ticker == hints.ticker and listing.exchange == hints.exchange
+    )
+    skipped_company_ids = {diagnostic.company_id for diagnostic in skipped_pool_members}
+    external_listing_matches = tuple(
+        listing
+        for listing in _load_exact_listing_matches(
+            ticker=hints.ticker,
+            exchange=hints.exchange,
+            as_of=snapshot.as_of_date,
+        )
+        if listing.company_id not in pool_company_ids
+        and listing.company_id not in skipped_company_ids
+    )
+    listing_matches = tuple(
+        sorted(
+            pool_listing_matches + external_listing_matches,
+            key=lambda listing: (str(listing.company_id), str(listing.pk)),
+        )
     )
     matching_input_revision = _build_matching_input_revision(
         sync_run=sync_run,
@@ -326,6 +365,7 @@ def _build_match_facts(
         hints=hints,
         pool_companies=pool_companies,
         pool_listings=pool_listings,
+        pool_listing_intervals=pool_listing_intervals,
         cik_companies=cik_companies,
         listing_matches=listing_matches,
         matcher_version=matcher_version,
@@ -335,9 +375,11 @@ def _build_match_facts(
         hints=hints,
         pool_companies=pool_companies,
         pool_listings=pool_listings,
+        pool_listing_intervals=pool_listing_intervals,
         cik_companies=cik_companies,
         listing_matches=listing_matches,
         matching_input_revision=matching_input_revision,
+        skipped_pool_members=skipped_pool_members,
     )
 
 
@@ -356,7 +398,12 @@ def _normalize_hints(observation: EarningsCalendarObservation) -> _NormalizedHin
 
 def _load_pool_facts(
     snapshot_reference: MonitoringPoolSnapshotReference,
-) -> tuple[tuple[Company, ...], tuple[SecurityListing, ...]]:
+) -> tuple[
+    tuple[Company, ...],
+    tuple[SecurityListing, ...],
+    dict[uuid.UUID, tuple[date, date | None]],
+    tuple[PoolMemberDiagnostic, ...],
+]:
     snapshot = snapshot_reference.snapshot
     member_company_ids = {member.company_id for member in snapshot_reference.members}
     companies = tuple(Company.objects.filter(id__in=member_company_ids).order_by("id"))
@@ -366,7 +413,15 @@ def _load_pool_facts(
             "Monitoring pool snapshot references a missing member Company."
         )
 
-    basis_listing_ids = _basis_listing_ids(snapshot_reference.members)
+    skipped_pool_members = monitoring_pool_member_diagnostics(
+        snapshot_reference.members,
+        selector_version=snapshot.selector_version,
+    )
+    skipped_company_ids = {diagnostic.company_id for diagnostic in skipped_pool_members}
+    basis_listing_ids = _basis_listing_ids(
+        snapshot_reference.members,
+        selector_version=snapshot.selector_version,
+    )
     basis_listings = {
         listing.pk: listing for listing in SecurityListing.objects.filter(id__in=basis_listing_ids)
     }
@@ -375,53 +430,68 @@ def _load_pool_facts(
             "Monitoring pool snapshot references a missing SecurityListing."
         )
 
-    active_listings = tuple(
-        SecurityListing.objects.filter(
-            company_id__in=member_company_ids,
-            effective_from__lte=snapshot.as_of_date,
+    pool_listing_intervals: dict[uuid.UUID, tuple[date, date | None]] = {}
+    pool_listings = tuple(
+        sorted(
+            basis_listings.values(),
+            key=lambda listing: (str(listing.company_id), str(listing.pk)),
         )
-        .filter(Q(effective_to__isnull=True) | Q(effective_to__gt=snapshot.as_of_date))
-        .order_by("company_id", "id")
     )
-    active_by_company: dict[uuid.UUID, list[SecurityListing]] = {
-        company_id: [] for company_id in member_company_ids
-    }
-    for listing in active_listings:
-        active_by_company[listing.company_id].append(listing)
 
     for member in snapshot_reference.members:
-        if not active_by_company[member.company_id]:
+        basis = _validated_basis(
+            member,
+            as_of=snapshot.as_of_date,
+            selector_version=snapshot.selector_version,
+        )
+        if not basis and member.company_id not in skipped_company_ids:
             raise CandidateMatchingIntegrityError(
-                "Monitoring pool member has no as-of active SecurityListing."
+                "Monitoring pool member has no frozen listing basis."
             )
-        for basis in _validated_basis(member, snapshot.as_of_date):
-            basis_listing = basis_listings.get(basis["security_listing_id"])
+        for basis_row in basis:
+            basis_listing = basis_listings.get(basis_row.listing_id)
             if basis_listing is None or basis_listing.company_id != member.company_id:
                 raise CandidateMatchingIntegrityError(
                     "Monitoring pool basis does not match its member Company."
                 )
-    return companies, active_listings
+            pool_listing_intervals[basis_row.listing_id] = (
+                basis_row.effective_from,
+                basis_row.effective_to,
+            )
+    return companies, pool_listings, pool_listing_intervals, skipped_pool_members
 
 
-def _basis_listing_ids(members: tuple[MonitoringPoolMember, ...]) -> set[uuid.UUID]:
+def _basis_listing_ids(
+    members: tuple[MonitoringPoolMember, ...],
+    *,
+    selector_version: str,
+) -> set[uuid.UUID]:
     listing_ids: set[uuid.UUID] = set()
     for member in members:
-        for basis in _validated_basis(member, as_of=None):
-            listing_ids.add(basis["security_listing_id"])
+        for basis in _validated_basis(
+            member,
+            as_of=None,
+            selector_version=selector_version,
+        ):
+            listing_ids.add(basis.listing_id)
     return listing_ids
 
 
 def _validated_basis(
     member: MonitoringPoolMember,
+    *,
     as_of: date | None,
-) -> list[dict[str, uuid.UUID]]:
+    selector_version: str,
+) -> list[_BasisRow]:
     value = member.basis
     if not isinstance(value, list) or not value:
         raise CandidateMatchingIntegrityError("Monitoring pool basis is empty.")
-    result: list[dict[str, uuid.UUID]] = []
+    result: list[_BasisRow] = []
     for row in value:
         if not isinstance(row, dict):
             raise CandidateMatchingIntegrityError("Monitoring pool basis row is invalid.")
+        if is_watchlist_marker_basis(row, selector_version=selector_version):
+            continue
         try:
             listing_id = uuid.UUID(str(row["security_listing_id"]))
             effective_from = date.fromisoformat(str(row["effective_from"]))
@@ -442,9 +512,11 @@ def _validated_basis(
                 "Monitoring pool basis is not effective at snapshot as-of."
             )
         result.append(
-            {
-                "security_listing_id": listing_id,
-            }
+            _BasisRow(
+                listing_id=listing_id,
+                effective_from=effective_from,
+                effective_to=effective_to,
+            )
         )
     return result
 
@@ -483,6 +555,7 @@ def _build_matching_input_revision(
     hints: _NormalizedHints,
     pool_companies: tuple[Company, ...],
     pool_listings: tuple[SecurityListing, ...],
+    pool_listing_intervals: dict[uuid.UUID, tuple[date, date | None]],
     cik_companies: tuple[Company, ...],
     listing_matches: tuple[SecurityListing, ...],
     matcher_version: str,
@@ -513,7 +586,13 @@ def _build_matching_input_revision(
             key=lambda row: row["company_id"],
         ),
         "pool_listings": sorted(
-            (_listing_fact(listing) for listing in pool_listings),
+            (
+                _frozen_listing_fact(
+                    listing,
+                    interval=pool_listing_intervals[listing.pk],
+                )
+                for listing in pool_listings
+            ),
             key=lambda row: (row["company_id"], row["security_listing_id"]),
         ),
         "exact_external_cik_companies": sorted(
@@ -524,7 +603,11 @@ def _build_matching_input_revision(
             key=lambda row: row["company_id"],
         ),
         "exact_external_listing_matches": sorted(
-            (_listing_fact(listing) for listing in listing_matches),
+            (
+                _listing_fact(listing)
+                for listing in listing_matches
+                if listing.pk not in pool_listing_intervals
+            ),
             key=lambda row: (row["company_id"], row["security_listing_id"]),
         ),
     }
@@ -539,6 +622,22 @@ def _listing_fact(listing: SecurityListing) -> dict[str, str | None]:
         "exchange": listing.exchange,
         "effective_from": listing.effective_from.isoformat(),
         "effective_to": listing.effective_to.isoformat() if listing.effective_to else None,
+    }
+
+
+def _frozen_listing_fact(
+    listing: SecurityListing,
+    *,
+    interval: tuple[date, date | None],
+) -> dict[str, str | None]:
+    effective_from, effective_to = interval
+    return {
+        "company_id": str(listing.company_id),
+        "security_listing_id": str(listing.pk),
+        "ticker": listing.ticker,
+        "exchange": listing.exchange,
+        "effective_from": effective_from.isoformat(),
+        "effective_to": effective_to.isoformat() if effective_to else None,
     }
 
 
@@ -776,6 +875,7 @@ def _create_matched_candidate(
     match_factors: Mapping[str, object],
     decision_key: str,
     candidate_id: uuid.UUID,
+    skipped_pool_members: tuple[PoolMemberDiagnostic, ...],
 ) -> CandidateCreationResult:
     assert evaluation.matched_company is not None
     try:
@@ -843,6 +943,7 @@ def _create_matched_candidate(
                 source_evidence=evidence,
                 decision_created=decision_result.created,
                 candidate_created=True,
+                skipped_pool_members=skipped_pool_members,
             )
     except IntegrityError as error:
         existing = _find_decision(decision_key)
@@ -862,6 +963,7 @@ def _create_matched_candidate(
             candidate_id=candidate_id,
             match_factors=match_factors,
             decision=existing,
+            skipped_pool_members=skipped_pool_members,
         )
 
 
@@ -880,6 +982,7 @@ def _create_non_match_decision(
     decision_status: str,
     decision_key: str,
     reason_code: str,
+    skipped_pool_members: tuple[PoolMemberDiagnostic, ...],
 ) -> CandidateCreationResult:
     try:
         with transaction.atomic():
@@ -920,6 +1023,7 @@ def _create_non_match_decision(
             candidate_id=None,
             match_factors=match_factors,
             decision=existing,
+            skipped_pool_members=skipped_pool_members,
         )
 
     return CandidateCreationResult(
@@ -936,6 +1040,7 @@ def _create_non_match_decision(
         source_evidence=None,
         decision_created=decision_result.created,
         candidate_created=False,
+        skipped_pool_members=skipped_pool_members,
     )
 
 
@@ -1035,6 +1140,7 @@ def _reuse_existing_result(
     candidate_id: uuid.UUID | None,
     match_factors: Mapping[str, object],
     decision: EarningsReconciliationDecision,
+    skipped_pool_members: tuple[PoolMemberDiagnostic, ...],
 ) -> CandidateCreationResult:
     expected_type, expected_status = _decision_values_for_outcome(outcome)
     if (
@@ -1137,6 +1243,7 @@ def _reuse_existing_result(
         source_evidence=evidence,
         decision_created=False,
         candidate_created=False,
+        skipped_pool_members=skipped_pool_members,
     )
 
 

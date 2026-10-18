@@ -21,6 +21,11 @@ from earnings.models import (
     EarningsReconciliationDecision,
 )
 from earnings.reference_calendar_parser import ReferenceParseStatus, parse_reference_calendar
+from earnings.services import reference_calendar_sync as reference_calendar_sync_module
+from earnings.services.monitoring_pool import (
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
+)
 from earnings.services.reference_calendar_projection import (
     latest_reference_calendar,
     project_reference_calendar,
@@ -30,6 +35,7 @@ from indexes.models import IndexMembership, MarketIndex
 from indexes.services import end_membership
 from providers.alpha_vantage_reference import AlphaVantageReferenceProvider
 from providers.http import TransportRequest, TransportResponse
+from watchlists.models import WatchlistItem
 
 AS_OF = date(2026, 9, 30)
 HEADER = b"symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\n"
@@ -139,6 +145,41 @@ def test_empty_response_is_success_with_unknown_coverage() -> None:
     assert projection.provider_coverage_end is None
 
 
+@pytest.mark.django_db(transaction=True)
+def test_v2_watchlist_marker_is_diagnostic_without_blocking_projection() -> None:
+    source, indexed_company = _pool()
+    marker_company = Company.objects.create(
+        legal_name="Marker Inc",
+        display_name="Marker",
+    )
+    user = User.objects.create_user(
+        email="marker-reference@example.com",
+        password="fixture-password-only",
+    )
+    WatchlistItem.objects.create(user=user, company=marker_company)
+    provider = AlphaVantageReferenceProvider(
+        api_key="fixture-key",
+        transport=CsvTransport(HEADER + b"AAA,Alpha,2026-10-01,,,USD,pre-market\n"),
+    )
+
+    result = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+    )
+    projection = project_reference_calendar(result.sync_run.pk)
+
+    assert projection.status == "COMPLETE"
+    assert [row.company_id for row in projection.rows] == [indexed_company.pk]
+    assert projection.diagnostics.invalid_basis == 0
+    assert len(projection.diagnostics.skipped_members) == 1
+    skipped = projection.diagnostics.skipped_members[0]
+    assert skipped.company_id == marker_company.pk
+    assert skipped.reason == WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON
+    assert skipped.source == "watchlist"
+
+
 def _pool() -> tuple[DataSource, Company]:
     source = DataSource.objects.create(
         key="alpha-vantage-free",
@@ -183,12 +224,23 @@ def test_reference_sync_replay_is_read_only_and_idempotent(
     first = execute_reference_calendar_sync(
         source=source, as_of=AS_OF, enabled_index_codes=("SP500",), provider=provider
     )
+    first_recalculated_at = Company.objects.values_list(
+        "monitoring_recalculated_at", flat=True
+    ).get(pk=company.pk)
     second = execute_reference_calendar_sync(
         source=source, as_of=AS_OF, enabled_index_codes=("SP500",), provider=provider
     )
     assert first.created is True and second.created is False
     assert transport.calls == 1
     assert first.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert (
+        Company.objects.values_list("monitoring_recalculated_at", flat=True).get(pk=company.pk)
+        == first_recalculated_at
+    )
+    assert first.sync_run.scope["selector_version"] == (
+        EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2
+    )
+    assert first.sync_run.scope["window_kind"] == "scheduled"
     assert RawDataRecord.objects.count() == 1
     assert RawDataObservation.objects.count() == 1
     assert RawDataParseAttempt.objects.get().status == RawDataParseAttempt.Status.SUCCEEDED
@@ -203,8 +255,14 @@ def test_reference_sync_replay_is_read_only_and_idempotent(
     )
     now = datetime.now(UTC)
     monkeypatch.setattr(
-        "earnings.services.monitoring_pool.select_monitoring_pool",
-        lambda **_kwargs: pytest.fail("Replay invoked the current monitoring-pool selector."),
+        reference_calendar_sync_module,
+        "compose_current_monitoring_pool",
+        lambda **_kwargs: pytest.fail("Replay invoked current monitoring-pool composition."),
+    )
+    monkeypatch.setattr(
+        reference_calendar_sync_module,
+        "recompute_monitoring_pool_composition",
+        lambda **_kwargs: pytest.fail("Replay invoked monitoring-pool recompute."),
     )
     projection = project_reference_calendar(first.sync_run.pk, now=now)
     repeated = project_reference_calendar(first.sync_run.pk, now=now + timedelta(days=3))
@@ -216,6 +274,7 @@ def test_reference_sync_replay_is_read_only_and_idempotent(
     assert projection.rows[0].company_id == company.pk
     assert projection.rows[0].session == "post_market"
     assert projection.diagnostics.out_of_pool == 1
+    assert projection.diagnostics.skipped_members == ()
     assert projection.rows[0].row_key == repeated.rows[0].row_key
     assert projection.freshness == "fresh"
     assert repeated.freshness == "stale"
@@ -253,9 +312,10 @@ def test_partial_reference_run_falls_back_to_latest_complete() -> None:
         as_of=AS_OF,
         enabled_index_codes=("SP500",),
         provider=partial_provider,
-        request_id="retry-1",
+        request_id="manual-1",
     )
     assert partial.sync_run.status == SyncRun.Status.PARTIAL
+    assert partial.sync_run.scope["window_kind"] == "manual"
     assert project_reference_calendar(partial.sync_run.pk).rows == ()
     view = latest_reference_calendar(source_id=source.pk)
     assert view.update_state == "update_incomplete"
@@ -264,6 +324,148 @@ def test_partial_reference_run_falls_back_to_latest_complete() -> None:
     assert len(view.projection.rows) == 1
     assert EarningsEvent.objects.count() == 0
     assert SourceEvidence.objects.count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_manual_reference_rerun_recomposes_current_v2_pool() -> None:
+    source, indexed_company = _pool()
+    first_user = User.objects.create_user(
+        email="reference-watch-a@example.com",
+        password="fixture-password-only",
+    )
+    second_user = User.objects.create_user(
+        email="reference-watch-b@example.com",
+        password="fixture-password-only",
+    )
+    second_company = Company.objects.create(
+        legal_name="Second Watch Inc",
+        display_name="Second Watch",
+    )
+    first_item = WatchlistItem.objects.create(user=first_user, company=indexed_company)
+    transport = CsvTransport(HEADER)
+    provider = AlphaVantageReferenceProvider(api_key="fixture-key", transport=transport)
+
+    scheduled = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+    )
+    first_item.is_active = False
+    first_item.deactivated_at = datetime.now(UTC)
+    first_item.save(update_fields=("is_active", "deactivated_at", "updated_at"))
+    WatchlistItem.objects.create(user=second_user, company=second_company)
+    manual = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+        request_id="manual-reference-rerun-1",
+    )
+
+    assert scheduled.sync_run.scope["window_kind"] == "scheduled"
+    assert manual.sync_run.scope["window_kind"] == "manual"
+    assert manual.sync_run.scope["selector_version"] == (
+        EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2
+    )
+    assert (
+        manual.sync_run.scope["monitoring_pool_hash"]
+        != (scheduled.sync_run.scope["monitoring_pool_hash"])
+    )
+    assert manual.created is True
+    assert transport.calls == 2
+
+
+@pytest.mark.django_db(transaction=True)
+def test_idempotent_reference_run_repairs_identity_status_transition() -> None:
+    source, _indexed_company = _pool()
+    user = User.objects.create_user(
+        email="reference-identity-transition@example.com",
+        password="fixture-password-only",
+    )
+    marker_company = Company.objects.create(
+        legal_name="Reference Identity Marker",
+        display_name="Reference Identity Marker",
+    )
+    WatchlistItem.objects.create(user=user, company=marker_company)
+    transport = CsvTransport(HEADER)
+    provider = AlphaVantageReferenceProvider(api_key="fixture-key", transport=transport)
+
+    first = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+    )
+    first_recalculated_at = Company.objects.values_list(
+        "monitoring_recalculated_at", flat=True
+    ).get(pk=marker_company.pk)
+    assert first_recalculated_at is not None
+    marker_company.cik = "0000000004"
+    marker_company.save(update_fields=("cik", "updated_at"))
+
+    second = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+    )
+
+    marker_company.refresh_from_db()
+    assert first.created is True
+    assert second.created is False
+    assert second.sync_run.pk == first.sync_run.pk
+    assert transport.calls == 1
+    assert marker_company.monitoring_status == Company.MonitoringStatus.ACTIVE
+    assert marker_company.monitoring_recalculated_at is not None
+    assert marker_company.monitoring_recalculated_at > first_recalculated_at
+
+
+@pytest.mark.django_db(transaction=True)
+def test_historical_reference_retry_scope_remains_readable() -> None:
+    source, _company = _pool()
+    provider = AlphaVantageReferenceProvider(api_key="fixture-key", transport=CsvTransport(HEADER))
+    result = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+    )
+    old_scope = dict(result.sync_run.scope)
+    old_scope["window_kind"] = "retry"
+    SyncRun.objects.filter(pk=result.sync_run.pk).update(scope=old_scope)
+
+    projection = project_reference_calendar(result.sync_run.pk)
+
+    assert projection.status == "EMPTY"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reference_recompute_failure_stops_before_provider_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source, _company = _pool()
+    transport = CsvTransport(HEADER)
+    provider = AlphaVantageReferenceProvider(api_key="fixture-key", transport=transport)
+
+    monkeypatch.setattr(
+        reference_calendar_sync_module,
+        "recompute_monitoring_pool_composition",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("recompute failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="recompute failed"):
+        execute_reference_calendar_sync(
+            source=source,
+            as_of=AS_OF,
+            enabled_index_codes=("SP500",),
+            provider=provider,
+        )
+
+    run = SyncRun.objects.get(job_type="earnings.calendar_reference_window")
+    assert run.status == SyncRun.Status.FAILED
+    assert transport.calls == 0
+    assert RawDataObservation.objects.filter(sync_run=run).count() == 0
 
 
 @pytest.mark.django_db(transaction=True)

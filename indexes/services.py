@@ -77,6 +77,26 @@ def set_index_enabled(
             raise MarketIndexNotFound(
                 f"MarketIndex with code {normalized_code!r} does not exist."
             ) from exc
+        affected_company_ids = tuple(
+            sorted(
+                set(
+                    IndexMembership.objects.filter(index=market_index).values_list(
+                        "security_listing__company_id",
+                        flat=True,
+                    )
+                ),
+                key=str,
+            )
+        )
+        if affected_company_ids:
+            locked_company_ids = tuple(
+                Company.objects.select_for_update()
+                .filter(id__in=affected_company_ids)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
+            if set(locked_company_ids) != set(affected_company_ids):
+                raise MembershipIntegrityConflict("Index toggle references a missing Company.")
 
         if market_index.is_enabled == enabled:
             return IndexToggleResult(
@@ -303,6 +323,7 @@ def create_index_membership(
     with transaction.atomic():
         # Re-read + lock domain parents
         index_obj = _locked_market_index(index)
+        Company.objects.select_for_update().get(pk=security_listing.company_id)
         listing_obj = _locked_security_listing(security_listing)
         _validate_membership_within_listing(
             effective_from=effective_from,
@@ -422,6 +443,11 @@ def end_membership(
     )
 
     with transaction.atomic():
+        company_id = IndexMembership.objects.values_list(
+            "security_listing__company_id",
+            flat=True,
+        ).get(pk=membership.pk)
+        Company.objects.select_for_update().get(pk=company_id)
         obj = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
         # --- Idempotency ordering (lock first, then classify) ---
@@ -548,6 +574,11 @@ def cancel_membership(
     normalized_request_id = request_id.strip()
 
     with transaction.atomic():
+        company_id = IndexMembership.objects.values_list(
+            "security_listing__company_id",
+            flat=True,
+        ).get(pk=membership.pk)
+        Company.objects.select_for_update().get(pk=company_id)
         obj = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
         # --- Idempotency: already cancelled → no-op ---
@@ -666,6 +697,43 @@ def correct_membership(
     resolved_evidence = context.source_evidence
 
     with transaction.atomic():
+        membership_meta = IndexMembership.objects.values(
+            "index_id",
+            "security_listing__company_id",
+        ).get(pk=membership.pk)
+        old_company_id = membership_meta["security_listing__company_id"]
+        replacement_listing = replacement_values.get("security_listing")
+        replacement_index = replacement_values.get("index")
+        replacement_company_id = (
+            replacement_listing.company_id
+            if isinstance(replacement_listing, SecurityListing)
+            else old_company_id
+        )
+        affected_company_ids = tuple(sorted({old_company_id, replacement_company_id}, key=str))
+        replacement_index_id = (
+            replacement_index.pk
+            if isinstance(replacement_index, MarketIndex)
+            else membership_meta["index_id"]
+        )
+        index_ids = {membership_meta["index_id"], replacement_index_id}
+        locked_index_ids = set(
+            MarketIndex.objects.select_for_update()
+            .filter(pk__in=index_ids)
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
+        if locked_index_ids != index_ids:
+            raise MembershipIntegrityConflict(
+                "Membership correction references a missing MarketIndex."
+            )
+        locked_company_ids = tuple(
+            Company.objects.select_for_update()
+            .filter(id__in=affected_company_ids)
+            .order_by("id")
+            .values_list("id", flat=True)
+        )
+        if set(locked_company_ids) != set(affected_company_ids):
+            raise MembershipIntegrityConflict("Membership correction references a missing Company.")
         old = IndexMembership.objects.select_for_update().get(pk=membership.pk)
 
         # Prevent double-correction
@@ -873,6 +941,28 @@ def close_memberships_for_listing(
     )
 
     with transaction.atomic():
+        affected_index_ids = tuple(
+            sorted(
+                set(
+                    IndexMembership.objects.filter(
+                        security_listing=listing,
+                    ).values_list("index_id", flat=True)
+                ),
+                key=str,
+            )
+        )
+        if affected_index_ids:
+            locked_index_ids = tuple(
+                MarketIndex.objects.select_for_update()
+                .filter(id__in=affected_index_ids)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
+            if set(locked_index_ids) != set(affected_index_ids):
+                raise MembershipIntegrityConflict(
+                    "Listing membership closure references a missing MarketIndex."
+                )
+        Company.objects.select_for_update().get(pk=listing.company_id)
         locked_listing = SecurityListing.objects.select_for_update().get(pk=listing.pk)
 
         if new_effective_to <= locked_listing.effective_from:
@@ -1560,13 +1650,35 @@ def activate_due_memberships(
                     f"only running runs may activate memberships."
                 )
 
-        candidates = list(
-            IndexMembership.objects.select_for_update()
-            .filter(
-                status=IndexMembership.Status.ANNOUNCED,
-                effective_from__lte=resolved_date,
+        candidate_filter = {
+            "status": IndexMembership.Status.ANNOUNCED,
+            "effective_from__lte": resolved_date,
+        }
+        candidate_company_ids = tuple(
+            sorted(
+                set(
+                    IndexMembership.objects.filter(**candidate_filter).values_list(
+                        "security_listing__company_id",
+                        flat=True,
+                    )
+                ),
+                key=str,
             )
-            .order_by("pk")
+        )
+        if candidate_company_ids:
+            locked_company_ids = tuple(
+                Company.objects.select_for_update()
+                .filter(id__in=candidate_company_ids)
+                .order_by("id")
+                .values_list("id", flat=True)
+            )
+            if set(locked_company_ids) != set(candidate_company_ids):
+                raise MembershipIntegrityConflict(
+                    "Membership activation references a missing Company."
+                )
+
+        candidates = list(
+            IndexMembership.objects.select_for_update().filter(**candidate_filter).order_by("pk")
         )
 
         for obj in candidates:

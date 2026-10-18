@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from accounts.models import User
 from audit.models import (
     DataSource,
     RawDataParseAttempt,
@@ -12,6 +13,7 @@ from audit.models import (
     SyncRun,
 )
 from companies.models import Company, SecurityListing
+from companies.services import transition_security_listing
 from earnings.alpha_vantage_canonical_parser import (
     ALPHA_VANTAGE_CANONICAL_PARSER_VERSION,
     AlphaVantageCanonicalParseStatus,
@@ -32,23 +34,29 @@ from earnings.services import (
     EARNINGS_SOURCE_EVENT_IDENTITY_VERSION_V2,
     AlphaVantageCanonicalReplayIntegrityError,
     AlphaVantageCanonicalSyncResult,
+    MonitoringPoolSnapshotReference,
     derive_alpha_vantage_candidate_family_key,
     derive_alpha_vantage_candidate_uuid,
     derive_alpha_vantage_source_identity_v2,
     execute_alpha_vantage_canonical_sync,
     nominal_window_end,
+    resolve_alpha_vantage_provider_symbol,
     verify_alpha_vantage_canonical_replay,
 )
 from earnings.services.monitoring_pool import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
     select_monitoring_pool,
 )
 from indexes.models import IndexMembership, MarketIndex
+from indexes.services import end_membership
 from providers.alpha_vantage_canonical import (
     ALPHA_VANTAGE_CANONICAL_PROVIDER_VERSION,
     AlphaVantageCanonicalProvider,
 )
 from providers.http import TransportRequest, TransportResponse
+from watchlists.models import WatchlistItem
 
 AS_OF = date(2026, 9, 30)
 HEADER = b"symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\n"
@@ -231,6 +239,112 @@ def test_v2_identity_excludes_mutable_scheduling_facts() -> None:
     assert EARNINGS_SOURCE_EVENT_IDENTITY_VERSION_V2 == "earnings-source-event-identity-v2"
     assert nominal_window_end(date(2026, 9, 30)) == date(2026, 12, 29)
     assert nominal_window_end(date(2026, 1, 31)) == date(2026, 4, 29)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_v2_watchlist_marker_is_skipped_without_changing_row_skip_count() -> None:
+    source = _source()
+    indexed_company, indexed_listing = _company_with_listing(ticker="AAA")
+    _membership(indexed_listing)
+    marker_company = Company.objects.create(
+        legal_name="Marker Inc",
+        display_name="Marker",
+    )
+    snapshot = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(marker_company.pk,),
+    ).snapshot
+
+    result = _execute(
+        source=source,
+        snapshot=snapshot,
+        provider=_provider(HEADER + b"AAA,Alpha,2026-10-01,2026-09-30,1.23,USD,post-market\n"),
+    )
+
+    assert result.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert result.skipped_count == 0
+    assert len(result.skipped_members) == 1
+    assert result.skipped_members[0].company_id == marker_company.pk
+    assert result.skipped_members[0].reason == WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON
+    assert result.skipped_members[0].source == "watchlist"
+    assert EarningsEvent.objects.get().company_id == indexed_company.pk
+
+
+@pytest.mark.django_db
+def test_alpha_vantage_symbol_uses_frozen_listing_interval_after_backdated_transition() -> None:
+    company, listing = _company_with_listing(ticker="FROZEN")
+    _membership(listing)
+    selection = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(),
+    )
+    actor = User.objects.create_user(
+        email="alpha-frozen-listing@example.com",
+        password="fixture-password-only",
+    )
+    end_membership(
+        membership=IndexMembership.objects.get(security_listing=listing),
+        effective_to=date(2026, 9, 1),
+        actor_user=actor,
+        reason="Backdated listing identity correction.",
+        request_id="alpha-frozen-listing-membership",
+    )
+    transition_security_listing(
+        listing=listing,
+        transition_date=date(2026, 9, 1),
+        ticker="SUCCESSOR",
+        exchange="NYSE",
+        actor_user=actor,
+        reason="Backdated listing identity correction.",
+        request_id="alpha-frozen-listing-transition",
+    )
+
+    resolution = resolve_alpha_vantage_provider_symbol(
+        snapshot_reference=MonitoringPoolSnapshotReference(
+            snapshot=selection.snapshot,
+            members=selection.members,
+        ),
+        provider_symbol="FROZEN",
+    )
+
+    assert resolution.company is not None
+    assert resolution.company.pk == company.pk
+    assert tuple(item.pk for item in resolution.listings) == (listing.pk,)
+
+
+@pytest.mark.django_db
+def test_alpha_vantage_accepts_multiple_basis_intervals_for_same_listing() -> None:
+    company, listing = _company_with_listing(ticker="DUAL")
+    _membership(listing)
+    index_membership = IndexMembership.objects.get(security_listing=listing)
+    IndexMembership.objects.filter(pk=index_membership.pk).update(effective_to=date(2026, 12, 31))
+    user = User.objects.create_user(
+        email="alpha-dual-basis@example.com",
+        password="fixture-password-only",
+    )
+    WatchlistItem.objects.create(user=user, company=company)
+    selection = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(company.pk,),
+    )
+
+    resolution = resolve_alpha_vantage_provider_symbol(
+        snapshot_reference=MonitoringPoolSnapshotReference(
+            snapshot=selection.snapshot,
+            members=selection.members,
+        ),
+        provider_symbol="DUAL",
+    )
+
+    assert resolution.company is not None
+    assert resolution.company.pk == company.pk
+    assert tuple(item.pk for item in resolution.listings) == (listing.pk,)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -467,6 +581,7 @@ def test_symbol_reuse_across_snapshots_fails_closed() -> None:
         provider=_provider(HEADER + b"AAA,Alpha,2026-10-01,2026-09-30,1.23,USD,post-market\n"),
     )
     assert first.sync_run.status == SyncRun.Status.SUCCEEDED
+    assert first.skipped_members == ()
     assert EarningsEvent.objects.count() == 1
 
     IndexMembership.objects.filter(security_listing=listing_a).update(

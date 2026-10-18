@@ -13,6 +13,7 @@ import pytest
 from django.db import close_old_connections, connection, connections
 from django.utils import timezone
 
+from accounts.models import User
 from audit.models import (
     AuditRecord,
     DataChange,
@@ -23,6 +24,7 @@ from audit.models import (
     SyncRun,
 )
 from companies.models import Company, SecurityListing
+from companies.services import transition_security_listing
 from earnings.models import (
     EarningsCalendarObservation,
     EarningsDateChange,
@@ -37,6 +39,8 @@ from earnings.services import (
     EARNINGS_CALENDAR_WINDOW_JOB_TYPE,
     EARNINGS_COMPANY_MATCHER_VERSION,
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
+    EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+    WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON,
     CandidateCreationResult,
     CandidateMatchingIntegrityError,
     CompanyMatchOutcome,
@@ -53,6 +57,7 @@ from earnings.services import candidate_matching as candidate_matching_module
 from earnings.services.calendar_run_ownership import EarningsCalendarRunBusy
 from earnings.services.calendar_sync_identity import EarningsCalendarWindowKind
 from indexes.models import IndexMembership, MarketIndex
+from indexes.services import end_membership
 
 AS_OF = date(2026, 9, 30)
 LISTING_FROM = date(2025, 1, 1)
@@ -66,6 +71,15 @@ class _Scenario:
     snapshot: MonitoringPoolSnapshot
     run: SyncRun
     raw_record: RawDataRecord
+    observation: EarningsCalendarObservation
+
+
+@dataclass(frozen=True, slots=True)
+class _MarkerScenario:
+    source: DataSource
+    company: Company
+    snapshot: MonitoringPoolSnapshot
+    run: SyncRun
     observation: EarningsCalendarObservation
 
 
@@ -300,6 +314,33 @@ def _scenario(
     return _Scenario(source, company, listing, snapshot, run, raw_record, observation)
 
 
+def _marker_scenario(
+    suffix: str,
+    *,
+    cik: str | None,
+    ticker: str = "",
+) -> _MarkerScenario:
+    source = _source(suffix)
+    company = _company(suffix, cik=cik)
+    _market_index()
+    snapshot = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(company.pk,),
+    ).snapshot
+    run = _run(source=source, snapshot=snapshot, suffix=suffix)
+    observation = _observation(
+        source=source,
+        run=run,
+        cik=cik or "",
+        ticker=ticker,
+        exchange="NYSE" if ticker else "",
+        provider_symbol=ticker,
+    )
+    return _MarkerScenario(source, company, snapshot, run, observation)
+
+
 def _match(
     scenario: _Scenario,
     *,
@@ -309,6 +350,14 @@ def _match(
         sync_run=scenario.run,
         observation=scenario.observation,
         matcher_version=matcher_version,
+    )
+
+
+def _match_marker(scenario: _MarkerScenario) -> CandidateCreationResult:
+    return create_earnings_candidate_for_observation(
+        sync_run=scenario.run,
+        observation=scenario.observation,
+        matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
     )
 
 
@@ -382,6 +431,7 @@ def test_exact_cik_matches_in_pool_and_persists_candidate_lineage() -> None:
     assert _factor(result)["matched_security_listing_ids"] == []
     assert result.source_evidence.normalized_value == result.decision.match_factors
     assert result.source_evidence.confidence == Decimal("0.9000")
+    assert result.skipped_pool_members == ()
     assert (
         AuditRecord.objects.filter(
             sync_run=scenario.run,
@@ -391,6 +441,112 @@ def test_exact_cik_matches_in_pool_and_persists_candidate_lineage() -> None:
         ).count()
         == 1
     )
+
+
+@pytest.mark.django_db
+def test_marker_pool_member_still_matches_by_exact_cik() -> None:
+    scenario = _marker_scenario("marker-cik", cik="0000000999")
+
+    result = _match_marker(scenario)
+
+    assert result.outcome is CompanyMatchOutcome.MATCHED
+    assert result.candidate is not None
+    assert result.candidate.company_id == scenario.company.pk
+    assert _factor(result)["match_strategy"] == "cik"
+    assert len(result.skipped_pool_members) == 1
+    assert result.skipped_pool_members[0].company_id == scenario.company.pk
+    assert result.skipped_pool_members[0].reason == WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON
+
+
+@pytest.mark.django_db
+def test_marker_pool_member_ignores_later_listing_and_keeps_company_in_pool() -> None:
+    scenario = _marker_scenario("marker-listing", cik=None, ticker="LATE")
+    late_listing = _listing(
+        scenario.company,
+        ticker="LATE",
+        exchange="NYSE",
+        effective_from=LISTING_FROM,
+    )
+
+    result = _match_marker(scenario)
+    snapshot_reference = resolve_monitoring_pool_snapshot(scenario.run)
+    facts = candidate_matching_module._build_match_facts(
+        sync_run=scenario.run,
+        observation=scenario.observation,
+        snapshot_reference=snapshot_reference,
+        matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
+    )
+
+    assert result.outcome is CompanyMatchOutcome.UNMATCHED
+    assert result.candidate is None
+    assert tuple(company.pk for company in facts.pool_companies) == (scenario.company.pk,)
+    assert facts.pool_listings == ()
+    assert facts.listing_matches == ()
+    assert len(result.skipped_pool_members) == 1
+    assert result.skipped_pool_members[0].company_id == scenario.company.pk
+    assert late_listing.company_id == scenario.company.pk
+
+
+@pytest.mark.django_db
+def test_ticker_matching_uses_frozen_listing_interval_after_backdated_transition() -> None:
+    source = _source("frozen-listing-match")
+    company = _company("frozen-listing-match")
+    listing = _listing(
+        company,
+        ticker="OLD",
+        exchange="NYSE",
+        effective_from=LISTING_FROM,
+        is_primary=True,
+    )
+    _membership(listing=listing, effective_from=LISTING_FROM)
+    snapshot = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(),
+    ).snapshot
+    run = _run(source=source, snapshot=snapshot, suffix="frozen-listing-match")
+    raw_record = _raw_record(source=source, run=run, suffix="frozen-listing-match")
+    observation = _observation(
+        source=source,
+        run=run,
+        raw_record=raw_record,
+        cik="",
+        ticker="OLD",
+        exchange="NYSE",
+    )
+    scenario = _Scenario(source, company, listing, snapshot, run, raw_record, observation)
+    first = _match(scenario)
+    actor = User.objects.create_user(
+        email="matching-frozen-listing@example.com",
+        password="fixture-password-only",
+    )
+    end_membership(
+        membership=IndexMembership.objects.get(security_listing=listing),
+        effective_to=date(2026, 9, 1),
+        actor_user=actor,
+        reason="Backdated ticker correction.",
+        request_id="matching-frozen-listing-membership",
+    )
+    transition_security_listing(
+        listing=listing,
+        transition_date=date(2026, 9, 1),
+        ticker="NEW",
+        exchange="NYSE",
+        actor_user=actor,
+        reason="Backdated ticker correction.",
+        request_id="matching-frozen-listing-transition",
+    )
+
+    second = _match(scenario)
+
+    assert first.outcome is second.outcome is CompanyMatchOutcome.MATCHED
+    assert first.candidate is not None
+    assert second.candidate is not None
+    assert first.candidate.pk == second.candidate.pk
+    assert first.matching_input_revision == second.matching_input_revision
+    assert first.candidate.company_id == company.pk
+    assert _factor(second)["matched_security_listing_ids"] == [str(listing.pk)]
 
 
 @pytest.mark.django_db
@@ -732,14 +888,27 @@ def test_listing_temporal_boundaries_use_half_open_interval(
 ) -> None:
     source = _source(suffix)
     company = _company(suffix, cik=None)
-    basis = _listing(company, ticker="BASIS")
-    _membership(listing=basis)
-    _listing(
-        company,
-        ticker="BOUNDARY",
-        effective_from=effective_from,
-        effective_to=effective_to,
-    )
+    if expected is CompanyMatchOutcome.MATCHED:
+        boundary = _listing(
+            company,
+            ticker="BOUNDARY",
+            effective_from=effective_from,
+            effective_to=effective_to,
+        )
+        _membership(
+            listing=boundary,
+            effective_from=effective_from,
+            effective_to=effective_to,
+        )
+    else:
+        basis = _listing(company, ticker="BASIS")
+        _membership(listing=basis)
+        _listing(
+            company,
+            ticker="BOUNDARY",
+            effective_from=effective_from,
+            effective_to=effective_to,
+        )
     snapshot = _snapshot()
     run = _run(source=source, snapshot=snapshot, suffix=suffix)
     observation = _observation(
@@ -928,6 +1097,7 @@ def test_matching_input_revision_is_order_independent_and_version_sensitive() ->
         hints=facts.hints,
         pool_companies=tuple(reversed(facts.pool_companies)),
         pool_listings=tuple(reversed(facts.pool_listings)),
+        pool_listing_intervals=facts.pool_listing_intervals,
         cik_companies=facts.cik_companies,
         listing_matches=facts.listing_matches,
         matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
@@ -939,6 +1109,7 @@ def test_matching_input_revision_is_order_independent_and_version_sensitive() ->
         hints=facts.hints,
         pool_companies=facts.pool_companies,
         pool_listings=facts.pool_listings,
+        pool_listing_intervals=facts.pool_listing_intervals,
         cik_companies=facts.cik_companies,
         listing_matches=facts.listing_matches,
         matcher_version="earnings-company-match-v2",
@@ -959,6 +1130,7 @@ def test_matching_input_revision_is_order_independent_and_version_sensitive() ->
         hints=facts.hints,
         pool_companies=facts.pool_companies,
         pool_listings=facts.pool_listings,
+        pool_listing_intervals=facts.pool_listing_intervals,
         cik_companies=facts.cik_companies,
         listing_matches=facts.listing_matches,
         matcher_version=EARNINGS_COMPANY_MATCHER_VERSION,
@@ -989,7 +1161,7 @@ def test_company_cik_correction_creates_new_revision_and_candidate_lineage() -> 
 
 
 @pytest.mark.django_db
-def test_listing_temporal_correction_creates_new_revision_and_candidate_lineage() -> None:
+def test_listing_added_after_snapshot_does_not_change_frozen_revision() -> None:
     scenario = _scenario("listing-correction")
     secondary = _listing(
         scenario.company,
@@ -999,17 +1171,15 @@ def test_listing_temporal_correction_creates_new_revision_and_candidate_lineage(
     )
     first = _match(scenario)
 
-    SecurityListing.objects.filter(pk=secondary.pk).update(
-        effective_to=scenario.snapshot.as_of_date
-    )
     second = _match(scenario)
 
     assert first.candidate is not None
     assert second.candidate is not None
-    assert first.matching_input_revision != second.matching_input_revision
-    assert first.candidate.pk != second.candidate.pk
+    assert first.matching_input_revision == second.matching_input_revision
+    assert first.candidate.pk == second.candidate.pk
     assert EarningsEvent.objects.filter(pk=first.candidate.pk).exists()
     assert EarningsReconciliationDecision.objects.filter(pk=first.decision.pk).exists()
+    assert secondary.company_id == scenario.company.pk
 
 
 @pytest.mark.django_db

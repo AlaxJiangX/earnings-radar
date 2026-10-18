@@ -537,9 +537,12 @@ def transition_security_listing(
     )
 
     with transaction.atomic():
+        locked_company = Company.objects.select_for_update().get(pk=listing.company_id)
         current = (
             SecurityListing.objects.select_for_update().select_related("company").get(pk=listing.pk)
         )
+        if current.company_id != locked_company.pk:
+            raise CompanyServiceError("SecurityListing company changed unexpectedly.")
         if normalized_transition_date <= current.effective_from:
             raise CompanyServiceError("transition_date must be later than effective_from.")
 
@@ -1132,6 +1135,7 @@ def _record_action(
             before=dict(before),
             after=dict(after),
             request_id=context.request_id,
+            reason=context.reason,
         )
     return result.record
 

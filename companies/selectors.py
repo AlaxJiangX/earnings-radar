@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from uuid import UUID
 
-from django.db.models import Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 
 from companies.models import Company, SecurityListing
 
@@ -64,6 +65,54 @@ def company_listings(
     for listing in rows:
         grouped.setdefault(listing.company_id, []).append(listing)
     return {company_id: tuple(items) for company_id, items in grouped.items()}
+
+
+def company_identity_pending_facts_as_of(
+    *,
+    company_ids: Iterable[UUID],
+    as_of: date,
+) -> dict[UUID, bool]:
+    """Return canonical PD-1 identity-pending facts for a bounded Company set."""
+
+    if isinstance(as_of, datetime) or not isinstance(as_of, date):
+        raise ValueError("as_of must be a date.")
+    normalized_ids: set[UUID] = set()
+    for company_id in company_ids:
+        if not isinstance(company_id, UUID):
+            raise ValueError("company_ids entries must be UUID values.")
+        normalized_ids.add(company_id)
+    if not normalized_ids:
+        return {}
+
+    rows = (
+        Company.objects.filter(id__in=normalized_ids)
+        .annotate(
+            has_effective_listing=Exists(
+                SecurityListing.objects.filter(
+                    company_id=OuterRef("pk"),
+                    effective_from__lte=as_of,
+                ).filter(Q(effective_to__isnull=True) | Q(effective_to__gt=as_of))
+            )
+        )
+        .values_list("id", "cik", "has_effective_listing")
+    )
+    facts = {
+        company_id: cik is None and not has_effective_listing
+        for company_id, cik, has_effective_listing in rows
+    }
+    if set(facts) != normalized_ids:
+        raise Company.DoesNotExist("One or more Companies do not exist.")
+    return {company_id: facts[company_id] for company_id in sorted(normalized_ids, key=str)}
+
+
+def company_identity_pending_as_of(
+    *,
+    company_id: UUID,
+    as_of: date,
+) -> bool:
+    """Return the canonical PD-1 identity-pending fact for one Company."""
+
+    return company_identity_pending_facts_as_of(company_ids=(company_id,), as_of=as_of)[company_id]
 
 
 def primary_listing(listings: tuple[SecurityListing, ...]) -> SecurityListing | None:
