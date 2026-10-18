@@ -9,7 +9,10 @@ from datetime import date
 import pytest
 from django.db import connection
 
+from audit.models import DataChange, DataSource, SyncRun
+from audit.services import record_data_change, start_sync_run
 from companies.models import Company, SecurityListing
+from companies.services import IDENTITY_RULE_VERSION
 from earnings.models import MonitoringPoolMember, MonitoringPoolSnapshot
 from earnings.services import (
     EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
@@ -626,6 +629,48 @@ def test_v2_resolver_rebuilds_and_validates_the_input_revision() -> None:
 
 
 @pytest.mark.django_db
+def test_v2_resolver_rejects_unaudited_listing_interval_change() -> None:
+    _index()
+    company = _company("unaudited-interval")
+    listing = _listing(company, "unaudited-interval")
+    result = _select_v2((company.pk,))
+    SecurityListing.objects.filter(pk=listing.pk).update(effective_to=date(2026, 9, 1))
+
+    with pytest.raises(MonitoringPoolIntegrityError):
+        resolve_monitoring_pool_snapshot_contract(
+            as_of=result.as_of_date,
+            selector_version=result.selector_version,
+            pool_hash=result.monitoring_pool_hash,
+        )
+
+
+@pytest.mark.django_db
+def test_v2_resolver_rejects_incomplete_listing_interval_audit_chain() -> None:
+    _index()
+    company = _company("incomplete-interval")
+    listing = _listing(company, "incomplete-interval")
+    result = _select_v2((company.pk,))
+    sync_run = _data_change_sync_run("incomplete-listing-audit")
+    SecurityListing.objects.filter(pk=listing.pk).update(effective_to=date(2026, 9, 1))
+    record_data_change(
+        target_type=DataChange.TargetType.SECURITY_LISTING,
+        target_id=listing.pk,
+        field_name="effective_to",
+        old_value=None,
+        new_value="2026-09-01",
+        rule_version=IDENTITY_RULE_VERSION,
+        sync_run=sync_run,
+    )
+
+    with pytest.raises(MonitoringPoolIntegrityError, match="incomplete or unaudited"):
+        resolve_monitoring_pool_snapshot_contract(
+            as_of=result.as_of_date,
+            selector_version=result.selector_version,
+            pool_hash=result.monitoring_pool_hash,
+        )
+
+
+@pytest.mark.django_db
 def test_resolver_dispatches_for_v1_and_v2_snapshots() -> None:
     company = _company("resolver")
     listing = _listing(company, "resolver")
@@ -651,3 +696,19 @@ def test_resolver_dispatches_for_v1_and_v2_snapshots() -> None:
     assert resolved_v1.snapshot.pk == v1.snapshot.pk
     assert resolved_v2.snapshot.pk == v2.snapshot.pk
     assert tuple(member.company_id for member in resolved_v2.members) == (company.pk,)
+
+
+def _data_change_sync_run(suffix: str) -> SyncRun:
+    token = uuid.uuid4().hex
+    source = DataSource.objects.create(
+        key=f"{suffix}-{token[:8]}",
+        name=f"Data change fixture {suffix}",
+        source_type=DataSource.SourceType.MANUAL,
+        base_url=f"https://{suffix}-{token[:8]}.example.test/",
+    )
+    return start_sync_run(
+        job_type="fixture.monitoring-pool-integrity",
+        source=source,
+        scope={"fixture": suffix},
+        idempotency_key=f"fixture.monitoring-pool-integrity:{token}",
+    )

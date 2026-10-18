@@ -14,7 +14,8 @@ from uuid import UUID
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 
-from audit.models import DataChange, SyncRun
+from audit.models import AuditRecord, DataChange, SyncRun
+from audit.services import build_data_change_key
 from companies.models import Company, SecurityListing
 from earnings.models import MonitoringPoolMember, MonitoringPoolSnapshot
 from earnings.services.calendar_sync_identity import (
@@ -716,7 +717,7 @@ def _load_validated_snapshot(
             snapshot=snapshot,
             members_payload=persisted_members,
         )
-        if rebuilt_input_revision is not None and rebuilt_input_revision != snapshot.input_revision:
+        if rebuilt_input_revision != snapshot.input_revision:
             raise MonitoringPoolIntegrityError("Monitoring pool snapshot input revision mismatch.")
 
     recomputed_hash = _build_pool_hash(
@@ -792,7 +793,7 @@ def _rebuild_v2_input_revision(
     *,
     snapshot: MonitoringPoolSnapshot,
     members_payload: list[dict[str, object]],
-) -> str | None:
+) -> str:
     enabled_index_codes = _snapshot_codes(snapshot)
     watchlist_company_ids = _watchlist_company_ids_from_members_payload(
         members_payload,
@@ -811,16 +812,13 @@ def _rebuild_v2_input_revision(
         raise MonitoringPoolIntegrityError(
             "Monitoring pool basis references an unknown SecurityListing."
         )
-    historical_listing_change = DataChange.objects.filter(
-        target_type=DataChange.TargetType.SECURITY_LISTING,
-        target_id__in=listing_ids,
-        field_name__in=("effective_from", "effective_to"),
-        changed_at__gt=snapshot.created_at,
-    ).exists()
+    historical_listing_intervals = _historical_listing_interval_facts(
+        snapshot=snapshot,
+        listings=listings,
+    )
 
     index_manifest_rows: list[dict[str, object]] = []
     watchlist_manifest_rows: list[dict[str, object]] = []
-    historical_interval_change = historical_listing_change
     for member in members_payload:
         company_id = UUID(cast(str, member["company_id"]))
         basis = cast(list[dict[str, object]], member["basis"])
@@ -846,17 +844,20 @@ def _rebuild_v2_input_revision(
                 raise MonitoringPoolIntegrityError(
                     "Monitoring pool basis interval does not contain the snapshot date."
                 )
+            historical_from, historical_to = historical_listing_intervals[listing_id]
             if row["source"] == "index":
                 index_code = cast(str, row["index_code"])
                 if index_code not in enabled_index_codes:
                     raise MonitoringPoolIntegrityError(
                         "Monitoring pool index basis is outside the enabled index policy."
                     )
-                if effective_from < listing.effective_from or (
-                    listing.effective_to is not None
-                    and (effective_to is None or effective_to > listing.effective_to)
+                if effective_from < historical_from or (
+                    historical_to is not None
+                    and (effective_to is None or effective_to > historical_to)
                 ):
-                    historical_interval_change = True
+                    raise MonitoringPoolIntegrityError(
+                        "Monitoring pool index basis exceeds its SecurityListing interval."
+                    )
                 index_manifest_rows.append(
                     {
                         "company_id": str(company_id),
@@ -864,13 +865,16 @@ def _rebuild_v2_input_revision(
                         "security_listing_id": str(listing_id),
                         "membership_effective_from": effective_from.isoformat(),
                         "membership_effective_to": _iso_or_none(effective_to),
-                        "listing_effective_from": listing.effective_from.isoformat(),
-                        "listing_effective_to": _iso_or_none(listing.effective_to),
+                        "listing_effective_from": historical_from.isoformat(),
+                        "listing_effective_to": _iso_or_none(historical_to),
                     }
                 )
             else:
-                if effective_from != listing.effective_from or effective_to != listing.effective_to:
-                    historical_interval_change = True
+                if effective_from != historical_from or effective_to != historical_to:
+                    raise MonitoringPoolIntegrityError(
+                        "Monitoring pool watchlist basis does not match its "
+                        "SecurityListing interval."
+                    )
                 watchlist_manifest_rows.append(
                     {
                         "company_id": str(company_id),
@@ -889,9 +893,6 @@ def _rebuild_v2_input_revision(
             str(row["listing_effective_to"] or ""),
         )
     )
-    if historical_interval_change:
-        # Current listings no longer reconstruct the immutable snapshot input revision.
-        return None
     return _sha256_json(
         {
             "contract": MONITORING_POOL_INPUT_CONTRACT_VERSION_V2,
@@ -901,6 +902,118 @@ def _rebuild_v2_input_revision(
             "watchlist_listings": _dedupe_dicts(watchlist_manifest_rows),
         }
     )
+
+
+def _historical_listing_interval_facts(
+    *,
+    snapshot: MonitoringPoolSnapshot,
+    listings: dict[UUID, SecurityListing],
+) -> dict[UUID, tuple[date, date | None]]:
+    """Reconstruct the listing intervals frozen when the snapshot was created."""
+
+    changes = list(
+        DataChange.objects.filter(
+            target_type=DataChange.TargetType.SECURITY_LISTING,
+            target_id__in=listings,
+            field_name__in=("effective_from", "effective_to"),
+            changed_at__gt=snapshot.created_at,
+        )
+        .select_related("source_evidence", "sync_run", "actor_user")
+        .order_by("changed_at", "created_at", "pk")
+    )
+    if not changes:
+        return {
+            listing_id: (listing.effective_from, listing.effective_to)
+            for listing_id, listing in listings.items()
+        }
+
+    audits_by_listing: dict[UUID, list[AuditRecord]] = defaultdict(list)
+    for audit in AuditRecord.objects.filter(
+        target_type=AuditRecord.TargetType.SECURITY_LISTING,
+        target_id__in=listings,
+        action__in=(AuditRecord.Action.UPDATE, AuditRecord.Action.MANUAL_CORRECTION),
+        created_at__gte=snapshot.created_at,
+    ).order_by("created_at", "pk"):
+        audits_by_listing[audit.target_id].append(audit)
+
+    changes_by_listing: dict[UUID, list[DataChange]] = defaultdict(list)
+    for change in changes:
+        changes_by_listing[change.target_id].append(change)
+
+    historical: dict[UUID, tuple[date, date | None]] = {}
+    for listing_id, listing in listings.items():
+        listing_changes = changes_by_listing.get(listing_id, [])
+        current_values: dict[str, object] = {
+            "effective_from": listing.effective_from.isoformat(),
+            "effective_to": _iso_or_none(listing.effective_to),
+        }
+        for change in listing_changes:
+            if not _audited_listing_interval_change(
+                change,
+                audits=audits_by_listing.get(listing_id, []),
+            ):
+                raise MonitoringPoolIntegrityError(
+                    "SecurityListing interval history is incomplete or unaudited."
+                )
+        reconstructed = dict(current_values)
+        for change in reversed(listing_changes):
+            field_name = change.field_name
+            if change.new_value != reconstructed[field_name]:
+                raise MonitoringPoolIntegrityError(
+                    "SecurityListing interval history is not contiguous."
+                )
+            reconstructed[field_name] = change.old_value
+        try:
+            effective_from = date.fromisoformat(cast(str, reconstructed["effective_from"]))
+            effective_to_raw = cast(str | None, reconstructed["effective_to"])
+            effective_to = (
+                date.fromisoformat(effective_to_raw) if effective_to_raw is not None else None
+            )
+        except (TypeError, ValueError) as error:
+            raise MonitoringPoolIntegrityError(
+                "Reconstructed SecurityListing interval is invalid."
+            ) from error
+        if effective_to is not None and effective_to <= effective_from:
+            raise MonitoringPoolIntegrityError("Reconstructed SecurityListing interval is invalid.")
+        historical[listing_id] = (effective_from, effective_to)
+    return historical
+
+
+def _audited_listing_interval_change(
+    change: DataChange,
+    *,
+    audits: list[AuditRecord],
+) -> bool:
+    try:
+        expected_key = build_data_change_key(
+            target_type=DataChange.TargetType.SECURITY_LISTING,
+            target_id=change.target_id,
+            field_name=change.field_name,
+            old_value=change.old_value,
+            new_value=change.new_value,
+            rule_version=change.rule_version,
+            source_evidence=change.source_evidence,
+            sync_run=change.sync_run,
+            actor_user=change.actor_user,
+            origin_key=change.origin_key,
+        )
+    except Exception:
+        return False
+    if change.change_key != expected_key:
+        return False
+    for audit in audits:
+        before = audit.before if isinstance(audit.before, dict) else {}
+        after = audit.after if isinstance(audit.after, dict) else {}
+        if (
+            audit.actor_user_id == change.actor_user_id
+            and audit.sync_run_id == change.sync_run_id
+            and audit.reason == change.reason
+            and before.get(change.field_name) == change.old_value
+            and after.get(change.field_name) == change.new_value
+            and (change.actor_user_id is None or audit.request_id == change.origin_key)
+        ):
+            return True
+    return False
 
 
 def _interval_contains(*, start: date, end: date | None, value: date) -> bool:
