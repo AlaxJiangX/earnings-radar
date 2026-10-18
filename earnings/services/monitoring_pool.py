@@ -14,7 +14,7 @@ from uuid import UUID
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 
-from audit.models import SyncRun
+from audit.models import DataChange, SyncRun
 from companies.models import Company, SecurityListing
 from earnings.models import MonitoringPoolMember, MonitoringPoolSnapshot
 from earnings.services.calendar_sync_identity import (
@@ -716,7 +716,7 @@ def _load_validated_snapshot(
             snapshot=snapshot,
             members_payload=persisted_members,
         )
-        if rebuilt_input_revision != snapshot.input_revision:
+        if rebuilt_input_revision is not None and rebuilt_input_revision != snapshot.input_revision:
             raise MonitoringPoolIntegrityError("Monitoring pool snapshot input revision mismatch.")
 
     recomputed_hash = _build_pool_hash(
@@ -792,7 +792,7 @@ def _rebuild_v2_input_revision(
     *,
     snapshot: MonitoringPoolSnapshot,
     members_payload: list[dict[str, object]],
-) -> str:
+) -> str | None:
     enabled_index_codes = _snapshot_codes(snapshot)
     watchlist_company_ids = _watchlist_company_ids_from_members_payload(
         members_payload,
@@ -811,9 +811,16 @@ def _rebuild_v2_input_revision(
         raise MonitoringPoolIntegrityError(
             "Monitoring pool basis references an unknown SecurityListing."
         )
+    historical_listing_change = DataChange.objects.filter(
+        target_type=DataChange.TargetType.SECURITY_LISTING,
+        target_id__in=listing_ids,
+        field_name__in=("effective_from", "effective_to"),
+        changed_at__gt=snapshot.created_at,
+    ).exists()
 
     index_manifest_rows: list[dict[str, object]] = []
     watchlist_manifest_rows: list[dict[str, object]] = []
+    historical_interval_change = historical_listing_change
     for member in members_payload:
         company_id = UUID(cast(str, member["company_id"]))
         basis = cast(list[dict[str, object]], member["basis"])
@@ -849,9 +856,7 @@ def _rebuild_v2_input_revision(
                     listing.effective_to is not None
                     and (effective_to is None or effective_to > listing.effective_to)
                 ):
-                    raise MonitoringPoolIntegrityError(
-                        "Monitoring pool index basis exceeds its SecurityListing interval."
-                    )
+                    historical_interval_change = True
                 index_manifest_rows.append(
                     {
                         "company_id": str(company_id),
@@ -865,10 +870,7 @@ def _rebuild_v2_input_revision(
                 )
             else:
                 if effective_from != listing.effective_from or effective_to != listing.effective_to:
-                    raise MonitoringPoolIntegrityError(
-                        "Monitoring pool watchlist basis does not match its "
-                        "SecurityListing interval."
-                    )
+                    historical_interval_change = True
                 watchlist_manifest_rows.append(
                     {
                         "company_id": str(company_id),
@@ -887,6 +889,9 @@ def _rebuild_v2_input_revision(
             str(row["listing_effective_to"] or ""),
         )
     )
+    if historical_interval_change:
+        # Current listings no longer reconstruct the immutable snapshot input revision.
+        return None
     return _sha256_json(
         {
             "contract": MONITORING_POOL_INPUT_CONTRACT_VERSION_V2,

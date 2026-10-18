@@ -31,9 +31,9 @@ from earnings.reference_calendar_parser import (
     parse_reference_calendar,
 )
 from earnings.services.calendar_run_ownership import calendar_run_ownership
-from earnings.services.monitoring_pool import (
-    EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
-    select_monitoring_pool,
+from earnings.services.monitoring_pool_composition import (
+    compose_current_monitoring_pool,
+    recompute_monitoring_pool_composition,
 )
 from earnings.services.reference_calendar_projection import (
     REFERENCE_CALENDAR_JOB_TYPE,
@@ -97,17 +97,17 @@ def execute_reference_calendar_sync(
 
     with calendar_run_ownership(source_id=current_source.pk, job_type=REFERENCE_CALENDAR_JOB_TYPE):
         _retire_stale_reference_runs(source_id=current_source.pk)
-        pool = select_monitoring_pool(
+        composition = compose_current_monitoring_pool(
             as_of=as_of,
-            selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
             enabled_index_codes=enabled_index_codes,
         )
+        pool = composition.selection
         window_end = as_of + timedelta(days=forward_horizon_days - 1)
         scope = {
             "capability": ProviderCapability.EARNINGS_CALENDAR.value,
             "provider_key": active_provider.provider_key,
             "provider_version": active_provider.provider_version,
-            "window_kind": "retry" if request_id is not None else "scheduled",
+            "window_kind": "manual" if request_id is not None else "scheduled",
             "window_start": as_of.isoformat(),
             "window_end": window_end.isoformat(),
             "monitoring_pool_as_of": as_of.isoformat(),
@@ -135,10 +135,21 @@ def execute_reference_calendar_sync(
             if started.sync_run.status == SyncRun.Status.SUCCEEDED:
                 return ReferenceSyncResult(started.sync_run, False, None)
             raise ReferenceCalendarSyncError(
-                "Existing reference run is not successful; use a new request_id for retry."
+                "Existing reference run is not successful; use a new request_id for a manual rerun."
             )
 
         run = started.sync_run
+        try:
+            recompute_monitoring_pool_composition(
+                composition=composition,
+                sync_run=run,
+            )
+        except Exception:
+            mark_sync_run_failed(
+                run.pk,
+                error_summary="Reference monitoring-pool recompute failed.",
+            )
+            raise
         request = ProviderRequest(
             capability=ProviderCapability.EARNINGS_CALENDAR,
             scope=scope,

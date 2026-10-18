@@ -14,6 +14,10 @@ from earnings.services.filing_links import (
     evaluate_filing_earnings_link,
 )
 from earnings.services.monitoring_pool import resolve_monitoring_pool_snapshot_contract
+from earnings.services.monitoring_pool_composition import (
+    CurrentMonitoringPoolComposition,
+    recompute_monitoring_pool_composition,
+)
 from filings.models import Filing
 from filings.sync import SEC_JOB_TYPE, SecSyncResult, sync_sec_filings
 from providers.base import Provider
@@ -68,6 +72,7 @@ def execute_sec_filing_sync(
     provider: Provider,
     snapshot: MonitoringPoolSnapshot,
     idempotency_key: str,
+    composition: CurrentMonitoringPoolComposition | None = None,
 ) -> SecFilingOrchestrationResult:
     """Run one SEC sync and match every Filing persisted by that same run."""
 
@@ -77,6 +82,10 @@ def execute_sec_filing_sync(
         pool_hash=snapshot.pool_hash,
     )
     company_ids = tuple(member.company_id for member in pool.members)
+    if composition is not None and composition.selection.snapshot.pk != pool.snapshot.pk:
+        raise SecFilingMatchingError(
+            "SEC composition does not match the selected monitoring-pool snapshot."
+        )
     outcomes: list[FilingEarningsEvaluationResult] = []
     matching_failures = 0
 
@@ -93,6 +102,13 @@ def execute_sec_filing_sync(
             raise SecFilingMatchingError("Filing earnings matching failed.") from error
         outcomes.append(outcome)
 
+    def on_run_started(sync_run: SyncRun) -> None:
+        if composition is not None:
+            recompute_monitoring_pool_composition(
+                composition=composition,
+                sync_run=sync_run,
+            )
+
     sec_result = sync_sec_filings(
         source=source,
         provider=provider,
@@ -102,6 +118,7 @@ def execute_sec_filing_sync(
         pool_hash=pool.snapshot.pool_hash,
         idempotency_key=idempotency_key,
         on_filing_persisted=evaluate,
+        on_run_started=on_run_started if composition is not None else None,
     )
     return SecFilingOrchestrationResult(
         sec_sync_result=sec_result,

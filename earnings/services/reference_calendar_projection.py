@@ -112,7 +112,7 @@ def validate_reference_scope(scope: object) -> dict[str, str]:
         or scope["provider_version"] != AlphaVantageReferenceProvider.provider_version
         or scope["parser_version"] != REFERENCE_CALENDAR_PARSER_VERSION
         or scope["projection_version"] != REFERENCE_PROJECTION_VERSION
-        or scope["window_kind"] not in {"scheduled", "retry"}
+        or scope["window_kind"] not in {"scheduled", "manual", "retry"}
     ):
         raise ReferenceProjectionError("Reference SyncRun scope contract is unsupported.")
     try:

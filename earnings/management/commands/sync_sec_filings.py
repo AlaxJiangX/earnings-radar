@@ -14,8 +14,12 @@ from django.utils import timezone
 from audit.models import DataSource, SyncRun
 from earnings.models import MonitoringPoolSnapshot
 from earnings.services.monitoring_pool import (
-    EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
-    select_monitoring_pool,
+    MonitoringPoolIntegrityError,
+    resolve_monitoring_pool_snapshot_contract,
+)
+from earnings.services.monitoring_pool_composition import (
+    CurrentMonitoringPoolComposition,
+    compose_current_monitoring_pool,
 )
 from earnings.services.sec_filing_sync import (
     SecFilingMatchingSummary,
@@ -63,16 +67,25 @@ class Command(BaseCommand):
                 return
             if sync_run_id is not None:
                 raise CommandError("--sync-run requires --match-only.")
+            retry_id = cast(UUID | None, options["retry_run"])
+            if retry_id is not None:
+                try:
+                    retry_source_id = (
+                        SyncRun.objects.filter(pk=retry_id)
+                        .values_list("source_id", flat=True)
+                        .get()
+                    )
+                except SyncRun.DoesNotExist:
+                    raise CommandError("Retry run does not exist.") from None
+                if retry_source_id != source.pk:
+                    raise CommandError("Retry run belongs to a different SEC DataSource.")
             provider = SecEdgarProvider(
                 user_agent=settings.SEC_USER_AGENT,
                 max_requests_per_second=settings.SEC_MAX_REQUESTS_PER_SECOND,
             )
-            snapshot = self._resolve_snapshot(options)
+            snapshot, composition = self._resolve_snapshot(options)
             now = timezone.now().astimezone(UTC)
             bucket = now.replace(minute=(now.minute // 10) * 10, second=0, microsecond=0)
-            retry_id = cast(UUID | None, options["retry_run"])
-            if retry_id is not None and SyncRun.objects.get(pk=retry_id).source_id != source.pk:
-                raise CommandError("Retry run belongs to a different SEC DataSource.")
             default_key = (
                 f"sec-v1:{snapshot.pool_hash}:{bucket.isoformat()}"
                 if retry_id is None
@@ -84,6 +97,7 @@ class Command(BaseCommand):
                 provider=provider,
                 snapshot=snapshot,
                 idempotency_key=key,
+                composition=composition,
             )
         except (ValueError, RuntimeError) as error:
             raise CommandError(str(error)) from None
@@ -128,7 +142,10 @@ class Command(BaseCommand):
             raise CommandError("--match-only accepts only --source-key and --sync-run.")
         return sync_run_id
 
-    def _resolve_snapshot(self, options: dict[str, object]) -> MonitoringPoolSnapshot:
+    def _resolve_snapshot(
+        self,
+        options: dict[str, object],
+    ) -> tuple[MonitoringPoolSnapshot, CurrentMonitoringPoolComposition | None]:
         retry_id = cast(UUID | None, options["retry_run"])
         snapshot_id = cast(UUID | None, options["snapshot_id"])
         if retry_id is not None and snapshot_id is not None:
@@ -145,16 +162,22 @@ class Command(BaseCommand):
                 raise CommandError("Retry source must be a failed or partial SEC run.")
             scope = run.scope
             try:
-                return MonitoringPoolSnapshot.objects.get(
-                    as_of_date=date.fromisoformat(scope["monitoring_pool_as_of"]),
+                resolved = resolve_monitoring_pool_snapshot_contract(
+                    as_of=date.fromisoformat(scope["monitoring_pool_as_of"]),
                     selector_version=scope["selector_version"],
                     pool_hash=scope["monitoring_pool_hash"],
                 )
-            except (KeyError, TypeError, MonitoringPoolSnapshot.DoesNotExist):
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                MonitoringPoolIntegrityError,
+            ):
                 raise CommandError("Retry run has no valid frozen monitoring pool.") from None
+            return resolved.snapshot, None
         if snapshot_id is not None:
             try:
-                return MonitoringPoolSnapshot.objects.get(pk=snapshot_id)
+                return MonitoringPoolSnapshot.objects.get(pk=snapshot_id), None
             except MonitoringPoolSnapshot.DoesNotExist:
                 raise CommandError("Monitoring pool snapshot does not exist.") from None
         as_of = cast(date | None, options["as_of"])
@@ -165,8 +188,8 @@ class Command(BaseCommand):
             .order_by("code")
             .values_list("code", flat=True)
         )
-        return select_monitoring_pool(
+        composition = compose_current_monitoring_pool(
             as_of=as_of,
-            selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION,
             enabled_index_codes=enabled_codes,
-        ).snapshot
+        )
+        return composition.selection.snapshot, composition
