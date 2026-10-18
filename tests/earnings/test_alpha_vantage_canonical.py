@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from accounts.models import User
 from audit.models import (
     DataSource,
     RawDataParseAttempt,
@@ -12,6 +13,7 @@ from audit.models import (
     SyncRun,
 )
 from companies.models import Company, SecurityListing
+from companies.services import transition_security_listing
 from earnings.alpha_vantage_canonical_parser import (
     ALPHA_VANTAGE_CANONICAL_PARSER_VERSION,
     AlphaVantageCanonicalParseStatus,
@@ -32,11 +34,13 @@ from earnings.services import (
     EARNINGS_SOURCE_EVENT_IDENTITY_VERSION_V2,
     AlphaVantageCanonicalReplayIntegrityError,
     AlphaVantageCanonicalSyncResult,
+    MonitoringPoolSnapshotReference,
     derive_alpha_vantage_candidate_family_key,
     derive_alpha_vantage_candidate_uuid,
     derive_alpha_vantage_source_identity_v2,
     execute_alpha_vantage_canonical_sync,
     nominal_window_end,
+    resolve_alpha_vantage_provider_symbol,
     verify_alpha_vantage_canonical_replay,
 )
 from earnings.services.monitoring_pool import (
@@ -46,6 +50,7 @@ from earnings.services.monitoring_pool import (
     select_monitoring_pool,
 )
 from indexes.models import IndexMembership, MarketIndex
+from indexes.services import end_membership
 from providers.alpha_vantage_canonical import (
     ALPHA_VANTAGE_CANONICAL_PROVIDER_VERSION,
     AlphaVantageCanonicalProvider,
@@ -264,6 +269,50 @@ def test_v2_watchlist_marker_is_skipped_without_changing_row_skip_count() -> Non
     assert result.skipped_members[0].reason == WATCHLIST_MARKER_NO_EFFECTIVE_LISTING_REASON
     assert result.skipped_members[0].source == "watchlist"
     assert EarningsEvent.objects.get().company_id == indexed_company.pk
+
+
+@pytest.mark.django_db
+def test_alpha_vantage_symbol_uses_frozen_listing_interval_after_backdated_transition() -> None:
+    company, listing = _company_with_listing(ticker="FROZEN")
+    _membership(listing)
+    selection = select_monitoring_pool(
+        as_of=AS_OF,
+        selector_version=EARNINGS_MONITORING_POOL_SELECTOR_VERSION_V2,
+        enabled_index_codes=("SP500",),
+        watchlist_company_ids=(),
+    )
+    actor = User.objects.create_user(
+        email="alpha-frozen-listing@example.com",
+        password="fixture-password-only",
+    )
+    end_membership(
+        membership=IndexMembership.objects.get(security_listing=listing),
+        effective_to=date(2026, 9, 1),
+        actor_user=actor,
+        reason="Backdated listing identity correction.",
+        request_id="alpha-frozen-listing-membership",
+    )
+    transition_security_listing(
+        listing=listing,
+        transition_date=date(2026, 9, 1),
+        ticker="SUCCESSOR",
+        exchange="NYSE",
+        actor_user=actor,
+        reason="Backdated listing identity correction.",
+        request_id="alpha-frozen-listing-transition",
+    )
+
+    resolution = resolve_alpha_vantage_provider_symbol(
+        snapshot_reference=MonitoringPoolSnapshotReference(
+            snapshot=selection.snapshot,
+            members=selection.members,
+        ),
+        provider_symbol="FROZEN",
+    )
+
+    assert resolution.company is not None
+    assert resolution.company.pk == company.pk
+    assert tuple(item.pk for item in resolution.listings) == (listing.pk,)
 
 
 @pytest.mark.django_db(transaction=True)

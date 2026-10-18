@@ -264,6 +264,41 @@ def test_command_idempotency_key_reuses_succeeded_run(
     assert company.monitoring_recalculated_at == first_recalculated_at
 
 
+@pytest.mark.django_db(transaction=True)
+def test_idempotent_sec_run_repairs_identity_status_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _company, source, _snapshot = _setup()
+    user = User.objects.create_user(
+        email="sec-identity-transition@example.com",
+        password="fixture",
+    )
+    marker_company = Company.objects.create(
+        legal_name="SEC Identity Marker",
+        display_name="SEC Identity Marker",
+    )
+    WatchlistItem.objects.create(user=user, company=marker_company)
+    transport = FixtureTransport()
+    _patch_provider(monkeypatch, transport)
+
+    _call(source_key=source.key, as_of=AS_OF, idempotency_key="identity-fixed-key")
+    marker_company.refresh_from_db()
+    first_recalculated_at = marker_company.monitoring_recalculated_at
+    assert first_recalculated_at is not None
+    first_request_count = len(transport.requests)
+    marker_company.cik = "0000000005"
+    marker_company.save(update_fields=("cik", "updated_at"))
+
+    _call(source_key=source.key, as_of=AS_OF, idempotency_key="identity-fixed-key")
+
+    marker_company.refresh_from_db()
+    assert SyncRun.objects.filter(job_type=SEC_JOB_TYPE).count() == 1
+    assert marker_company.monitoring_status == Company.MonitoringStatus.ACTIVE
+    assert marker_company.monitoring_recalculated_at is not None
+    assert marker_company.monitoring_recalculated_at > first_recalculated_at
+    assert len(transport.requests) == first_request_count
+
+
 @pytest.mark.django_db
 def test_command_rejects_unknown_source() -> None:
     with pytest.raises(CommandError, match="DataSource does not exist"):

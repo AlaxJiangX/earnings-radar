@@ -120,6 +120,16 @@ def execute_sec_filing_sync(
         on_filing_persisted=evaluate,
         on_run_started=on_run_started if composition is not None else None,
     )
+    if (
+        not sec_result.run_created
+        and composition is not None
+        and composition.status_transition_company_ids
+    ):
+        recompute_monitoring_pool_composition(
+            composition=composition,
+            sync_run=sec_result.sync_run,
+            company_ids=composition.status_transition_company_ids,
+        )
     return SecFilingOrchestrationResult(
         sec_sync_result=sec_result,
         matching=_summarize(outcomes, matching_failures=matching_failures),

@@ -22,7 +22,6 @@ from uuid import UUID
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from audit.models import (
@@ -279,26 +278,35 @@ def resolve_alpha_vantage_provider_symbol(
     """Resolve an exact AV symbol through the persisted frozen snapshot basis."""
 
     normalized_symbol = _normalize_provider_symbol(provider_symbol)
-    basis_company_by_listing = _basis_company_by_listing(snapshot_reference)
-    listings = tuple(
+    basis_facts_by_listing = _basis_facts_by_listing(snapshot_reference)
+    basis_listings = tuple(
         SecurityListing.objects.select_related("company")
-        .filter(
-            id__in=basis_company_by_listing,
-            ticker=normalized_symbol,
-            effective_from__lte=snapshot_reference.snapshot.as_of_date,
-        )
-        .filter(
-            Q(effective_to__isnull=True)
-            | Q(effective_to__gt=snapshot_reference.snapshot.as_of_date)
-        )
+        .filter(id__in=basis_facts_by_listing)
         .order_by("company_id", "id")
     )
-    for listing in listings:
-        if basis_company_by_listing.get(listing.pk) != listing.company_id:
+    if {listing.pk for listing in basis_listings} != set(basis_facts_by_listing):
+        raise AlphaVantageCanonicalIntegrityError(
+            "Frozen monitoring pool basis references a missing SecurityListing."
+        )
+    listings = []
+    for listing in basis_listings:
+        company_id, effective_from, effective_to = basis_facts_by_listing[listing.pk]
+        if listing.company_id != company_id:
             raise AlphaVantageCanonicalIntegrityError(
                 "Frozen monitoring pool basis does not match its listing Company."
             )
-    company_ids = tuple(sorted({listing.company_id for listing in listings}, key=str))
+        if not _basis_interval_contains(
+            start=effective_from,
+            end=effective_to,
+            value=snapshot_reference.snapshot.as_of_date,
+        ):
+            raise AlphaVantageCanonicalIntegrityError(
+                "Frozen monitoring pool basis interval is invalid."
+            )
+        if listing.ticker == normalized_symbol:
+            listings.append(listing)
+    listings_tuple = tuple(listings)
+    company_ids = tuple(sorted({listing.company_id for listing in listings_tuple}, key=str))
     if not company_ids:
         return CompanyResolution(
             outcome=CompanyResolutionOutcome.UNMATCHED,
@@ -312,7 +320,7 @@ def resolve_alpha_vantage_provider_symbol(
             outcome=CompanyResolutionOutcome.AMBIGUOUS,
             provider_symbol=normalized_symbol,
             company=None,
-            listings=listings,
+            listings=listings_tuple,
             exact_company_ids=company_ids,
         )
     try:
@@ -325,7 +333,7 @@ def resolve_alpha_vantage_provider_symbol(
         outcome=CompanyResolutionOutcome.RESOLVED,
         provider_symbol=normalized_symbol,
         company=company,
-        listings=listings,
+        listings=listings_tuple,
         exact_company_ids=company_ids,
     )
 
@@ -1129,10 +1137,10 @@ def _record_candidate_audit(
     )
 
 
-def _basis_company_by_listing(
+def _basis_facts_by_listing(
     snapshot_reference: MonitoringPoolSnapshotReference,
-) -> dict[UUID, UUID]:
-    mapping: dict[UUID, UUID] = {}
+) -> dict[UUID, tuple[UUID, date, date | None]]:
+    mapping: dict[UUID, tuple[UUID, date, date | None]] = {}
     selector_version = snapshot_reference.snapshot.selector_version
     for member in snapshot_reference.members:
         basis_rows = member.basis
@@ -1145,17 +1153,33 @@ def _basis_company_by_listing(
                 raise AlphaVantageCanonicalIntegrityError("Frozen snapshot basis row is invalid.")
             try:
                 listing_id = UUID(str(basis["security_listing_id"]))
-            except (TypeError, ValueError) as error:
-                raise AlphaVantageCanonicalIntegrityError(
-                    "Frozen snapshot basis listing id is invalid."
-                ) from error
-            existing = mapping.get(listing_id)
-            if existing is not None and existing != member.company_id:
-                raise AlphaVantageCanonicalIntegrityError(
-                    "Frozen snapshot basis listing belongs to multiple Companies."
+                effective_from = date.fromisoformat(str(basis["effective_from"]))
+                effective_to_raw = basis.get("effective_to")
+                effective_to = (
+                    date.fromisoformat(str(effective_to_raw))
+                    if effective_to_raw is not None
+                    else None
                 )
-            mapping[listing_id] = member.company_id
+            except (KeyError, TypeError, ValueError) as error:
+                raise AlphaVantageCanonicalIntegrityError(
+                    "Frozen snapshot basis listing interval is invalid."
+                ) from error
+            if effective_to is not None and effective_to <= effective_from:
+                raise AlphaVantageCanonicalIntegrityError(
+                    "Frozen snapshot basis listing interval is invalid."
+                )
+            basis_facts = (member.company_id, effective_from, effective_to)
+            existing = mapping.get(listing_id)
+            if existing is not None and existing != basis_facts:
+                raise AlphaVantageCanonicalIntegrityError(
+                    "Frozen snapshot basis listing has conflicting identity."
+                )
+            mapping[listing_id] = basis_facts
     return mapping
+
+
+def _basis_interval_contains(*, start: date, end: date | None, value: date) -> bool:
+    return start <= value and (end is None or value < end)
 
 
 def _normalize_provider_symbol(value: str) -> str:

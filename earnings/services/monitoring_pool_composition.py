@@ -34,6 +34,7 @@ class CurrentMonitoringPoolComposition:
     selection: MonitoringPoolSelectionResult
     active_watchlist_company_ids: tuple[UUID, ...]
     affected_company_ids: tuple[UUID, ...]
+    status_transition_company_ids: tuple[UUID, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,14 +73,20 @@ def compose_current_monitoring_pool(
         enabled_index_codes=enabled_index_codes,
         watchlist_company_ids=active_watchlist_company_ids,
     )
+    status_transition_company_ids = _status_transition_company_ids(
+        as_of=selection.as_of_date,
+        active_watchlist_company_ids=active_watchlist_company_ids,
+    )
     affected_company_ids = _affected_company_ids(
         selection=selection,
         active_watchlist_company_ids=active_watchlist_company_ids,
+        status_transition_company_ids=status_transition_company_ids,
     )
     return CurrentMonitoringPoolComposition(
         selection=selection,
         active_watchlist_company_ids=active_watchlist_company_ids,
         affected_company_ids=affected_company_ids,
+        status_transition_company_ids=status_transition_company_ids,
     )
 
 
@@ -89,11 +96,19 @@ def recompute_monitoring_pool_composition(
     sync_run: SyncRun,
     reason: str = MONITORING_POOL_COMPOSITION_REASON,
     request_id: str | None = None,
+    company_ids: Iterable[UUID] | None = None,
 ) -> MonitoringCompositionRecomputeResult:
     """Recompute every affected Company from authoritative as-of facts."""
 
-    affected_company_ids = composition.affected_company_ids
-    if not affected_company_ids:
+    target_company_ids = tuple(
+        sorted(
+            set(composition.affected_company_ids if company_ids is None else company_ids),
+            key=str,
+        )
+    )
+    if not set(target_company_ids).issubset(composition.affected_company_ids):
+        raise ValueError("Recompute company_ids must be a subset of affected Companies.")
+    if not target_company_ids:
         return MonitoringCompositionRecomputeResult(composition, ())
 
     stable_request_id = request_id or (
@@ -103,29 +118,29 @@ def recompute_monitoring_pool_composition(
     with transaction.atomic():
         locked_company_ids = tuple(
             Company.objects.select_for_update()
-            .filter(id__in=affected_company_ids)
+            .filter(id__in=target_company_ids)
             .order_by("id")
             .values_list("id", flat=True)
         )
-        if set(locked_company_ids) != set(affected_company_ids):
+        if set(locked_company_ids) != set(target_company_ids):
             raise Company.DoesNotExist("One or more affected Companies do not exist.")
         active_watchlist_company_ids = set(
-            get_active_watchlist_company_ids(company_ids=affected_company_ids)
+            get_active_watchlist_company_ids(company_ids=target_company_ids)
         )
         identity_pending_facts = company_identity_pending_facts_as_of(
-            company_ids=affected_company_ids,
+            company_ids=target_company_ids,
             as_of=composition.selection.as_of_date,
         )
         enabled_index_company_ids = set(
             memberships_for_companies(
-                company_ids=affected_company_ids,
+                company_ids=target_company_ids,
                 as_of_date=composition.selection.as_of_date,
                 is_enabled=True,
             )
             .values_list("security_listing__company_id", flat=True)
             .distinct()
         )
-        for company_id in affected_company_ids:
+        for company_id in target_company_ids:
             results.append(
                 recalculate_company_monitoring_status(
                     company_id=company_id,
@@ -145,31 +160,33 @@ def _affected_company_ids(
     *,
     selection: MonitoringPoolSelectionResult,
     active_watchlist_company_ids: tuple[UUID, ...],
+    status_transition_company_ids: tuple[UUID, ...],
 ) -> tuple[UUID, ...]:
     current_pool_company_ids = {member.company_id for member in selection.members}
-    tracked_company_ids = _status_transition_company_ids(
-        as_of=selection.as_of_date,
-    )
     prior_pool_company_ids = _latest_prior_v2_pool_company_ids(selection)
     return tuple(
         sorted(
             current_pool_company_ids
             | set(active_watchlist_company_ids)
-            | tracked_company_ids
+            | set(status_transition_company_ids)
             | prior_pool_company_ids,
             key=str,
         )
     )
 
 
-def _status_transition_company_ids(*, as_of: date) -> set[UUID]:
+def _status_transition_company_ids(
+    *,
+    as_of: date,
+    active_watchlist_company_ids: tuple[UUID, ...],
+) -> tuple[UUID, ...]:
     has_effective_listing = Exists(
         SecurityListing.objects.filter(
             company_id=OuterRef("pk"),
             effective_from__lte=as_of,
         ).filter(Q(effective_to__isnull=True) | Q(effective_to__gt=as_of))
     )
-    return set(
+    candidates = tuple(
         Company.objects.annotate(has_effective_listing=has_effective_listing)
         .filter(
             Q(monitoring_status=Company.MonitoringStatus.ACTIVE)
@@ -187,8 +204,36 @@ def _status_transition_company_ids(*, as_of: date) -> set[UUID]:
                 has_effective_listing=False,
             )
         )
-        .values_list("id", flat=True)
+        .values_list("id", "monitoring_status")
     )
+    if not candidates:
+        return ()
+    candidate_ids = tuple(sorted({candidate_id for candidate_id, _status in candidates}, key=str))
+    identity_pending_facts = company_identity_pending_facts_as_of(
+        company_ids=candidate_ids,
+        as_of=as_of,
+    )
+    enabled_index_company_ids = set(
+        memberships_for_companies(
+            company_ids=candidate_ids,
+            as_of_date=as_of,
+            is_enabled=True,
+        )
+        .values_list("security_listing__company_id", flat=True)
+        .distinct()
+    )
+    active_watchlist_ids = set(active_watchlist_company_ids)
+    transitions: set[UUID] = set()
+    for company_id, current_status in candidates:
+        if identity_pending_facts[company_id]:
+            expected_status = Company.MonitoringStatus.PENDING_IDENTITY.value
+        elif company_id in enabled_index_company_ids or company_id in active_watchlist_ids:
+            expected_status = Company.MonitoringStatus.ACTIVE.value
+        else:
+            expected_status = Company.MonitoringStatus.INACTIVE.value
+        if current_status != expected_status:
+            transitions.add(company_id)
+    return tuple(sorted(transitions, key=str))
 
 
 def _latest_prior_v2_pool_company_ids(

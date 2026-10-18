@@ -322,15 +322,28 @@ def _build_match_facts(
     cik_companies = _load_exact_cik_companies(
         normalized_cik=hints.cik,
     )
+    pool_company_ids = {company.pk for company in pool_companies}
+    pool_listing_matches = tuple(
+        listing
+        for listing in pool_listings
+        if listing.ticker == hints.ticker and listing.exchange == hints.exchange
+    )
     skipped_company_ids = {diagnostic.company_id for diagnostic in skipped_pool_members}
-    listing_matches = tuple(
+    external_listing_matches = tuple(
         listing
         for listing in _load_exact_listing_matches(
             ticker=hints.ticker,
             exchange=hints.exchange,
             as_of=snapshot.as_of_date,
         )
-        if listing.company_id not in skipped_company_ids
+        if listing.company_id not in pool_company_ids
+        and listing.company_id not in skipped_company_ids
+    )
+    listing_matches = tuple(
+        sorted(
+            pool_listing_matches + external_listing_matches,
+            key=lambda listing: (str(listing.company_id), str(listing.pk)),
+        )
     )
     matching_input_revision = _build_matching_input_revision(
         sync_run=sync_run,
@@ -401,39 +414,30 @@ def _load_pool_facts(
             "Monitoring pool snapshot references a missing SecurityListing."
         )
 
-    active_listings = tuple(
-        SecurityListing.objects.filter(
-            company_id__in=member_company_ids - skipped_company_ids,
-            effective_from__lte=snapshot.as_of_date,
+    pool_listings = tuple(
+        sorted(
+            basis_listings.values(),
+            key=lambda listing: (str(listing.company_id), str(listing.pk)),
         )
-        .filter(Q(effective_to__isnull=True) | Q(effective_to__gt=snapshot.as_of_date))
-        .order_by("company_id", "id")
     )
-    active_by_company: dict[uuid.UUID, list[SecurityListing]] = {
-        company_id: [] for company_id in member_company_ids
-    }
-    for listing in active_listings:
-        active_by_company[listing.company_id].append(listing)
 
     for member in snapshot_reference.members:
-        if (
-            not active_by_company[member.company_id]
-            and member.company_id not in skipped_company_ids
-        ):
-            raise CandidateMatchingIntegrityError(
-                "Monitoring pool member has no as-of active SecurityListing."
-            )
-        for basis in _validated_basis(
+        basis = _validated_basis(
             member,
             as_of=snapshot.as_of_date,
             selector_version=snapshot.selector_version,
-        ):
-            basis_listing = basis_listings.get(basis["security_listing_id"])
+        )
+        if not basis and member.company_id not in skipped_company_ids:
+            raise CandidateMatchingIntegrityError(
+                "Monitoring pool member has no frozen listing basis."
+            )
+        for basis_row in basis:
+            basis_listing = basis_listings.get(basis_row["security_listing_id"])
             if basis_listing is None or basis_listing.company_id != member.company_id:
                 raise CandidateMatchingIntegrityError(
                     "Monitoring pool basis does not match its member Company."
                 )
-    return companies, active_listings, skipped_pool_members
+    return companies, pool_listings, skipped_pool_members
 
 
 def _basis_listing_ids(

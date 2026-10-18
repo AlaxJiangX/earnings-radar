@@ -133,6 +133,12 @@ def execute_reference_calendar_sync(
         )
         if not started.created:
             if started.sync_run.status == SyncRun.Status.SUCCEEDED:
+                if composition.status_transition_company_ids:
+                    recompute_monitoring_pool_composition(
+                        composition=composition,
+                        sync_run=started.sync_run,
+                        company_ids=composition.status_transition_company_ids,
+                    )
                 return ReferenceSyncResult(started.sync_run, False, None)
             raise ReferenceCalendarSyncError(
                 "Existing reference run is not successful; use a new request_id for a manual rerun."

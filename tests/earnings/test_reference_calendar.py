@@ -377,6 +377,51 @@ def test_manual_reference_rerun_recomposes_current_v2_pool() -> None:
 
 
 @pytest.mark.django_db(transaction=True)
+def test_idempotent_reference_run_repairs_identity_status_transition() -> None:
+    source, _indexed_company = _pool()
+    user = User.objects.create_user(
+        email="reference-identity-transition@example.com",
+        password="fixture-password-only",
+    )
+    marker_company = Company.objects.create(
+        legal_name="Reference Identity Marker",
+        display_name="Reference Identity Marker",
+    )
+    WatchlistItem.objects.create(user=user, company=marker_company)
+    transport = CsvTransport(HEADER)
+    provider = AlphaVantageReferenceProvider(api_key="fixture-key", transport=transport)
+
+    first = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+    )
+    first_recalculated_at = Company.objects.values_list(
+        "monitoring_recalculated_at", flat=True
+    ).get(pk=marker_company.pk)
+    assert first_recalculated_at is not None
+    marker_company.cik = "0000000004"
+    marker_company.save(update_fields=("cik", "updated_at"))
+
+    second = execute_reference_calendar_sync(
+        source=source,
+        as_of=AS_OF,
+        enabled_index_codes=("SP500",),
+        provider=provider,
+    )
+
+    marker_company.refresh_from_db()
+    assert first.created is True
+    assert second.created is False
+    assert second.sync_run.pk == first.sync_run.pk
+    assert transport.calls == 1
+    assert marker_company.monitoring_status == Company.MonitoringStatus.ACTIVE
+    assert marker_company.monitoring_recalculated_at is not None
+    assert marker_company.monitoring_recalculated_at > first_recalculated_at
+
+
+@pytest.mark.django_db(transaction=True)
 def test_historical_reference_retry_scope_remains_readable() -> None:
     source, _company = _pool()
     provider = AlphaVantageReferenceProvider(api_key="fixture-key", transport=CsvTransport(HEADER))
