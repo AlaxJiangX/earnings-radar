@@ -33,3 +33,4 @@
 | [ADR-021](ADR-021-filing-earnings-link-classification-matching-review-replay.md) | Filing↔Earnings 链接、release 分类、匹配、复核与 replay 契约（EX-99.1/EX-99 allowlist） | filings、earnings（4.5A） | 已接受；4.5A 已实现 |
 | [ADR-022](ADR-022-ir-confirmation-authority-cancellation-observation.md) | IR 确认、字段级 authority、取消与 Observation 契约 | earnings（4.5B） | 已接受；fixture-first 已实现，live 来源受 allowlist/许可 gate 阻塞 |
 | [ADR-023](ADR-023-watchlist-monitoring-pool-contract.md) | Watchlist 域与 Monitoring-Pool v2 组合契约（§13 含产品未决项） | watchlists、earnings（5.1A/B） | 已接受；5.1A/B 已实现并验证 |
+| [ADR-024](ADR-024-advance-reminder-anchor-and-rule-resolution.md) | 提前一天提醒按美东自然日锚定；P0–P3 规范矩阵；公司规则整体替换用户默认 + 双门抑制 | notifications（6.1+）、watchlists、earnings | 已接受 |
