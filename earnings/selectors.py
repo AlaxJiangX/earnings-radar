@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from uuid import UUID
 
 from django.db.models import Case, DateField, F, IntegerField, Q, QuerySet, Value, When
 from django.db.models.functions import Coalesce
 
 from earnings.models import (
+    EarningsDateChange,
     EarningsEvent,
     FilingEarningsLink,
     FilingEarningsRelationType,
@@ -152,6 +153,62 @@ def get_earnings_events(
         display_date_expression(),
         "company__display_name",
         "id",
+    )
+
+
+def upcoming_earnings_events_for_companies(
+    *,
+    company_ids: Sequence[UUID],
+    as_of: date,
+    days: int,
+) -> QuerySet[EarningsEvent]:
+    """Return scheduled events for the given Companies in [as_of, as_of + days)."""
+
+    start, end = as_of, as_of + timedelta(days=days - 1)
+    queryset = _base_event_queryset(include_candidates=False)
+    return (
+        queryset.filter(
+            company_id__in=company_ids,
+            status__in=UPCOMING_EVENT_STATUSES,
+        )
+        .filter(_display_date_in_range(start=start, end=end))
+        .order_by(display_date_expression(), "company__display_name", "id")
+    )
+
+
+def recent_released_earnings_for_companies(
+    *,
+    company_ids: Sequence[UUID],
+    limit: int,
+) -> QuerySet[EarningsEvent]:
+    """Return the most recently released events for the given Companies."""
+
+    queryset = _base_event_queryset(include_candidates=False)
+    release_date = Coalesce(
+        "earnings_release_date",
+        "confirmed_release_date",
+        "estimated_release_date",
+        output_field=DateField(),
+    )
+    return queryset.filter(company_id__in=company_ids, status="released").order_by(
+        release_date.desc(nulls_last=True), "-updated_at", "id"
+    )[:limit]
+
+
+def recent_earnings_date_changes_for_companies(
+    *,
+    company_ids: Sequence[UUID],
+    limit: int,
+) -> QuerySet[EarningsDateChange]:
+    """Return the latest EarningsDateChange rows for the given Companies."""
+
+    return (
+        EarningsDateChange.objects.filter(earnings_event__company_id__in=company_ids)
+        .select_related(
+            "earnings_event",
+            "earnings_event__company",
+        )
+        .order_by("-detected_at", "-created_at", "id")[:limit]
     )
 
 
