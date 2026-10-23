@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；Stage 5.1A 已实现、验证并 merge，Stage 5.1B Watchlist / Monitoring-Pool v2 已实现并完成 Completion / Hardening，状态为 `IMPLEMENTED / VERIFIED`；自选股与个人页面（阶段 5.2 起）和通知（阶段 6）尚未开始。
+> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；Stage 5.1A 已实现、验证并 merge，Stage 5.1B Watchlist / Monitoring-Pool v2 已实现并完成 Completion / Hardening，并 merge（PR #68，merge `41eac30`），状态为 `IMPLEMENTED / VERIFIED / MERGED`；自选股与个人页面（阶段 5.2 起）和通知（阶段 6）尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -733,7 +733,7 @@ Live gate（未满足前不得进入 production ingestion）：
 #### 5.1 Watchlist 与监控池
 
 状态：Stage 5.1A `IMPLEMENTED / VERIFIED / MERGED`；Stage 5.1B
-`IMPLEMENTED / VERIFIED`。权威契约见
+`IMPLEMENTED / VERIFIED / MERGED`（PR #68，merge `41eac30`）。权威契约见
 `docs/decisions/ADR-023-watchlist-monitoring-pool-contract.md`。
 
 交付：WatchlistItem、普通/重点、自选开关、软删除 / reactivation、`(user, company)`
