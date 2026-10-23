@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>Dashboard</h1>
+  <p class="page-note">
+    Functional skeleton page: sections and data are final, visual styling is not.
+    Earnings dates use market timezone {{ market_timezone_label }};
+    change and filing timestamps are shown in UTC.
+  </p>
+
+  <section>
+    <h2>Important watchlist (S)</h2>
+    {% if important_rows %}
+      <table>
+        <thead>
+          <tr><th>Company</th><th>Ticker</th><th>Alerts</th><th>Next earnings</th></tr>
+        </thead>
+        <tbody>
+          {% for row in important_rows %}
+            <tr>
+              <td>{{ row.item.company.display_name }}</td>
+              <td>{% if row.ticker %}{{ row.ticker }}{% else %}&mdash;{% endif %}</td>
+              <td>{% if row.item.alerts_enabled %}On{% else %}Off{% endif %}</td>
+              <td>
+                {% if row.next_display %}
+                  {{ row.next_display.timing.label }}
+                  {% include "includes/_event_timing.html" with display=row.next_display %}
+                {% else %}
+                  No scheduled event
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No important watchlist companies yet. Mark companies as important on <a href="{% url 'watchlist' %}">your watchlist</a>.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Normal watchlist (A)</h2>
+    {% if normal_rows %}
+      <table>
+        <thead>
+          <tr><th>Company</th><th>Ticker</th><th>Alerts</th><th>Next earnings</th></tr>
+        </thead>
+        <tbody>
+          {% for row in normal_rows %}
+            <tr>
+              <td>{{ row.item.company.display_name }}</td>
+              <td>{% if row.ticker %}{{ row.ticker }}{% else %}&mdash;{% endif %}</td>
+              <td>{% if row.item.alerts_enabled %}On{% else %}Off{% endif %}</td>
+              <td>
+                {% if row.next_display %}
+                  {{ row.next_display.timing.label }}
+                  {% include "includes/_event_timing.html" with display=row.next_display %}
+                {% else %}
+                  No scheduled event
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No normal watchlist companies yet.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Watchlist earnings in the next 7 days ({{ upcoming_window_label }})</h2>
+    {% if upcoming_rows %}
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Company</th><th>Ticker</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for row in upcoming_rows %}
+            <tr>
+              <td>
+                <strong>{{ row.display.timing.label }}</strong>
+                {% include "includes/_event_timing.html" with display=row.display %}
+              </td>
+              <td>{{ row.display.event.company.display_name }}</td>
+              <td>{% if row.ticker %}{{ row.ticker }}{% else %}&mdash;{% endif %}</td>
+              <td>{{ row.display.status_label }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No watchlist earnings events in the next 7 days.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Recent earnings date changes</h2>
+    {% if date_change_rows %}
+      <table>
+        <thead>
+          <tr><th>Detected (UTC)</th><th>Company</th><th>Field</th><th>Change</th><th>Kind</th></tr>
+        </thead>
+        <tbody>
+          {% for row in date_change_rows %}
+            <tr>
+              <td>{{ row.change.detected_at|date:"Y-m-d H:i" }} UTC</td>
+              <td>{{ row.change.earnings_event.company.display_name }}</td>
+              <td>{{ row.change.get_field_name_display }}</td>
+              <td>{{ row.summary }}</td>
+              <td>{{ row.change.get_change_kind_display }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No recent date changes for your watchlist companies.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Recent watchlist earnings releases</h2>
+    {% if release_rows %}
+      <table>
+        <thead>
+          <tr><th>Release</th><th>Company</th><th>Ticker</th><th>Session</th></tr>
+        </thead>
+        <tbody>
+          {% for row in release_rows %}
+            <tr>
+              <td>
+                {{ row.display.timing.label }}
+                {% include "includes/_event_timing.html" with display=row.display %}
+              </td>
+              <td>{{ row.display.event.company.display_name }}</td>
+              <td>{% if row.ticker %}{{ row.ticker }}{% else %}&mdash;{% endif %}</td>
+              <td>{{ row.display.timing.session_label }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No recent earnings releases for your watchlist companies.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Recent SEC filings</h2>
+    {% if filing_rows %}
+      <table>
+        <thead>
+          <tr><th>Company</th><th>Filing</th><th>Link</th></tr>
+        </thead>
+        <tbody>
+          {% for row in filing_rows %}
+            <tr>
+              <td>{{ row.filing.company.display_name }}</td>
+              <td>{{ row.summary }}</td>
+              <td><a href="{{ row.filing.filing_url }}" rel="noopener">View on SEC EDGAR</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No recent SEC filings for your watchlist companies.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Watchlist index changes</h2>
+    {% if index_change_rows %}
+      <table>
+        <thead>
+          <tr><th>Effective date</th><th>Company</th><th>Change</th><th>Monitoring impact</th></tr>
+        </thead>
+        <tbody>
+          {% for row in index_change_rows %}
+            <tr>
+              <td>{{ row.event.effective_date|date:"Y-m-d" }}</td>
+              <td>{{ row.event.company.display_name }}</td>
+              <td>{{ row.summary }}</td>
+              <td>{{ row.event.get_monitoring_impact_display }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No index changes for your watchlist companies.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Notifications</h2>
+    <p>Notifications are not available yet; they arrive with the notification stages.</p>
+  </section>
+{% endblock %}

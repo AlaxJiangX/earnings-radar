@@ -154,6 +154,12 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
+# Stage 5.2 login-required pages redirect anonymous visitors to the Django
+# Admin login screen.  Stage 1.4 shipped auth plumbing without a standalone
+# login page; for the personal/friends scale baseline the admin screen is
+# the existing, CSRF-protected login entry point.
+LOGIN_URL = "/admin/login/"
+
 RAW_DATA_MAX_PAYLOAD_BYTES = env_positive_int(
     "RAW_DATA_MAX_PAYLOAD_BYTES",
     default=RAW_DATA_PAYLOAD_DB_LIMIT_BYTES,

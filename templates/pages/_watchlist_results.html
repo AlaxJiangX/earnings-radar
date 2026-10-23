@@ -1,0 +1,108 @@
+<div id="watchlist-results">
+  {% if error_message %}
+    <p role="alert">{{ error_message }}</p>
+  {% endif %}
+
+  <nav aria-label="Sort order">
+    Sort by:
+    {% for value, label in sort_choices %}
+      {% if value == sort %}
+        <strong>{{ label }}</strong>
+      {% else %}
+        <a href="{% url 'watchlist' %}?sort={{ value }}"
+           hx-get="{% url 'watchlist' %}?sort={{ value }}"
+           hx-target="#watchlist-results"
+           hx-swap="outerHTML"
+           hx-push-url="true">{{ label }}</a>
+      {% endif %}
+    {% endfor %}
+  </nav>
+
+  {% if not has_items %}
+    <p>Your watchlist is empty. Add a company by ticker above.</p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Company</th>
+          <th>Ticker</th>
+          <th>Priority</th>
+          <th>Alerts</th>
+          <th>Next earnings</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.item.company.display_name }}</td>
+            <td>
+              {% if row.ticker %}
+                {{ row.ticker }}{% if row.exchange %} ({{ row.exchange }}){% endif %}
+              {% else %}
+                &mdash;
+              {% endif %}
+            </td>
+            <td>
+              {% if row.item.priority_level == 'important' %}
+                Important (S)
+              {% else %}
+                Normal (A)
+              {% endif %}
+            </td>
+            <td>
+              {% if row.item.alerts_enabled %}On{% else %}Off{% endif %}
+            </td>
+            <td>
+              {% if row.next_display %}
+                <strong>{{ row.next_display.timing.label }}</strong>
+                {% include "includes/_event_timing.html" with display=row.next_display %}
+                <br>
+                <span>{{ row.next_display.status_label }}</span>
+              {% else %}
+                No scheduled event
+              {% endif %}
+            </td>
+            <td>
+              <form method="post" action="{% url 'watchlist_priority' %}"
+                    hx-post="{% url 'watchlist_priority' %}"
+                    hx-target="#watchlist-results"
+                    hx-swap="outerHTML">
+                {% csrf_token %}
+                <input type="hidden" name="item_id" value="{{ row.item.id }}">
+                <input type="hidden" name="sort" value="{{ sort }}">
+                {% if row.item.priority_level == 'important' %}
+                  <button type="submit" name="priority_level" value="normal">Mark normal (A)</button>
+                {% else %}
+                  <button type="submit" name="priority_level" value="important">Mark important (S)</button>
+                {% endif %}
+              </form>
+              <form method="post" action="{% url 'watchlist_alerts' %}"
+                    hx-post="{% url 'watchlist_alerts' %}"
+                    hx-target="#watchlist-results"
+                    hx-swap="outerHTML">
+                {% csrf_token %}
+                <input type="hidden" name="item_id" value="{{ row.item.id }}">
+                <input type="hidden" name="sort" value="{{ sort }}">
+                {% if row.item.alerts_enabled %}
+                  <button type="submit" name="alerts_enabled" value="off">Disable alerts</button>
+                {% else %}
+                  <button type="submit" name="alerts_enabled" value="on">Enable alerts</button>
+                {% endif %}
+              </form>
+              <form method="post" action="{% url 'watchlist_remove' %}"
+                    hx-post="{% url 'watchlist_remove' %}"
+                    hx-target="#watchlist-results"
+                    hx-swap="outerHTML">
+                {% csrf_token %}
+                <input type="hidden" name="item_id" value="{{ row.item.id }}">
+                <input type="hidden" name="sort" value="{{ sort }}">
+                <button type="submit">Remove</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>

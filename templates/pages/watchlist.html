@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}Watchlist - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>Watchlist</h1>
+  <p class="page-note">
+    Functional skeleton page: interactions are final, visual styling is not.
+    Earnings dates use market timezone {{ market_timezone_label }}.
+  </p>
+
+  <form method="post" action="{% url 'watchlist_add' %}"
+        hx-post="{% url 'watchlist_add' %}"
+        hx-target="#watchlist-results"
+        hx-swap="outerHTML">
+    {% csrf_token %}
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <label for="add-ticker">Add company by ticker</label>
+    <input type="text" name="ticker" id="add-ticker" maxlength="16">
+    <label for="add-priority">Priority</label>
+    <select name="priority_level" id="add-priority">
+      <option value="normal" selected>Normal (A)</option>
+      <option value="important">Important (S)</option>
+    </select>
+    <button type="submit">Add</button>
+  </form>
+
+  {% include "pages/_watchlist_results.html" %}
+{% endblock %}
