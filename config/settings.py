@@ -93,6 +93,7 @@ INSTALLED_APPS = [
     "watchlists.apps.WatchlistsConfig",
     "earnings.apps.EarningsConfig",
     "filings.apps.FilingsConfig",
+    "notifications.apps.NotificationsConfig",
 ]
 
 MIDDLEWARE = [

@@ -63,9 +63,13 @@ User / SyncRun 1---* AuditRecord
 |---|---|
 | `user_id` | one-to-one User |
 | `email_enabled`, `in_app_enabled` | 渠道总开关 |
-| `default_lead_time` | MVP 默认 1 天，准确语义待确认 |
+| `default_lead_time` | MVP 默认 1 天；美东自然日语义见 ADR-024 |
 | `digest_time_local`, `digest_weekday` | 摘要偏好；默认值待确认 |
 | `created_at`, `updated_at` | UTC |
+
+Stage 6.1 已实现上表除摘要字段外的各项（分钟整数、check > 0；缺行表示全部内置默认
+生效）。摘要字段随 6.4 的摘要时间决策一并落库，6.1 不预置空列。覆盖/门语义见
+ADR-024。
 
 ## 4. 公司、股票代码与 CIK
 
@@ -770,7 +774,11 @@ PRD §6.1 仍保留旧的 `FILED` 状态语言；该语言不适用于本模型�
 | `is_enabled` | boolean |
 | `created_at`, `updated_at` | UTC |
 
-唯一约束：`user + company(null-safe) + event_type + channel + lead_time`。公司规则覆盖还是叠加用户默认规则必须明确；建议采用“更具体规则覆盖默认规则”。
+唯一约束：`user + company(null-safe) + event_type + channel + lead_time`（Stage 6.1
+以 PostgreSQL `NULLS NOT DISTINCT` 实现）。公司规则对用户默认是**整体替换**而非叠加
+（更具体规则集完全取代默认规则集），渠道总开关与公司 `alerts_enabled` 总开关是独立的
+抑制门；内置默认为全部类型启用。语义与解析顺序见 ADR-024。Stage 6.1 另加 check：
+`earnings_upcoming` 的 lead 必须为正整天分钟数，其余事件类型必须为 0。
 
 ## 9. 通知记录
 
@@ -1106,8 +1114,8 @@ Stage 4.5 Contract Documentation 已追加冻结：
 4. 1–7 日指数偏移候选的人工复核负责人、处理时限与默认行为。
 5. release filing 首版 exhibit/文本证据清单已由 ADR-021 关闭为 metadata-only v1（`EX-99.1` / `EX-99`）；REVIEW_REQUIRED 在用户页面的展示范围和复核时限仍待产品确认。
 6. IR / SEC 等高 authority 来源的字段级冲突矩阵与复核流程：IR / manual / SEC filing state / third-party calendar 的字段级 authority 已由 ADR-022 冻结；4.2 第三方 calendar 的字段权限与 append-only manual decision authority 已由 ADR-010 确定。实际 IR company allowlist 与逐来源许可仍待产品确认，live Provider 保持 BLOCKED。
-7. 用户级与公司级 ReminderRule 的覆盖/叠加规则。
-8. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界。
+7. 用户级与公司级 ReminderRule 的覆盖/叠加规则：已关闭（ADR-024 §4，2026-10-24，公司规则整体替换用户默认 + 双门抑制）。
+8. 提醒“提前一天”按美东日期还是用户本地日期，以及夏令时边界：已关闭（ADR-024 §2，2026-10-24，美东自然日锚定，zoneinfo 处理 DST）。
 9. 原始数据、通知内容、审计记录和已停用用户数据的保留期限。
 10. AuditRecord 和 DataChange 的保留期限、IP 哈希保留期及具体查看角色仍需在阶段 8.1 前确认；目标引用已确定为受限枚举 + UUID，不使用 Django ContentType 或 GenericForeignKey。
 11. 4.2F 最终 provider / license checklist 结论与 anomaly shrink operational 阈值；ADR-020
