@@ -1,15 +1,37 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from django.db.models import Prefetch, Q, QuerySet
 
-from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexChangeEvent, IndexMembership
+from indexes.models import (
+    NORMATIVE_MEMBERSHIP_STATUSES,
+    IndexChangeEvent,
+    IndexChangeLeg,
+    IndexMembership,
+)
 
 if TYPE_CHECKING:
     from indexes.models import MarketIndex
+
+
+def recent_index_changes_for_companies(
+    *,
+    company_ids: Sequence[UUID],
+    limit: int,
+) -> QuerySet[IndexChangeEvent]:
+    """Return the latest active IndexChangeEvent rows for the given Companies."""
+
+    leg_qs = IndexChangeLeg.objects.select_related("index", "security_listing")
+    return (
+        IndexChangeEvent.objects.filter(company_id__in=company_ids, status="active")
+        .select_related("company")
+        .prefetch_related(Prefetch("legs", queryset=leg_qs))
+        .order_by("-effective_date", "company__display_name", "id")[:limit]
+    )
 
 
 def _normative_as_of(

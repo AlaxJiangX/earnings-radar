@@ -527,6 +527,10 @@ MVP 使用 Django management commands 作为所有后台入口。建议生产调
 
 - 公开页面：`/`、`/earnings`、`/companies`、公司详情、`/index-changes` 及公开 SEC/来源信息；
 - 登录页面：`/dashboard`、`/watchlist`、`/notifications`、`/settings/notifications`；
+- 跨 app 组合的登录页面（Stage 5.2 起 `/dashboard`、`/watchlist`，以及未来的
+  `/notifications`）由项目组合层 `config.pages` 承载：view 只编排 HTTP、权限、输入与
+  渲染，领域读取走各 app 公开 selector，变更走 `watchlists.services` 等公开用例；
+  不放松任何 app 间依赖规则（如 `watchlists` 仍不得 import `earnings` / `filings`）；
 - 所有用户资源查询必须以当前用户过滤，不能只依赖前端隐藏；
 - Django Templates 输出完整页面；HTMX endpoint 返回明确的 partial，并支持普通请求回退；
 - 搜索、筛选和分页参数在服务端校验；
