@@ -950,7 +950,7 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 
 | 决策 | 最晚确认阶段 |
 |---|---|
-| 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前 |
+| 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前。产品负责人 2026-10-24 确认规模基线：项目以个人使用为主，后续可能以邀请方式开放给朋友，不按大规模公开服务规划；进入 8.1 规划前按此口径复核阶段 8 的 alpha/beta 门槛与 ADR-004（涉及 PRD 第 17 节的调整需产品负责人另行确认） |
 | 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture；ADR-020 已冻结 AV v2 candidate-entry technical contract；个人用途书面澄清已完成，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；4.5B IR contract 已由 ADR-022 冻结，实际 IR company allowlist 与逐来源许可未定，live Provider 保持 `LIVE BLOCKED`；公开 / 多用户 / 商业仍待单独审查 |
 | 邮件服务、摘要时间、重试规则 | 6.4 前 |
 | 跨 Provider 合并阈值与重复核对 | 已由 ADR-010 确定为 exact-only；不实现 fuzzy auto-merge；FY/52-53 周规则由 ADR-001 确定 |
@@ -966,6 +966,7 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | 原始/通知/审计数据保留、账号删除与 watchlist 匿名化 | 8.1 前（ADR-023 §13 PD-6） |
 | 新鲜度与 alpha/beta 门槛的后续调整 | 仅在 alpha 实测支持时修订 ADR-004 |
 | 生产平台及 Cron 能力 | 8.1 前 |
+| 依赖与安全补丁升级节奏（Django/PostgreSQL/Python 小版本） | 工程例行，无产品确认门：每年至少一次升级小任务，安全公告时立即处理 |
 
 ## 5. 完成定义（适用于每个小阶段）
 

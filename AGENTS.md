@@ -29,14 +29,17 @@
 4. 先阅读相关现有实现和测试，再提出方案或编辑；
 5. 保留用户和其他任务已有改动，不依赖聊天摘要或记忆代替仓库事实。
 
-以下高风险任务开始前，必须完整阅读 PRD、架构、数据模型、数据源、全部 ADR 和路线图：
+阅读量按任务风险分两级。
 
-- 进入任一编号开发小阶段；
+完整阅读（PRD、架构、数据模型、数据源、全部 ADR 和路线图）适用于高风险任务：
+
 - 修改模型、迁移、数据库约束、身份或历史语义；
 - 修改跨模块接口、Provider、同步编排、权限、安全或审计；
 - 修改通知幂等、生产部署或发布门槛。
 
-纯解释、只读评审、状态查询和不影响产品/架构语义的简单文档任务，可只阅读与问题直接相关的章节；一旦发现跨模块影响或文档冲突，立即升级为上述完整阅读。
+定向阅读适用于普通编号开发小阶段和其他实现任务：必读 `AGENTS.md`、路线图当前小节及其前置依赖说明、PRD 中与该阶段相关的章节和 `docs/architecture.md`；再按 `docs/decisions/README.md` 索引挑选与本次改动 app 相关的 ADR 完整阅读（被修订条款以修订方 ADR 为准）；涉及外部来源时加读 `docs/data-sources.md` 对应章节，涉及表结构时加读 `docs/data-model.md` 对应章节。
+
+纯解释、只读评审、状态查询和不影响产品/架构语义的简单文档任务，可只阅读与问题直接相关的章节；一旦发现跨模块影响或文档冲突，立即升级为完整阅读。
 
 ## 3. 一次只完成一个明确任务
 
@@ -132,9 +135,7 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 - EarningsEvent 只表达预计、确认、发布和取消生命周期；不得把 `FILED` 放入单向财报状态机。
 - 年度财报内部统一为 `FY + includes_q4=true`；52/53 周使用 `fiscal_calendar_type` 和 `period_length_weeks`，不得扩张 period_type。
 - SEC 文件可用性由 Filing 和 FilingEarningsLink 独立表达；release filing 使用 YES/NO/REVIEW_REQUIRED 并保存分类原因和规则版本。
-- 指数变化的底层事实只有 IndexChangeLeg 的 `ADDED` / `REMOVED`；同日加入/移除自动合并，1–7 日进入待复核，超过 7 日保持独立。
-- Russell 2000 与三个大型指数之间才使用 UPGRADE/DOWNGRADE；三个大型指数内部为 CROSS_INDEX。
-- 监控影响必须区分 ENTERS_BASE_POOL 与 REENTERS_BASE_POOL，后者仅用于历史上退出后重新进入。
+- 指数变化的底层事实只有 IndexChangeLeg 的 `ADDED` / `REMOVED`；同日自动合并、1–7 日待复核、超过 7 日独立的窗口规则，UPGRADE/DOWNGRADE/CROSS_INDEX 的适用范围，以及 ENTERS/REENTERS_BASE_POOL 的区分，均以 ADR-002 / ADR-006 为准。
 - 财报预计、确认、实际发布和电话会时间分字段保存；SEC 提交时间保存在 Filing 中。
 - 页面必须明确显示时区；用户时区只影响显示和提醒窗口，不改变存储值。
 - 时间相关测试覆盖 UTC、美东时间、用户本地时间和 DST 切换。
@@ -152,15 +153,16 @@ MVP 模块为 `accounts`、`companies`、`indexes`、`earnings`、`filings`、`w
 - 不使用破坏性 Git 命令，不覆盖或删除不属于当前任务的用户改动。
 - 不提交生成物、数据库文件、真实原始大响应、日志、缓存、虚拟环境或秘密。
 - 不增加依赖，除非本阶段确实需要；说明用途、许可证/维护风险，并更新锁文件。
-- 不把未实现能力写成 README 中的已完成能力。
+- README 与其他文档的能力描述在相关阶段合并时同步更新：不把未实现能力写成已完成，也不把已实现能力继续描述为未实现。
 - 阶段完成状态只在 `docs/development-roadmap.md` 维护。完成并合并一个阶段时必须更新其中的完成标记；其他文档若仍含重复进度快照，应在同一任务中删除或同步，且不得新增新的状态副本或把阶段状态复制回 `AGENTS.md`。
+- 新增或修订 ADR 时，必须在同一任务中更新 `docs/decisions/README.md` 索引；索引只保留导航信息，不复制 ADR 结论细节。
 - 合并前必须审阅完整 diff，确认只包含当前任务文件、迁移可解释、文档与实现一致且没有秘密或本地绝对路径。
  - Commit message 遵循仓库根目录 `.gitmessage` 模板，并参考 `docs/codex-development-workflow.md` 中的 Commit Message Guidelines；重要提交必须通过 body 解释 Why，不得编造不存在的 alternatives 或 refs。
   - Codex 应遵循渐进式上下文扩展（progressive context expansion）：优先 diff-first review、targeted reads 与 targeted tests，避免重复读取未变化的无关上下文；Token efficiency 不得削弱 Git safety 和最终质量门；详细规则见 `docs/codex-development-workflow.md` 的 Token Efficiency Guidelines。
 
 ## 11. 测试与验收
 
-按改动风险选择测试，至少运行本阶段相关测试。完整开发小阶段的标准验证命令为：
+按改动风险选择测试，至少运行本阶段相关测试。完整开发小阶段的标准验证命令为 `./scripts/verify.sh`：在单个容器内按 fail-fast 顺序（ruff → Django check → 迁移检查 → mypy → pytest）执行以下全部检查，额外参数透传给 pytest（如 `./scripts/verify.sh -k watchlists`）：
 
 ```bash
 docker compose run --rm web python manage.py check

@@ -599,7 +599,7 @@ class TestGeneratedContentStructure:
         for section in [
             "Task Source",
             "GitHub Issue Body",
-            "Project Status Snapshot",
+            "Roadmap Status Header",
             "Required Reading",
             "Pre-Operation Git Verification",
             "Objective",
