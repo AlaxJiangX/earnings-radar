@@ -204,12 +204,12 @@ ISSUE_URL="$(_gh_json url)"
 
 ISSUE_LABELS="$(_gh_json labels)"
 
-# ---- read project status if available --------------------------------------
-PROJECT_STATUS=""
-if [[ -f "$REPO_ROOT/docs/project-status.md" ]]; then
-    PROJECT_STATUS="$(cat "$REPO_ROOT/docs/project-status.md")"
+# ---- read roadmap status header (stage progress authority) ------------------
+ROADMAP_STATUS=""
+if [[ -f "$REPO_ROOT/docs/development-roadmap.md" ]]; then
+    ROADMAP_STATUS="$(sed -n '1,12p' "$REPO_ROOT/docs/development-roadmap.md")"
 else
-    PROJECT_STATUS="(project-status.md not found -- run codex-issue from a repo with docs/project-status.md)"
+    ROADMAP_STATUS="(docs/development-roadmap.md not found -- stage progress authority is missing)"
 fi
 
 # ---- current git context ---------------------------------------------------
@@ -271,25 +271,34 @@ BRIEF
 
     cat <<BRIEF
 
-## 3. Project Status Snapshot
+## 3. Roadmap Status Header
+
+Stage progress authority is docs/development-roadmap.md only; there is no
+separate status snapshot file. The header below is a generated snapshot --
+verify against actual Git history and GitHub PRs before relying on it.
 
 BRIEF
 
-    printf '%s\n' "$PROJECT_STATUS"
+    printf '%s\n' "$ROADMAP_STATUS"
 
     cat <<BRIEF
 
 ## 4. Required Reading
 
-Before starting any work, you MUST read these documents in the repository:
+Follow the two reading tiers in AGENTS.md section 2. For a regular stage task:
 
-  1. AGENTS.md
-  2. docs/product-requirements.md
-  3. docs/architecture.md
-  4. docs/data-model.md
-  5. docs/data-sources.md
-  6. docs/development-roadmap.md
-  7. docs/decisions/ (all ADRs)
+  1. AGENTS.md (always, in full)
+  2. docs/development-roadmap.md -- the current stage section and its prerequisites
+  3. docs/product-requirements.md -- sections relevant to the stage
+  4. docs/architecture.md
+  5. docs/decisions/README.md -- then read every ADR whose scope touches the
+     apps you will modify (revised clauses follow the revising ADR)
+  6. docs/data-model.md / docs/data-sources.md -- sections relevant to the change
+
+HIGH-RISK tasks (models, migrations, DB constraints, identity/history
+semantics, cross-module interfaces, providers, sync orchestration,
+permissions, security, audit, notification idempotency, deployment gates)
+require FULL reading of every document above and ALL ADRs.
 
 ## 5. Pre-Operation Git Verification
 
@@ -347,14 +356,10 @@ STOP and report the discrepancy. Do not proceed with stale assumptions.
 
 ## 10. Tests and Quality Checks
 
-Run these checks before considering the task complete:
+Run the standard verification gate before considering the task complete:
 
-  python manage.py check
-  python manage.py makemigrations --check --dry-run
-  pytest
-  ruff check .
-  ruff format --check .
-  mypy .
+  ./scripts/verify.sh                # full gate, fail-fast, single container
+  ./scripts/verify.sh -k <pattern>   # targeted pytest subset during development
 
 If the task is a shell script or documentation-only change:
 

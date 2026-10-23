@@ -46,7 +46,8 @@ This reads the GitHub Issue and prints a structured task brief to stdout.
 
 1. Task source (GitHub Issue metadata)
 2. Full Issue body (preserved verbatim)
-3. Project status snapshot (from `docs/project-status.md`)
+3. Roadmap status header (from `docs/development-roadmap.md`; stage progress
+   authority lives only in the roadmap)
 4. Required reading list
 5. Pre-operation Git verification steps
 6. Objective
@@ -69,7 +70,8 @@ Before handing the brief to Codex:
 
 1. Read the entire output.
 2. Verify the Issue title, body, and labels match your expectations.
-3. Check the project status snapshot is current.
+3. Check the roadmap status header reflects the actually merged stages
+   (compare with `git log` and GitHub PRs).
 4. Confirm the required reading list is complete.
 
 ## Using the Brief with Codex
@@ -134,15 +136,11 @@ requires them.
 
 ## Post-Completion Quality Checks
 
-After implementation, run these checks:
+After implementation, run the standard verification gate:
 
 ```bash
-python manage.py check
-python manage.py makemigrations --check --dry-run
-pytest
-ruff check .
-ruff format --check .
-mypy .
+./scripts/verify.sh                # fail-fast: ruff -> check -> migrations -> mypy -> pytest
+./scripts/verify.sh -k <pattern>   # targeted pytest subset during development
 ```
 
 For shell scripts:
