@@ -1,0 +1,64 @@
+<div id="notification-rows">
+  {% if not rows %}
+    <p>No notifications yet. They appear here as soon as an event is enqueued for you.</p>
+  {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Company</th>
+          <th>Type</th>
+          <th>Priority</th>
+          <th>Status</th>
+          <th>Source</th>
+          <th>Read</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>
+              <time data-utc="{{ row.utc_iso }}"
+                    {% if row.local_set %}data-user-tz="true"{% endif %}>
+                {{ row.utc_label }}{% if row.local_set %}<br>{{ row.local_label }}{% endif %}
+              </time>
+            </td>
+            <td>{{ row.company_name|default:"&mdash;" }}</td>
+            <td>{{ row.event_type_label }}</td>
+            <td>{{ row.notification.priority }}</td>
+            <td>{{ row.notification.get_status_display }}{% if row.notification.status == 'suppressed' %} ({{ row.notification.suppressed_reason }}){% endif %}</td>
+            <td>
+              {% if row.notification.source_url %}
+                <a href="{{ row.notification.source_url }}" rel="noopener">Source</a>
+              {% else %}
+                &mdash;
+              {% endif %}
+            </td>
+            <td>
+              {% if row.notification.read_at %}
+                Read
+              {% else %}
+                Unread
+              {% endif %}
+            </td>
+            <td>
+              {% if not row.notification.read_at %}
+                <form method="post" action="{% url 'notification_read' %}"
+                      hx-post="{% url 'notification_read' %}"
+                      hx-target="#notification-rows"
+                      hx-swap="outerHTML">
+                  {% csrf_token %}
+                  <input type="hidden" name="notification_id" value="{{ row.notification.pk }}">
+                  <button type="submit">Mark read</button>
+                </form>
+              {% else %}
+                &mdash;
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</div>

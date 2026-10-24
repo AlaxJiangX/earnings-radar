@@ -245,6 +245,11 @@ class Notification(models.Model):
         help_text="Required iff status=suppressed; ADR-024 suppression reasons.",
     )
     source_url = models.URLField(null=True, blank=True)  # noqa: DJ001
+    read_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="In-app read time; fully independent of the send status.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

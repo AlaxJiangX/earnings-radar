@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Notifications - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>Notifications</h1>
+  <p class="page-note">
+    Functional skeleton page: interactions are final, visual styling is not.
+    In-app notifications are readable as soon as they are enqueued; the read
+    mark is independent of the send status.
+  </p>
+
+  {% if error_message %}
+    <p role="alert">{{ error_message }}</p>
+  {% endif %}
+  {% if saved_note %}
+    <p role="status">{{ saved_note }}</p>
+  {% endif %}
+
+  {% include "pages/_notification_rows.html" %}
+
+  <p><a href="{% url 'notification_settings' %}">Notification settings</a></p>
+{% endblock %}
