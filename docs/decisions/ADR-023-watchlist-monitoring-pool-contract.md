@@ -659,7 +659,9 @@ Audit 迁移只改 `AuditRecord` 的 choices / check；不得把 `watchlist_item
 1. `CLOSED PD-1`：canonical `identity_pending` 规则见 §6.4（2026-10-18）；
 2. `OPEN DECISION PD-2`：US-listing 的 canonical 判据（exchange allowlist / 国家策略）；
 3. `OPEN DECISION PD-3`：watchlist 数量上限与滥用防护，最晚公开注册（Stage 8.4）前确认；
-4. `DEFERRED PD-4`：移除自选时是否立即取消待发送通知，Stage 6.1 / 6.2 决定；
+4. `CLOSED PD-4`：移除自选时不在移除瞬间取消已入队通知；由发送命令在发送前复查
+   「是否仍在有效自选中」，不在则不发送并记录抑制原因（方案 A，产品负责人
+   2026-10-24 拍板，契约见 ADR-025 §4）；
 5. `DEFERRED PD-5`：全部指数 disabled、只靠 watchlist 的零指数模式；MVP 保持
    `enabled_index_codes` 非空；支持该模式需要同时放开 selector 非空校验并迁移现有
    check constraint；
