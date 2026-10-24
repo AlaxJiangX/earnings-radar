@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 
 import pytest
 from django.test import Client
@@ -11,6 +11,7 @@ from django.test import Client
 from accounts.models import User
 from companies.models import Company
 from notifications.models import Notification, ReminderRule, UserNotificationPreference
+from notifications.services.settings_service import set_digest_time_local
 from tests.pages.helpers import company_with_listing, login_client, make_filing, make_user
 
 pytestmark = pytest.mark.django_db
@@ -189,9 +190,62 @@ class TestNotificationSettingsPage:
         for _value, label in ReminderRule.EventType.choices:
             assert label in content
         assert "Display timezone" in content
-        # 6.4 capability must not appear as an input control.
-        assert 'name="digest' not in content
-        assert "Digest scheduling is not available yet." in content
+        # Stage 6.4: the digest time input is part of the settings page.
+        assert 'name="digest_time_local"' in content
+        assert "Daily digest time" in content
+
+    def test_saves_digest_time(self) -> None:
+        user = make_user("digest-save")
+        client = login_client(user)
+
+        client.post(
+            "/settings/notifications/",
+            {"digest_time_local": "09:30", "default_lead_time_days": "1"},
+        )
+
+        preference = UserNotificationPreference.objects.get(user=user)
+        assert preference.digest_time_local is not None
+        assert preference.digest_time_local.hour == 9
+        assert preference.digest_time_local.minute == 30
+
+    def test_empty_digest_time_restores_default(self) -> None:
+        user = make_user("digest-clear")
+        client = login_client(user)
+        client.post(
+            "/settings/notifications/",
+            {"digest_time_local": "09:30", "default_lead_time_days": "1"},
+        )
+        preference = UserNotificationPreference.objects.get(user=user)
+        assert preference.digest_time_local is not None
+
+        client.post(
+            "/settings/notifications/",
+            {"digest_time_local": "", "default_lead_time_days": "1"},
+        )
+
+        preference.refresh_from_db()
+        assert preference.digest_time_local is None
+
+    def test_invalid_digest_time_redirects_with_error(self) -> None:
+        user = make_user("digest-invalid")
+        client = login_client(user)
+
+        response = client.post(
+            "/settings/notifications/",
+            {"digest_time_local": "25:99", "default_lead_time_days": "1"},
+        )
+
+        assert response.status_code == 302
+        assert response["Location"].endswith("error=invalid_settings")
+        preference = UserNotificationPreference.objects.filter(user=user).first()
+        assert preference is None or preference.digest_time_local is None
+
+    def test_digest_input_prefers_saved_value(self) -> None:
+        user = make_user("digest-render-value")
+        set_digest_time_local(user, time(18, 45))
+        content = login_client(user).get("/settings/notifications/").content.decode()
+
+        assert 'value="18:45"' in content
 
     def test_save_is_idempotent_across_repeated_submissions(self) -> None:
         user = make_user("settings-save")

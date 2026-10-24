@@ -181,3 +181,18 @@ REFERENCE_CALENDAR_STALE_AFTER_HOURS = env_positive_int(
     default=48,
     maximum=8760,
 )
+
+# Stage 6.4 email delivery (ADR-027 D1): the generic SMTP adapter rides on
+# Django's native mail stack with zero new dependencies; every value comes
+# from the environment only.  The send command refuses to claim anything
+# when the SMTP sender lacks EMAIL_HOST / DEFAULT_FROM_EMAIL.
+EMAIL_HOST = os.getenv("EMAIL_HOST", "").strip()
+EMAIL_PORT = env_positive_int("EMAIL_PORT", default=587, maximum=65535)
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "").strip()
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", default=True)
+EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", default=False)
+if EMAIL_USE_TLS and EMAIL_USE_SSL:
+    raise ImproperlyConfigured("EMAIL_USE_TLS and EMAIL_USE_SSL are mutually exclusive.")
+EMAIL_TIMEOUT = env_positive_int("EMAIL_TIMEOUT", default=15, maximum=300)
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "").strip()

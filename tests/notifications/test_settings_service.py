@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 
 import pytest
 
@@ -14,6 +14,7 @@ from notifications.services.settings_service import (
     NotificationNotFound,
     NotificationSettingsError,
     mark_notification_read,
+    set_digest_time_local,
     set_event_type_enabled,
     update_notification_preference,
 )
@@ -55,6 +56,33 @@ class TestMarkNotificationRead:
     def test_missing_notification_raises_not_found(self, user: User) -> None:
         with pytest.raises(NotificationNotFound):
             mark_notification_read(user=user, notification_id=uuid.uuid4())
+
+
+class TestDigestTime:
+    def test_set_creates_preference_row(self, user: User) -> None:
+        preference = set_digest_time_local(user, time(9, 30))
+
+        assert preference.digest_time_local == time(9, 30)
+        preference.refresh_from_db()
+        assert preference.digest_time_local == time(9, 30)
+
+    def test_clear_restores_default_semantics(self, user: User) -> None:
+        set_digest_time_local(user, time(9, 30))
+
+        preference = set_digest_time_local(user, None)
+
+        assert preference.digest_time_local is None
+
+    def test_set_is_idempotent(self, user: User) -> None:
+        set_digest_time_local(user, time(8, 15))
+        set_digest_time_local(user, time(8, 15))
+
+        assert UserNotificationPreference.objects.filter(user=user).count() == 1
+        assert UserNotificationPreference.objects.get(user=user).digest_time_local == time(8, 15)
+
+    def test_rejects_non_time_value(self, user: User) -> None:
+        with pytest.raises(NotificationSettingsError):
+            set_digest_time_local(user, "09:30")  # type: ignore[arg-type]
 
 
 class TestEventTypeToggle:

@@ -68,7 +68,8 @@ User / SyncRun 1---* AuditRecord
 | `created_at`, `updated_at` | UTC |
 
 Stage 6.1 已实现上表除摘要字段外的各项（分钟整数、check > 0；缺行表示全部内置默认
-生效）。摘要字段随 6.4 的摘要时间决策一并落库，6.1 不预置空列。覆盖/门语义见
+生效）。`digest_time_local` 随 6.4 落库（可空 `TimeField`，NULL = 默认 08:00 生效，
+ADR-027）；`digest_weekday`（周摘要）延后到二期，不预置空列。覆盖/门语义见
 ADR-024。
 
 ## 4. 公司、股票代码与 CIK
@@ -813,8 +814,13 @@ related_object_type/id（受限枚举 + UUID）、event_version、priority、cha
 status（枚举一次性按上表固定，6.2 只写 pending/suppressed）、唯一
 `idempotency_key`（稳定业务身份的 SHA-256，规则不进键、lead 仅 upcoming 进键）、
 `suppressed_reason`（与 suppressed 状态 check 耦合）与 `source_url`。
-`scheduled_at`/`claimed_at`/`sent_at`/重试/快照/`read_at` 随 6.3/6.4 落库，
-digest_bucket 留待 6.4 摘要决策（届时以键版本升级处理）。
+6.3 落库 `read_at`（与发送状态完全分离）。6.4 落库投递字段
+（`scheduled_at`/`claimed_at`/`sent_at`/`attempt_count`/`next_attempt_at`/
+`subject_snapshot`/`body_snapshot`/`last_error_code`/`last_error_message`）、
+`digest_bucket`（P3 行的下一个未到期摘要桶本地日期，仅 P3 行可非空）与
+`origin_company_level`（入队时该用户相对该公司的 S/A/B/C/none 层级，PD-4
+发送前复查的依据，ADR-027 D4）。P3 行的幂等键按 ADR-027 升级为 v2（追加
+digest_bucket 维度），P0–P2 行键保持 v1 逐字节不变。
 
 ### 9.2 `NotificationDeliveryAttempt`
 
@@ -829,6 +835,8 @@ digest_bucket 留待 6.4 摘要决策（届时以键版本升级处理）。
 | `response_metadata` | 受控 JSON，不存凭据 |
 
 唯一约束：`notification + attempt_number`。通知最终状态不覆盖尝试历史。
+6.4 已按 ADR-027 实现：尝试行在每次发送尝试完成时追加一次（含 started/finished、
+脱敏错误与受控 metadata），抑制不产生尝试行。
 
 ## 10. 数据来源、原始数据与同步运行
 

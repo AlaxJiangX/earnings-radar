@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -56,6 +56,7 @@ from notifications.services.settings_service import (
     NotificationSettingsError,
     get_or_create_notification_preference,
     mark_notification_read,
+    set_digest_time_local,
     set_event_type_enabled,
     update_notification_preference,
 )
@@ -601,6 +602,11 @@ def _notification_settings_context(request: HttpRequest, *, error_code: str = ""
     return {
         "preference": preference,
         "preference_lead_days": preference.default_lead_time_minutes // 1440,
+        "digest_time_value": (
+            preference.digest_time_local.strftime("%H:%M")
+            if preference.digest_time_local is not None
+            else ""
+        ),
         "event_types": event_types,
         "timezone_value": (getattr(user, "timezone", None) or ""),
         "error_message": NOTIFICATIONS_ERROR_MESSAGES.get(error_code, ""),
@@ -624,6 +630,9 @@ def notification_settings(request: HttpRequest) -> HttpResponse:
             in_app_enabled=request.POST.get("in_app_enabled") == "on",
             default_lead_time_days=lead_days,
         )
+        digest_raw = (request.POST.get("digest_time_local") or "").strip()
+        digest_time = time.fromisoformat(digest_raw) if digest_raw else None
+        set_digest_time_local(user, digest_time)
         for event_type, _label in ReminderRule.EventType.choices:
             enabled = request.POST.get(f"event_{event_type}") == "on"
             set_event_type_enabled(user, event_type, enabled)

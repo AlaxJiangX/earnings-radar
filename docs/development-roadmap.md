@@ -976,7 +976,7 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 |---|---|
 | 默认语言、alpha 账号策略、beta 公开注册、开源协议 | 1.1/1.4 前；公开注册最晚 8.4 前。产品负责人 2026-10-24 确认规模基线：项目以个人使用为主，后续可能以邀请方式开放给朋友，不按大规模公开服务规划；进入 8.1 规划前按此口径复核阶段 8 的 alpha/beta 门槛与 ADR-004（涉及 PRD 第 17 节的调整需产品负责人另行确认） |
 | 财报/指数来源与许可 | 首个真实 Provider 开发前必须完成（3.2/4.2/4.4/4.5）；2.2 仅允许契约与人工 fixture；ADR-020 已冻结 AV v2 candidate-entry technical contract；个人用途书面澄清已完成，4.2F-B 已实现、验证并 merge（PR #51，merge `de38d4b`）；4.5B IR contract 已由 ADR-022 冻结，实际 IR company allowlist 与逐来源许可未定，live Provider 保持 `LIVE BLOCKED`；公开 / 多用户 / 商业仍待单独审查 |
-| 邮件服务、摘要时间、重试规则 | 6.4 前 |
+| 邮件服务、摘要时间、重试规则 | 已关闭（ADR-027，2026-10-25：通用 SMTP 零依赖、用户本地日桶默认 08:00、3 次尝试/15 分钟间隔/永久失败立即停止） |
 | 跨 Provider 合并阈值与重复核对 | 已由 ADR-010 确定为 exact-only；不实现 fuzzy auto-merge；FY/52-53 周规则由 ADR-001 确定 |
 | 1–7 日指数候选复核负责人和时限 | 3.3 前；窗口、方向和 ENTERS/REENTERS 已由 ADR-002 确定 |
 | release filing 证据清单、复核展示和时限 | metadata-only exhibit allowlist 已由 ADR-021 关闭为 `EX-99.1` / `EX-99`；REVIEW_REQUIRED 展示范围与复核时限仍待确认 |

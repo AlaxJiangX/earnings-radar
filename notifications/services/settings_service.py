@@ -24,7 +24,7 @@ the original ``read_at``.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -88,6 +88,25 @@ def update_notification_preference(
         if default_lead_time_days is not None:
             preference.default_lead_time_minutes = default_lead_time_days * 1440
         preference.save()
+    return preference
+
+
+def set_digest_time_local(user: User, digest_time: time | None) -> UserNotificationPreference:
+    """Set the user's local digest time; ``None`` restores the 08:00 default.
+
+    The value only affects bucketing of digest-priority notifications from
+    the next enqueue onward (ADR-027 D2); already-bucketed rows keep the
+    bucket recorded at their enqueue time.
+    """
+
+    if digest_time is not None and not isinstance(digest_time, time):
+        raise NotificationSettingsError("digest_time must be a time or None.")
+    with transaction.atomic():
+        preference = UserNotificationPreference.objects.select_for_update().get_or_create(
+            user=user
+        )[0]
+        preference.digest_time_local = digest_time
+        preference.save(update_fields=("digest_time_local", "updated_at"))
     return preference
 
 
