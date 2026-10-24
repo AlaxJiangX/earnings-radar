@@ -808,6 +808,14 @@ PRD §6.1 仍保留旧的 `FILED` 状态语言；该语言不适用于本模型�
 
 推荐幂等键输入：`user + rule/effective-policy + event_type + related_object + event_version + channel + digest_bucket`。不要把发送尝试次数放入键中。
 
+Stage 6.2 已按 ADR-025 实现入队所需子集：user、reminder_rule、event_type、
+related_object_type/id（受限枚举 + UUID）、event_version、priority、channel、
+status（枚举一次性按上表固定，6.2 只写 pending/suppressed）、唯一
+`idempotency_key`（稳定业务身份的 SHA-256，规则不进键、lead 仅 upcoming 进键）、
+`suppressed_reason`（与 suppressed 状态 check 耦合）与 `source_url`。
+`scheduled_at`/`claimed_at`/`sent_at`/重试/快照/`read_at` 随 6.3/6.4 落库，
+digest_bucket 留待 6.4 摘要决策（届时以键版本升级处理）。
+
 ### 9.2 `NotificationDeliveryAttempt`
 
 | 字段 | 说明 |

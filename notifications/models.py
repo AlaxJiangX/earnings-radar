@@ -25,6 +25,27 @@ ALLOWED_EVENT_TYPES = frozenset(
 )
 ALLOWED_CHANNELS = frozenset({"email", "in_app"})
 
+# Stage 6.2 writes only pending / suppressed; processing / sent / failed /
+# cancelled belong to the Stage 6.4 delivery state machine and to admin
+# correction, but the vocabulary is fixed once by data-model section 9.1 so
+# later stages do not need a migration to widen the check.
+ALLOWED_NOTIFICATION_STATUSES = frozenset(
+    {"pending", "processing", "sent", "failed", "cancelled", "suppressed"}
+)
+ALLOWED_NOTIFICATION_PRIORITIES = frozenset({"P0", "P1", "P2", "P3"})
+ALLOWED_RELATED_OBJECT_TYPES = frozenset(
+    {
+        "earnings_event",
+        "earnings_date_change",
+        "filing",
+        "index_change_event",
+        "index_change_leg",
+    }
+)
+ALLOWED_SUPPRESSION_REASONS = frozenset(
+    {"channel_disabled", "company_alerts_disabled", "rule_disabled"}
+)
+
 
 class UserNotificationPreference(models.Model):
     """User-level channel master switches and the default upcoming lead time.
@@ -147,3 +168,138 @@ class ReminderRule(models.Model):
             f"{self.user_id}:{company_label}:{self.event_type}:"
             f"{self.channel}:{self.lead_time_minutes}m"
         )
+
+
+class Notification(models.Model):
+    """One user-facing notification on one channel; the persistent queue.
+
+    Written by the Stage 6.2 enqueue services inside the triggering
+    transaction (transactional-outbox semantics, ADR-025).  ``pending``
+    rows wait for the Stage 6.4 sender; ``suppressed`` rows record that a
+    notification was deliberately not queued and why.  Delivery state
+    (processing / sent / failed / cancelled), attempts and snapshots are
+    Stage 6.3 / 6.4 additions.
+
+    ``event_version`` identifies the triggering occurrence: the DataChange
+    behind a release transition, the accession number of a filing, the
+    reminded business date for advance reminders, or the id of the
+    append-only fact row itself.  Together with user / event type /
+    channel / related object / lead it feeds the deterministic
+    ``idempotency_key`` so reruns and concurrent enqueues cannot create a
+    second row for the same occurrence (AGENTS.md section 8).
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        SENT = "sent", "Sent"
+        FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
+        SUPPRESSED = "suppressed", "Suppressed"
+
+    class Priority(models.TextChoices):
+        P0 = "P0", "P0 - immediate"
+        P1 = "P1", "P1 - high"
+        P2 = "P2", "P2 - normal"
+        P3 = "P3", "P3 - digest"
+
+    class RelatedObjectType(models.TextChoices):
+        EARNINGS_EVENT = "earnings_event", "Earnings event"
+        EARNINGS_DATE_CHANGE = "earnings_date_change", "Earnings date change"
+        FILING = "filing", "SEC filing"
+        INDEX_CHANGE_EVENT = "index_change_event", "Index change event"
+        INDEX_CHANGE_LEG = "index_change_leg", "Index change leg"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="notifications",
+    )
+    reminder_rule = models.ForeignKey(
+        ReminderRule,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+    event_type = models.CharField(max_length=32, choices=ReminderRule.EventType.choices)
+    related_object_type = models.CharField(
+        max_length=32,
+        choices=RelatedObjectType.choices,
+    )
+    related_object_id = models.UUIDField()
+    event_version = models.CharField(max_length=128)
+    priority = models.CharField(max_length=8, choices=Priority.choices)
+    channel = models.CharField(max_length=16, choices=ReminderRule.Channel.choices)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    idempotency_key = models.CharField(max_length=64, unique=True, editable=False)
+    suppressed_reason = models.CharField(  # noqa: DJ001
+        max_length=32,
+        null=True,
+        blank=True,
+        help_text="Required iff status=suppressed; ADR-024 suppression reasons.",
+    )
+    source_url = models.URLField(null=True, blank=True)  # noqa: DJ001
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("user_id", "created_at", "id")
+        indexes = [
+            models.Index(
+                fields=("user", "status"),
+                name="notifications_user_status_idx",
+            ),
+            models.Index(
+                fields=("event_type", "related_object_id"),
+                name="notifications_rel_obj_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("idempotency_key",),
+                name="notifications_idempotency_key_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(event_type__in=ALLOWED_EVENT_TYPES),
+                name="notifications_event_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(channel__in=ALLOWED_CHANNELS),
+                name="notifications_channel_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(status__in=ALLOWED_NOTIFICATION_STATUSES),
+                name="notifications_status_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(priority__in=ALLOWED_NOTIFICATION_PRIORITIES),
+                name="notifications_priority_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(related_object_type__in=ALLOWED_RELATED_OBJECT_TYPES),
+                name="notifications_rel_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(suppressed_reason__isnull=True)
+                    | Q(suppressed_reason__in=ALLOWED_SUPPRESSION_REASONS)
+                ),
+                name="notifications_suppress_reason_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    (Q(status="suppressed") & Q(suppressed_reason__isnull=False))
+                    | (~Q(status="suppressed") & Q(suppressed_reason__isnull=True))
+                ),
+                name="notifications_suppress_reason",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user_id}:{self.event_type}:{self.channel}:{self.priority}:{self.status}"

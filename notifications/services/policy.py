@@ -17,13 +17,16 @@ Resolution combines three independent layers:
 The two switches are suppression gates AND-ed on top of the rule chain,
 not links in it (following the Grafana lesson that suppression windows
 must not be inherited through the content-override chain).  Decisions
-carry the suppression reason so Stage 6.2 can record why a notification
-was suppressed; what happens to already-queued notifications when a
-watchlist item is removed stays open as ADR-023 PD-4 for Stage 6.2.
+carry the suppression reason and the authorizing rule id so Stage 6.2
+enqueue services can record why a notification was suppressed (ADR-025);
+what happens to already-queued notifications is settled there too — the
+sender re-checks watchlist membership before delivering (PD-4, ADR-025
+section 4).
 """
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -63,6 +66,7 @@ class ReminderPolicyDecision:
     origin: PolicyOrigin
     is_enabled: bool
     suppression_reason: SuppressionReason | None
+    reminder_rule_id: uuid.UUID | None = None
 
     @property
     def should_notify(self) -> bool:
@@ -129,6 +133,7 @@ def resolve_reminder_policy(
                     lead_time_minutes=rule.lead_time_minutes,
                     origin=rule.origin,
                     is_enabled=rule.is_enabled,
+                    reminder_rule_id=rule.rule_id,
                     suppression_reason=gate_reason
                     if gate_reason is not None
                     else (SuppressionReason.RULE_DISABLED if not rule.is_enabled else None),
@@ -142,6 +147,7 @@ class _EffectiveRule:
     lead_time_minutes: int
     is_enabled: bool
     origin: PolicyOrigin
+    rule_id: uuid.UUID | None = None
 
 
 def _company_alerts_gate_open(*, user: User, company: Company) -> bool:
@@ -176,6 +182,7 @@ def _effective_rules(
                 lead_time_minutes=rule.lead_time_minutes,
                 is_enabled=rule.is_enabled,
                 origin=PolicyOrigin.COMPANY_OVERRIDE_RULE,
+                rule_id=rule.pk,
             )
             for rule in company_rules
         )
@@ -192,6 +199,7 @@ def _effective_rules(
                 lead_time_minutes=rule.lead_time_minutes,
                 is_enabled=rule.is_enabled,
                 origin=PolicyOrigin.USER_DEFAULT_RULE,
+                rule_id=rule.pk,
             )
             for rule in user_default_rules
         )

@@ -964,7 +964,7 @@ Telegram、Web Push、PWA、自选股分组分别作为独立小阶段评审，�
 | `pending_identity` 判定事实 | 已关闭（ADR-023 §6.4，2026-10-18） |
 | US-listing canonical 判据 | 5.1A 前（ADR-023 §13 PD-2）；5.1A 只强制存在有效 SecurityListing |
 | watchlist 数量上限与滥用防护 | 8.4 公开注册前（ADR-023 §13 PD-3） |
-| 移除自选时待发送通知的处理 | 6.1 / 6.2（ADR-023 §13 PD-4） |
+| 移除自选时待发送通知的处理 | 已关闭（ADR-025 §4：发送前复查，2026-10-24） |
 | 零指数 / 仅自选模式 | MVP 不实现；需要时先 supersede ADR-023 §13 PD-5，并迁移 `enabled_index_codes` 非空约束 |
 | 提前一天的时区/DST 语义 | 已关闭（ADR-024：美东自然日前一自然日锚定，2026-10-24） |
 | 原始/通知/审计数据保留、账号删除与 watchlist 匿名化 | 8.1 前（ADR-023 §13 PD-6） |
