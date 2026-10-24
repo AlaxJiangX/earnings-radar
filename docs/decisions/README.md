@@ -35,3 +35,4 @@
 | [ADR-023](ADR-023-watchlist-monitoring-pool-contract.md) | Watchlist 域与 Monitoring-Pool v2 组合契约（§13 含产品未决项） | watchlists、earnings（5.1A/B） | 已接受；5.1A/B 已实现并验证 |
 | [ADR-024](ADR-024-advance-reminder-anchor-and-rule-resolution.md) | 提前一天提醒按美东自然日锚定；P0–P3 规范矩阵；公司规则整体替换用户默认 + 双门抑制 | notifications（6.1+）、watchlists、earnings | 已接受 |
 | [ADR-025](ADR-025-notification-enqueue-idempotency.md) | 通知入队：同事务 outbox、稳定业务键幂等/和解、7 类事件映射；PD-4 关闭为发送前复查 | notifications（6.2+） | 已接受；ADR-023 §13 PD-4 随之关闭 |
+| [ADR-026](ADR-026-notification-wiring-points.md) | 通知接线：earnings/filings/indexes 同步编排层同事务调用 dispatch 的定向例外与接线点清单 | earnings、filings、indexes、notifications（6.2W） | 已接受 |

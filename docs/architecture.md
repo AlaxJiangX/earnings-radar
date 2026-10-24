@@ -51,9 +51,9 @@ Web 请求不直接访问外部数据源。未来 Cron Job 调用 Django managem
 |---|---|---|---|
 | `accounts` | 自定义用户、认证、时区和用户偏好 | Django auth | 公司及事件业务 |
 | `companies` | 公司、CIK、股票代码/上市身份、公司搜索、监控状态 | `audit` 的来源引用接口 | 直接抓取第三方数据 |
-| `indexes` | 证券级指数成分历史、加入/移除、偏移聚合 | `companies`, `providers`, `audit` | 用户通知投递 |
-| `earnings` | 财报事件生命周期、日期变更、来源核对、monitoring pool、Filing ↔ Earnings 关联 / classification / review / replay、IR confirmation | `companies`, `indexes`, `filings`, `providers`, `audit`；仅命令/编排层可只读 `watchlists` selector | 外部 HTTP 细节 |
-| `filings` | SEC Filing / FilingDocument 与 metadata 同步 | `companies`, `providers`, `audit` | 复制 SEC 全文、Filing ↔ Earnings 关联、IR confirmation |
+| `indexes` | 证券级指数成分历史、加入/移除、偏移聚合 | `companies`, `providers`, `audit`；仅同步编排/命令层可在领域事实写入的同一事务内调用 `notifications.services` 公开 dispatch（ADR-026） | 用户通知投递 |
+| `earnings` | 财报事件生命周期、日期变更、来源核对、monitoring pool、Filing ↔ Earnings 关联 / classification / review / replay、IR confirmation | `companies`, `indexes`, `filings`, `providers`, `audit`；仅命令/编排层可只读 `watchlists` selector；仅同步编排/命令层可在领域事实写入的同一事务内调用 `notifications.services` 公开 dispatch（ADR-026） | 外部 HTTP 细节 |
+| `filings` | SEC Filing / FilingDocument 与 metadata 同步 | `companies`, `providers`, `audit`；仅同步编排/命令层可在领域事实写入的同一事务内调用 `notifications.services` 公开 dispatch（ADR-026） | 复制 SEC 全文、Filing ↔ Earnings 关联、IR confirmation |
 | `watchlists` | 自选股、普通/重点关注、公司级提醒开关、自选触发的监控状态重算 | `accounts`, `companies`, `indexes` 的只读 selector, `audit.services` | 全局通知策略；不得 import earnings / notifications |
 | `notifications` | 提醒规则、通知生成、站内通知、邮件投递和重试 | 各领域的稳定公开接口 | 判断外部数据真实性 |
 | `providers` | Provider 协议、安全 HTTP 传输接口、结构化原始结果和测试 Fake/fixture | `audit.security` 的纯安全函数、`audit.constants` 的原始正文硬上限 | 数据库写入、同步编排、页面渲染和用户权限 |
@@ -484,6 +484,9 @@ ticker、name 或 CIK 二次识别 Company。
 第一阶段以 PostgreSQL 表作为持久通知队列，不引入消息代理：
 
 1. 领域服务产生变化后，根据有效提醒规则创建 Notification；
+   该创建由各领域同步编排/命令层在持久化领域事实的同一事务内调用
+   `notifications.services` 的公开 dispatch 函数完成，接线点清单见 ADR-026；
+   提前一天扫描由 notifications 的 management command 独立驱动；
 2. 唯一 `idempotency_key` 防止同一用户、规则、事件版本和渠道重复入队；
 3. 每 5 分钟的命令使用 `select for update skip locked`（或等价锁）领取批次；
 4. 邮件发送结果写入独立投递尝试；临时失败按有限退避重试；
