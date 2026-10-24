@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block title %}Home - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>Earnings Radar</h1>
+  <p class="page-note">
+    Functional skeleton page: sections and data are final, visual styling is not.
+    Earnings dates use market timezone {{ market_timezone_label }};
+    change and filing timestamps are shown in UTC.
+  </p>
+
+  <section class="section">
+    <h2>Global company search</h2>
+    <form method="get" action="{% url 'companies:list' %}" class="filters">
+      <div class="filter-group">
+        <label for="home-search">Search companies</label>
+        <input type="search" name="q" id="home-search" placeholder="Ticker or company name">
+      </div>
+      <button type="submit">Search</button>
+    </form>
+    <p class="muted">Searches tickers and company names on the public Companies page.</p>
+  </section>
+
+  <section class="section">
+    <h2>Today's earnings ({{ today_label }})</h2>
+    {% if today_rows %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Date</th><th>Company</th><th>Ticker</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for row in today_rows %}
+            <tr>
+              <td>
+                <strong>{{ row.display.timing.label }}</strong>
+                {% include "includes/_event_timing.html" with display=row.display %}
+              </td>
+              <td>{{ row.display.event.company.display_name }}</td>
+              <td>{% if row.ticker %}{{ row.ticker }}{% else %}&mdash;{% endif %}</td>
+              <td>{{ row.display.status_label }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No earnings scheduled for today yet.</p>
+    {% endif %}
+    <p class="muted"><a href="{% url 'earnings:list' %}?window=today">All earnings for today</a></p>
+  </section>
+
+  <section class="section">
+    <h2>Important earnings this week ({{ important_label }})</h2>
+    {% if important_rows %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Date</th><th>Company</th><th>Ticker</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for row in important_rows %}
+            <tr>
+              <td>
+                <strong>{{ row.display.timing.label }}</strong>
+                {% include "includes/_event_timing.html" with display=row.display %}
+              </td>
+              <td>{{ row.display.event.company.display_name }}</td>
+              <td>{% if row.ticker %}{{ row.ticker }}{% else %}&mdash;{% endif %}</td>
+              <td>{{ row.display.status_label }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No large-index earnings scheduled this week yet.</p>
+    {% endif %}
+    <p class="muted">
+      "Important" follows the reminder policy: companies that are members of the
+      Dow 30, S&amp;P 500 or Nasdaq 100 (index codes {{ important_index_codes }}).
+      <a href="{% url 'earnings:list' %}?window=week">All earnings this week</a>
+    </p>
+  </section>
+
+  <section class="section">
+    <h2>Your watchlist: upcoming earnings ({{ watchlist_window_label }})</h2>
+    {% if not watchlist_signed_in %}
+      <p class="empty-state">
+        Sign in to see upcoming earnings for your own watchlist companies.
+        <a href="{{ login_url }}?next={% url 'dashboard' %}">Sign in</a>
+      </p>
+    {% elif watchlist_rows %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Date</th><th>Company</th><th>Ticker</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for row in watchlist_rows %}
+            <tr>
+              <td>
+                <strong>{{ row.display.timing.label }}</strong>
+                {% include "includes/_event_timing.html" with display=row.display %}
+              </td>
+              <td>{{ row.display.event.company.display_name }}</td>
+              <td>{% if row.ticker %}{{ row.ticker }}{% else %}&mdash;{% endif %}</td>
+              <td>{{ row.display.status_label }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% elif not watchlist_has_items %}
+      <p class="empty-state">
+        Your watchlist is empty. Add companies on the
+        <a href="{% url 'watchlist' %}">watchlist page</a>.
+      </p>
+    {% else %}
+      <p class="empty-state">No watchlist earnings events in the next 7 days.</p>
+    {% endif %}
+  </section>
+
+  <section class="section">
+    <h2>Recent earnings date changes</h2>
+    {% if date_change_rows %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Detected (UTC)</th><th>Company</th><th>Change</th></tr>
+        </thead>
+        <tbody>
+          {% for row in date_change_rows %}
+            <tr>
+              <td>{{ row.change.detected_at|date:"Y-m-d H:i" }} UTC</td>
+              <td>{{ row.change.earnings_event.company.display_name }}</td>
+              <td>{{ row.summary }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No recent earnings date changes yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="section">
+    <h2>Recent SEC filings</h2>
+    {% if filing_rows %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Company</th><th>Filing</th><th>Link</th></tr>
+        </thead>
+        <tbody>
+          {% for row in filing_rows %}
+            <tr>
+              <td>{{ row.filing.company.display_name }}</td>
+              <td>{{ row.summary }}</td>
+              <td><a href="{{ row.filing.filing_url }}" rel="noopener">View on SEC EDGAR</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No recent SEC filings yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="section">
+    <h2>Recent index changes</h2>
+    {% if recent_index_rows %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Effective date</th><th>Company</th><th>Change</th></tr>
+        </thead>
+        <tbody>
+          {% for row in recent_index_rows %}
+            <tr>
+              <td>{{ row.event.effective_date|date:"Y-m-d" }}</td>
+              <td>{{ row.event.company.display_name }}</td>
+              <td>{{ row.summary }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No effective index changes yet.</p>
+    {% endif %}
+    <p class="muted"><a href="{% url 'indexes:index_changes' %}">All index changes</a></p>
+  </section>
+
+  <section class="section">
+    <h2>Upcoming index changes</h2>
+    {% if upcoming_index_rows %}
+      <table class="data-table">
+        <thead>
+          <tr><th>Effective date</th><th>Company</th><th>Change</th></tr>
+        </thead>
+        <tbody>
+          {% for row in upcoming_index_rows %}
+            <tr>
+              <td>{{ row.event.effective_date|date:"Y-m-d" }}</td>
+              <td>{{ row.event.company.display_name }}</td>
+              <td>{{ row.summary }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty-state">No announced index changes with a future effective date yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="section">
+    <h2>GitHub</h2>
+    <p>
+      Earnings Radar is open source and developed in the open:
+      <a href="{{ GITHUB_URL }}" rel="noopener">{{ GITHUB_URL }}</a>
+    </p>
+  </section>
+{% endblock %}

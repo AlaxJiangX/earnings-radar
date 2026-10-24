@@ -118,6 +118,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "config.context.site_globals",
             ],
         },
     }
@@ -160,6 +161,11 @@ AUTH_USER_MODEL = "accounts.User"
 # login page; for the personal/friends scale baseline the admin screen is
 # the existing, CSRF-protected login entry point.
 LOGIN_URL = "/admin/login/"
+
+# Stage 7.1 public GitHub entry point (nav, footer and the home page block).
+# Environment-overridable so self-hosted forks can point at their own repo;
+# an empty value falls back to the upstream repository URL.
+GITHUB_URL = os.getenv("GITHUB_URL", "").strip() or "https://github.com/AlaxJiangX/earnings-radar"
 
 RAW_DATA_MAX_PAYLOAD_BYTES = env_positive_int(
     "RAW_DATA_MAX_PAYLOAD_BYTES",

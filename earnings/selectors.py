@@ -18,7 +18,7 @@ from earnings.models import (
     FilingReleaseClassification,
 )
 from earnings.presentation import window_bounds
-from indexes.models import NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership
+from indexes.models import ALLOWED_CODES, NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership
 
 UPCOMING_EVENT_STATUSES = ("scheduled_estimated", "scheduled_confirmed")
 
@@ -147,8 +147,39 @@ def get_earnings_events(
         queryset = queryset.filter(release_session=session)
     if index_code is not None:
         queryset = queryset.filter(
-            company_id__in=_company_ids_for_index(index_code=index_code, as_of=as_of)
+            company_id__in=_company_ids_for_indexes(index_codes=(index_code,), as_of=as_of)
         )
+    return queryset.order_by(
+        display_date_expression(),
+        "company__display_name",
+        "id",
+    )
+
+
+def get_earnings_events_for_indexes(
+    *,
+    as_of: date,
+    window: str,
+    index_codes: Sequence[str],
+    include_candidates: bool = False,
+) -> QuerySet[EarningsEvent]:
+    """Return the window's events for companies in ANY of the given indexes.
+
+    Used for composition blocks such as the home page's "important earnings"
+    section, where importance means membership in a large index (PRD §9.1
+    B 级: Dow 30 / S&P 500 / Nasdaq 100).  Unknown index codes are ignored,
+    mirroring ``get_change_events``.
+    """
+
+    start, end = window_bounds(as_of, window)
+    normalized = tuple(code.upper() for code in index_codes if code.upper() in ALLOWED_CODES)
+    queryset = _base_event_queryset(include_candidates=include_candidates)
+    if not normalized:
+        return queryset.none()
+    queryset = queryset.filter(
+        _display_date_in_range(start=start, end=end),
+        company_id__in=_company_ids_for_indexes(index_codes=normalized, as_of=as_of),
+    )
     return queryset.order_by(
         display_date_expression(),
         "company__display_name",
@@ -210,6 +241,15 @@ def recent_earnings_date_changes_for_companies(
         )
         .order_by("-detected_at", "-created_at", "id")[:limit]
     )
+
+
+def recent_earnings_date_changes(*, limit: int) -> QuerySet[EarningsDateChange]:
+    """Return the latest EarningsDateChange rows across all Companies."""
+
+    return EarningsDateChange.objects.select_related(
+        "earnings_event",
+        "earnings_event__company",
+    ).order_by("-detected_at", "-created_at", "id")[:limit]
 
 
 def next_earnings_event(
@@ -295,10 +335,14 @@ def _base_event_queryset(*, include_candidates: bool) -> QuerySet[EarningsEvent]
     return queryset
 
 
-def _company_ids_for_index(*, index_code: str, as_of: date) -> QuerySet[IndexMembership, UUID]:
+def _company_ids_for_indexes(
+    *,
+    index_codes: Sequence[str],
+    as_of: date,
+) -> QuerySet[IndexMembership, UUID]:
     return (
         IndexMembership.objects.filter(
-            index__code=index_code.upper(),
+            index__code__in=[code.upper() for code in index_codes],
             status__in=NORMATIVE_MEMBERSHIP_STATUSES,
             effective_from__lte=as_of,
         )
