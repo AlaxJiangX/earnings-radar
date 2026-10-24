@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -37,6 +38,10 @@ if TYPE_CHECKING:
     from notifications.services.policy import ReminderPolicyDecision
 
 IDEMPOTENCY_KEY_VERSION = "v1"
+# ADR-027 D2: only digest-priority rows extend the key with their bucket;
+# every other row keeps the v1 formula byte-for-byte so ADR-025's frozen
+# reconciliation behaviour is untouched.
+DIGEST_IDEMPOTENCY_KEY_VERSION = "v2"
 
 
 class EnqueueOutcome(StrEnum):
@@ -62,21 +67,31 @@ def notification_idempotency_key(
     related_object_id: UUID,
     event_version: str,
     lead_time_minutes: int = 0,
+    digest_bucket: date | None = None,
 ) -> str:
-    """Return the deterministic key for one notification occurrence."""
+    """Return the deterministic key for one notification occurrence.
 
-    canonical = "|".join(
-        (
-            IDEMPOTENCY_KEY_VERSION,
-            str(user_id),
-            event_type,
-            channel,
-            related_object_type,
-            str(related_object_id),
-            event_version,
-            str(lead_time_minutes),
-        )
+    With ``digest_bucket`` the key is the v2 digest form (ADR-027 D2):
+    same occurrence + same bucket converges on one row, a later bucket is
+    a new row.  Without it the key is exactly the ADR-025 v1 formula.
+    """
+
+    version = (
+        DIGEST_IDEMPOTENCY_KEY_VERSION if digest_bucket is not None else IDEMPOTENCY_KEY_VERSION
     )
+    parts = [
+        version,
+        str(user_id),
+        event_type,
+        channel,
+        related_object_type,
+        str(related_object_id),
+        event_version,
+        str(lead_time_minutes),
+    ]
+    if digest_bucket is not None:
+        parts.append(digest_bucket.isoformat())
+    canonical = "|".join(parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -92,11 +107,17 @@ def enqueue_notification(
     decision: ReminderPolicyDecision,
     source_url: str | None = None,
     lead_time_minutes: int = 0,
+    digest_bucket: date | None = None,
+    origin_company_level: str | None = None,
 ) -> EnqueueResult:
     """Create (or reconcile) the notification row for one decision.
 
     Must run inside the caller's transaction; when the caller has none the
-    inner ``atomic`` commits the single enqueue atomically.
+    inner ``atomic`` commits the single enqueue atomically.  ``digest_bucket``
+    applies to digest-priority rows (idempotency key v2) and
+    ``origin_company_level`` records the user-relative company level for the
+    Stage 6.4 send-time re-check (ADR-027 D4); both are enqueue-time facts
+    and are never rewritten by reconciliation.
     """
 
     key = notification_idempotency_key(
@@ -107,6 +128,7 @@ def enqueue_notification(
         related_object_id=related_object_id,
         event_version=event_version,
         lead_time_minutes=lead_time_minutes,
+        digest_bucket=digest_bucket,
     )
     suppressed_reason = (
         decision.suppression_reason.value if decision.suppression_reason is not None else None
@@ -132,6 +154,8 @@ def enqueue_notification(
                     idempotency_key=key,
                     suppressed_reason=suppressed_reason,
                     source_url=source_url,
+                    digest_bucket=digest_bucket,
+                    origin_company_level=origin_company_level,
                 )
                 return EnqueueResult(notification=notification, outcome=EnqueueOutcome.CREATED)
         except IntegrityError:

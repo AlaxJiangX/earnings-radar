@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import time
 
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 
 # Advance-reminder lead times are expressed in whole market-timezone calendar
 # days (ADR-024); minutes keep the storage unit explicit and DST-neutral.
@@ -46,6 +47,21 @@ ALLOWED_SUPPRESSION_REASONS = frozenset(
     {"channel_disabled", "company_alerts_disabled", "rule_disabled"}
 )
 
+# Enqueue-time snapshot of the user-relative company level (ADR-025 fan-out
+# input); the Stage 6.4 send-time re-check uses it to decide which rows were
+# watchlist-originated (S/A) and must be re-verified against the watchlist
+# (ADR-027 D4).  "none" marks rows fanned out with no user relationship at
+# all (full_exit for non-watchlist users).
+ALLOWED_ORIGIN_COMPANY_LEVELS = frozenset({"S", "A", "B", "C", "none"})
+
+DEFAULT_DIGEST_TIME = time(8, 0)
+
+# Fixed once by data-model section 9.2; "unknown" participates in the same
+# bounded retry as temporary failures (ADR-027 D3).
+ALLOWED_DELIVERY_OUTCOMES = frozenset(
+    {"accepted", "temporary_failure", "permanent_failure", "unknown"}
+)
+
 
 class UserNotificationPreference(models.Model):
     """User-level channel master switches and the default upcoming lead time.
@@ -66,6 +82,11 @@ class UserNotificationPreference(models.Model):
     default_lead_time_minutes = models.PositiveIntegerField(
         default=LEAD_TIME_ONE_DAY_MINUTES,
         help_text="User-level default lead for earnings_upcoming, whole days only.",
+    )
+    digest_time_local = models.TimeField(  # noqa: DJ001
+        null=True,
+        blank=True,
+        help_text="Local daily digest time; NULL applies the 08:00 default (ADR-027).",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -250,6 +271,32 @@ class Notification(models.Model):
         blank=True,
         help_text="In-app read time; fully independent of the send status.",
     )
+    # Stage 6.4 delivery fields (ADR-027).  scheduled_at stays NULL in 6.4
+    # (non-digest rows are due immediately); claimed_at stamps each claim,
+    # sent_at the accepted delivery.
+    scheduled_at = models.DateTimeField(null=True, blank=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
+    subject_snapshot = models.TextField(null=True, blank=True)  # noqa: DJ001
+    body_snapshot = models.TextField(null=True, blank=True)  # noqa: DJ001
+    last_error_code = models.CharField(  # noqa: DJ001
+        max_length=64,
+        null=True,
+        blank=True,
+        help_text="Sanitized classification of the latest failed attempt.",
+    )
+    last_error_message = models.TextField(null=True, blank=True)  # noqa: DJ001
+    # Digest rows (P3) carry the local date of the next not-yet-due digest
+    # bucket at enqueue time (ADR-027 D2); the idempotency key v2 includes it.
+    digest_bucket = models.DateField(null=True, blank=True)
+    origin_company_level = models.CharField(  # noqa: DJ001
+        max_length=8,
+        null=True,
+        blank=True,
+        help_text="Level S/A/B/C/none at enqueue; input to the send-time re-check.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -304,7 +351,77 @@ class Notification(models.Model):
                 ),
                 name="notifications_suppress_reason",
             ),
+            models.CheckConstraint(
+                condition=(
+                    Q(origin_company_level__isnull=True)
+                    | Q(origin_company_level__in=ALLOWED_ORIGIN_COMPANY_LEVELS)
+                ),
+                name="notifications_origin_level_valid",
+            ),
+            models.CheckConstraint(
+                # Digest buckets exist only on digest-priority rows.
+                condition=Q(digest_bucket__isnull=True) | Q(priority="P3"),
+                name="notifications_digest_bucket_p3_only",
+            ),
         ]
 
     def __str__(self) -> str:
         return f"{self.user_id}:{self.event_type}:{self.channel}:{self.priority}:{self.status}"
+
+
+class NotificationDeliveryAttempt(models.Model):
+    """Append-only record of one delivery attempt (data-model section 9.2).
+
+    One row per actual send attempt (never for suppression, which is not an
+    attempt); the notification's final status never rewrites this history.
+    """
+
+    class Outcome(models.TextChoices):
+        ACCEPTED = "accepted", "Accepted"
+        TEMPORARY_FAILURE = "temporary_failure", "Temporary failure"
+        PERMANENT_FAILURE = "permanent_failure", "Permanent failure"
+        UNKNOWN = "unknown", "Unknown"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    notification = models.ForeignKey(
+        Notification,
+        on_delete=models.PROTECT,
+        related_name="delivery_attempts",
+    )
+    attempt_number = models.PositiveSmallIntegerField()
+    provider_message_id = models.CharField(  # noqa: DJ001
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+    started_at = models.DateTimeField()
+    finished_at = models.DateTimeField()
+    outcome = models.CharField(max_length=24, choices=Outcome.choices)
+    error_code = models.CharField(  # noqa: DJ001
+        max_length=64,
+        null=True,
+        blank=True,
+    )
+    error_message = models.TextField(null=True, blank=True)  # noqa: DJ001
+    response_metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("notification_id", "attempt_number", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("notification", "attempt_number"),
+                name="notifications_attempt_number_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(outcome__in=ALLOWED_DELIVERY_OUTCOMES),
+                name="notifications_attempt_outcome_valid",
+            ),
+            models.CheckConstraint(
+                condition=Q(finished_at__gte=F("started_at")),
+                name="notifications_attempt_finish_after_start",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.notification_id}:attempt={self.attempt_number}:{self.outcome}"

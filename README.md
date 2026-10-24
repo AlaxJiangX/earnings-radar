@@ -1,6 +1,6 @@
 # Earnings Radar
 
-Earnings Radar 是面向个人使用的美股财报与指数变动雷达（当前单人使用，后续可能邀请朋友使用，不按大规模公开服务设计）。仓库已实现：Django + PostgreSQL + Docker Compose、基础认证与健康检查；DataSource/SyncRun 同步运行记录与 RawDataRecord/RawDataObservation/SourceEvidence/DataChange/AuditRecord 完整审计链；Company/SecurityListing 公司身份；MarketIndex/IndexMembership 生命周期、指数变化识别（含公开页面 `/index-changes`）与离线快照摄取；财报事件领域全生命周期（候选/正式身份、日期精度与变更历史、状态机、候选晋升、reconciliation 与财报页面）；SEC Filing 摄取与 Filing↔Earnings 链接分类；IR 确认与 Alpha Vantage 参考日历的 fixture-first 实现（真实来源分别受 allowlist 与许可 gate 阻塞）；Watchlist 与监控池 v2；仪表盘与自选股页面（5.2）；提醒规则与优先级计算（6.1，美东自然日锚定见 ADR-024）；通知入队、稳定幂等键与抑制记录（6.2，事务边界与 PD-4 见 ADR-025）。尚未开始：通知发送/邮件/摘要与通知页面（6.3 起）；真实指数 Provider 仍受来源/许可确认门限制。阶段进度以 `docs/development-roadmap.md` 为准。
+Earnings Radar 是面向个人使用的美股财报与指数变动雷达（当前单人使用，后续可能邀请朋友使用，不按大规模公开服务设计）。仓库已实现：Django + PostgreSQL + Docker Compose、基础认证与健康检查；DataSource/SyncRun 同步运行记录与 RawDataRecord/RawDataObservation/SourceEvidence/DataChange/AuditRecord 完整审计链；Company/SecurityListing 公司身份；MarketIndex/IndexMembership 生命周期、指数变化识别（含公开页面 `/index-changes`）与离线快照摄取；财报事件领域全生命周期（候选/正式身份、日期精度与变更历史、状态机、候选晋升、reconciliation 与财报页面）；SEC Filing 摄取与 Filing↔Earnings 链接分类；IR 确认与 Alpha Vantage 参考日历的 fixture-first 实现（真实来源分别受 allowlist 与许可 gate 阻塞）；Watchlist 与监控池 v2；仪表盘与自选股页面（5.2）；提醒规则与优先级计算（6.1，美东自然日锚定见 ADR-024）；通知入队、稳定幂等键与抑制记录（6.2，事务边界与 PD-4 见 ADR-025）；站内通知与设置页面（6.3）；邮件投递、每日摘要桶与失败重试（6.4，通用 SMTP 适配器 + fake provider 测试，契约见 ADR-027，cron 注册留待生产部署阶段）。尚未开始：真实指数 Provider 仍受来源/许可确认门限制。阶段进度以 `docs/development-roadmap.md` 为准。
 
 ## 本地启动
 

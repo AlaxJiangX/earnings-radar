@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from django.db.models import Q, QuerySet
+from django.utils import timezone as django_timezone
 
 from accounts.models import User
 from audit.models import DataChange
@@ -43,6 +44,12 @@ from notifications.models import (
     LEAD_TIME_ONE_DAY_MINUTES,
     Notification,
     ReminderRule,
+    UserNotificationPreference,
+)
+from notifications.services.digest import (
+    effective_digest_time,
+    next_digest_bucket,
+    user_digest_timezone,
 )
 from notifications.services.enqueue import (
     EnqueueOutcome,
@@ -109,7 +116,53 @@ class DispatchOutcome:
 # ---------------------------------------------------------------------------
 
 
-def dispatch_earnings_date_change(earnings_date_change_id: UUID, *, as_of: date) -> DispatchOutcome:
+@dataclass(frozen=True, slots=True)
+class _EnqueueFacts:
+    """Enqueue-time facts recorded on the row (ADR-027 D2/D4)."""
+
+    origin_company_level: str
+    digest_bucket: date | None
+
+
+def _resolve_dispatch_now(now: datetime | None) -> datetime:
+    """Resolve the enqueue-time instant used for digest bucketing.
+
+    ``now`` is injectable for replays and tests (ADR-027 D2); omitted it
+    anchors at the actual dispatch moment.  It only feeds digest buckets —
+    never market-date logic, which stays on the explicit ``as_of``.
+    """
+
+    resolved = now if now is not None else django_timezone.now()
+    if resolved.tzinfo is None:
+        raise DispatchTargetError("now must be timezone-aware when provided.")
+    return resolved
+
+
+def _enqueue_facts(
+    *,
+    user: User,
+    level: CompanyPriorityLevel | None,
+    priority: str,
+    now: datetime,
+    preference_cache: dict[UUID, UserNotificationPreference | None],
+) -> _EnqueueFacts:
+    origin = level.value if level is not None else "none"
+    digest_bucket = None
+    if priority == Notification.Priority.P3.value:
+        if user.pk not in preference_cache:
+            preference_cache[user.pk] = UserNotificationPreference.objects.filter(user=user).first()
+        preference = preference_cache[user.pk]
+        digest_bucket = next_digest_bucket(
+            now,
+            digest_time=effective_digest_time(preference),
+            timezone=user_digest_timezone(user),
+        )
+    return _EnqueueFacts(origin_company_level=origin, digest_bucket=digest_bucket)
+
+
+def dispatch_earnings_date_change(
+    earnings_date_change_id: UUID, *, as_of: date, now: datetime | None = None
+) -> DispatchOutcome:
     """Fan out one EarningsDateChange occurrence.
 
     Only ``value_change`` rows dispatch: whether precision refinement /
@@ -136,6 +189,7 @@ def dispatch_earnings_date_change(earnings_date_change_id: UUID, *, as_of: date)
             event_version=str(change.data_change_id),
             priority_for=_fixed_priority(_DATE_CHANGED),
             as_of=as_of,
+            now=_resolve_dispatch_now(now),
             source_url=_evidence_source_url(change.data_change),
         )
     )
@@ -147,7 +201,11 @@ def dispatch_earnings_date_change(earnings_date_change_id: UUID, *, as_of: date)
 
 
 def dispatch_earnings_released(
-    earnings_event_id: UUID, status_data_change_id: UUID, *, as_of: date
+    earnings_event_id: UUID,
+    status_data_change_id: UUID,
+    *,
+    as_of: date,
+    now: datetime | None = None,
 ) -> DispatchOutcome:
     """Fan out the release transition of one EarningsEvent.
 
@@ -175,6 +233,7 @@ def dispatch_earnings_released(
             event_version=str(data_change.pk),
             priority_for=_fixed_priority(_EARNINGS_RELEASED),
             as_of=as_of,
+            now=_resolve_dispatch_now(now),
             source_url=_evidence_source_url(data_change),
         )
     )
@@ -185,7 +244,9 @@ def dispatch_earnings_released(
 # ---------------------------------------------------------------------------
 
 
-def dispatch_filing(filing_id: UUID, *, as_of: date) -> DispatchOutcome:
+def dispatch_filing(
+    filing_id: UUID, *, as_of: date, now: datetime | None = None
+) -> DispatchOutcome:
     """Fan out one persisted Filing (deduplicated by accession number)."""
 
     filing = Filing.objects.select_related("company").get(pk=filing_id)
@@ -198,6 +259,7 @@ def dispatch_filing(filing_id: UUID, *, as_of: date) -> DispatchOutcome:
             event_version=filing.accession_number,
             priority_for=_fixed_priority(_FILING),
             as_of=as_of,
+            now=_resolve_dispatch_now(now),
             source_url=filing.filing_url,
         )
     )
@@ -208,7 +270,9 @@ def dispatch_filing(filing_id: UUID, *, as_of: date) -> DispatchOutcome:
 # ---------------------------------------------------------------------------
 
 
-def dispatch_index_change_event(index_change_event_id: UUID, *, as_of: date) -> DispatchOutcome:
+def dispatch_index_change_event(
+    index_change_event_id: UUID, *, as_of: date, now: datetime | None = None
+) -> DispatchOutcome:
     """Fan out one active IndexChangeEvent occurrence.
 
     Mapping (ADR-025):
@@ -235,6 +299,7 @@ def dispatch_index_change_event(index_change_event_id: UUID, *, as_of: date) -> 
     legs = list(change_event.legs.all())
     added_legs = [leg for leg in legs if leg.action == IndexChangeLeg.Action.ADDED]
     removed_legs = [leg for leg in legs if leg.action == IndexChangeLeg.Action.REMOVED]
+    dispatch_now = _resolve_dispatch_now(now)
 
     results: list[EnqueueResult] = []
 
@@ -248,6 +313,7 @@ def dispatch_index_change_event(index_change_event_id: UUID, *, as_of: date) -> 
                 event_version=str(change_event.pk),
                 priority_for=_fixed_priority(_INDEX_TRANSFERRED),
                 as_of=as_of,
+                now=dispatch_now,
                 extra_index_groups={leg.index.index_group for leg in added_legs},
                 source_url=_event_source_url(change_event),
             )
@@ -255,17 +321,17 @@ def dispatch_index_change_event(index_change_event_id: UUID, *, as_of: date) -> 
         return DispatchOutcome(results=tuple(results))
 
     for leg in added_legs:
-        results.extend(_dispatch_index_leg(leg, _INDEX_ADDED, as_of=as_of))
+        results.extend(_dispatch_index_leg(leg, _INDEX_ADDED, as_of=as_of, now=dispatch_now))
     for leg in removed_legs:
-        results.extend(_dispatch_index_leg(leg, _INDEX_REMOVED, as_of=as_of))
+        results.extend(_dispatch_index_leg(leg, _INDEX_REMOVED, as_of=as_of, now=dispatch_now))
 
     if change_event.monitoring_impact == IndexChangeEvent.MonitoringImpact.EXITS_BASE_POOL:
-        results.extend(_dispatch_full_exit(change_event, as_of=as_of))
+        results.extend(_dispatch_full_exit(change_event, as_of=as_of, now=dispatch_now))
     return DispatchOutcome(results=tuple(results))
 
 
 def _dispatch_index_leg(
-    leg: IndexChangeLeg, event_type: str, *, as_of: date
+    leg: IndexChangeLeg, event_type: str, *, as_of: date, now: datetime
 ) -> tuple[EnqueueResult, ...]:
     index_is_large = leg.index.index_group == MarketIndex.IndexGroup.LARGE
 
@@ -284,12 +350,13 @@ def _dispatch_index_leg(
         event_version=str(leg.pk),
         priority_for=priority_for,
         as_of=as_of,
+        now=now,
         extra_index_groups={leg.index.index_group} if event_type == _INDEX_ADDED else set(),
     )
 
 
 def _dispatch_full_exit(
-    change_event: IndexChangeEvent, *, as_of: date
+    change_event: IndexChangeEvent, *, as_of: date, now: datetime
 ) -> tuple[EnqueueResult, ...]:
     def priority_for(level: CompanyPriorityLevel | None) -> str | None:
         if level is None:
@@ -306,6 +373,7 @@ def _dispatch_full_exit(
         event_version=str(change_event.pk),
         priority_for=priority_for,
         as_of=as_of,
+        now=now,
         source_url=_event_source_url(change_event),
     )
 
@@ -315,7 +383,9 @@ def _dispatch_full_exit(
 # ---------------------------------------------------------------------------
 
 
-def enqueue_due_advance_reminders(*, market_date: date) -> DispatchOutcome:
+def enqueue_due_advance_reminders(
+    *, market_date: date, now: datetime | None = None
+) -> DispatchOutcome:
     """Enqueue every due ``earnings_upcoming`` reminder for *market_date*.
 
     Due means: the event's business date (ADR-024 market natural day) is
@@ -329,6 +399,7 @@ def enqueue_due_advance_reminders(*, market_date: date) -> DispatchOutcome:
     if not candidate_leads:
         return DispatchOutcome(results=())
     max_days = max(candidate_leads) // 1440
+    dispatch_now = _resolve_dispatch_now(now)
 
     results: list[EnqueueResult] = []
     for event in _scheduled_events_between(market_date, market_date + timedelta(days=max_days)):
@@ -349,6 +420,7 @@ def enqueue_due_advance_reminders(*, market_date: date) -> DispatchOutcome:
                 days_until=days_until,
                 is_confirmed=is_confirmed,
                 as_of=market_date,
+                now=dispatch_now,
             )
         )
     return DispatchOutcome(results=tuple(results))
@@ -390,11 +462,13 @@ def _fan_out(
     event_version: str,
     priority_for: _PriorityFn,
     as_of: date,
+    now: datetime,
     source_url: str | None = None,
     extra_index_groups: set[str] | None = None,
     lead_time_minutes: int = 0,
 ) -> tuple[EnqueueResult, ...]:
     results: list[EnqueueResult] = []
+    preference_cache: dict[UUID, UserNotificationPreference | None] = {}
     for user in _active_users():
         level = _company_level_for(
             user=user, company=company, as_of=as_of, extra_index_groups=extra_index_groups
@@ -402,6 +476,13 @@ def _fan_out(
         priority = priority_for(level)
         if priority is None:
             continue
+        facts = _enqueue_facts(
+            user=user,
+            level=level,
+            priority=priority,
+            now=now,
+            preference_cache=preference_cache,
+        )
         for decision in resolve_reminder_policy(
             user=user, company=company, event_type=event_type, channels=_CHANNELS
         ):
@@ -417,6 +498,8 @@ def _fan_out(
                     decision=decision,
                     source_url=source_url,
                     lead_time_minutes=lead_time_minutes,
+                    origin_company_level=facts.origin_company_level,
+                    digest_bucket=facts.digest_bucket,
                 )
             )
     return tuple(results)
@@ -429,6 +512,7 @@ def _fan_out_upcoming(
     days_until: int,
     is_confirmed: bool,
     as_of: date,
+    now: datetime,
 ) -> tuple[EnqueueResult, ...]:
     lead_minutes = days_until * 1440
     event_version = business_date.isoformat()
@@ -444,11 +528,19 @@ def _fan_out_upcoming(
         ).value
 
     results: list[EnqueueResult] = []
+    preference_cache: dict[UUID, UserNotificationPreference | None] = {}
     for user in _active_users():
         level = _company_level_for(user=user, company=event.company, as_of=as_of)
         priority = priority_for(level)
         if priority is None:
             continue
+        facts = _enqueue_facts(
+            user=user,
+            level=level,
+            priority=priority,
+            now=now,
+            preference_cache=preference_cache,
+        )
         for decision in resolve_reminder_policy(
             user=user, company=event.company, event_type=UPCOMING, channels=_CHANNELS
         ):
@@ -465,6 +557,8 @@ def _fan_out_upcoming(
                     priority=priority,
                     decision=decision,
                     lead_time_minutes=lead_minutes,
+                    origin_company_level=facts.origin_company_level,
+                    digest_bucket=facts.digest_bucket,
                 )
             )
     return tuple(results)

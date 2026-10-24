@@ -7,7 +7,7 @@
   <p class="page-note">
     Functional skeleton page: interactions are final, visual styling is not.
     Toggles apply at the user-default level; per-company overrides are managed
-    per watchlist item. Digest scheduling is not available yet.
+    per watchlist item.
   </p>
 
   {% if error_message %}
@@ -44,6 +44,14 @@
     <h2>Advance reminder lead (whole days)</h2>
     <input type="number" name="default_lead_time_days" min="1" step="1"
            value="{{ preference_lead_days }}">
+
+    <h2>Daily digest time (your local time)</h2>
+    <p class="page-note">
+      Lower-priority (digest-level) notifications are bundled into one email
+      per day at this local time. Leave empty to use the default 08:00.
+      Only affects digest bundling, never the stored event times.
+    </p>
+    <input type="time" name="digest_time_local" step="60" value="{{ digest_time_value }}">
 
     <h2>Display timezone</h2>
     <p class="page-note">
