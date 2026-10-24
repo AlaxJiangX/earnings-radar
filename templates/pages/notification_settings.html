@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}Notification Settings - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>Notification Settings</h1>
+  <p class="page-note">
+    Functional skeleton page: interactions are final, visual styling is not.
+    Toggles apply at the user-default level; per-company overrides are managed
+    per watchlist item. Digest scheduling is not available yet.
+  </p>
+
+  {% if error_message %}
+    <p role="alert">{{ error_message }}</p>
+  {% endif %}
+  {% if saved_note %}
+    <p role="status">{{ saved_note }}</p>
+  {% endif %}
+
+  <form method="post" action="{% url 'notification_settings' %}">
+    {% csrf_token %}
+
+    <h2>Channels</h2>
+    <label>
+      <input type="checkbox" name="email_enabled"
+             {% if preference.email_enabled %}checked{% endif %}>
+      Email notifications
+    </label>
+    <label>
+      <input type="checkbox" name="in_app_enabled"
+             {% if preference.in_app_enabled %}checked{% endif %}>
+      In-app notifications
+    </label>
+
+    <h2>Reminder types</h2>
+    {% for event_type, label, enabled in event_types %}
+      <label>
+        <input type="checkbox" name="event_{{ event_type }}"
+               {% if enabled %}checked{% endif %}>
+        {{ label }}
+      </label>
+    {% endfor %}
+
+    <h2>Advance reminder lead (whole days)</h2>
+    <input type="number" name="default_lead_time_days" min="1" step="1"
+           value="{{ preference_lead_days }}">
+
+    <h2>Display timezone</h2>
+    <p class="page-note">
+      IANA timezone name (for example America/New_York). Leave empty to use
+      your browser time. Only affects display and reminder windows, never the
+      stored values.
+    </p>
+    <input type="text" name="timezone" maxlength="64" value="{{ timezone_value }}"
+           placeholder="America/New_York">
+
+    <button type="submit">Save settings</button>
+  </form>
+{% endblock %}

@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -23,6 +23,7 @@ from django.shortcuts import redirect, render
 from django.urls import reverse
 
 from accounts.models import User
+from accounts.services import AccountServiceError, set_user_timezone
 from companies.models import SecurityListing
 from companies.selectors import (
     company_listings,
@@ -46,6 +47,18 @@ from filings.models import Filing
 from filings.selectors import recent_filings_for_companies
 from indexes.models import IndexChangeEvent
 from indexes.selectors import recent_index_changes_for_companies
+from notifications.models import ReminderRule
+from notifications.selectors import (
+    notifications_for_user,
+    resolve_company_names,
+)
+from notifications.services.settings_service import (
+    NotificationSettingsError,
+    get_or_create_notification_preference,
+    mark_notification_read,
+    set_event_type_enabled,
+    update_notification_preference,
+)
 from watchlists.models import WatchlistItem
 from watchlists.selectors import get_watchlist_items_for_user
 from watchlists.services import (
@@ -462,3 +475,159 @@ def _index_change_summary(event: IndexChangeEvent) -> str:
     legs = ", ".join(f"{leg.action} {leg.index.code}" for leg in event.legs.all())
     displacement = event.get_displacement_display()
     return f"{legs} ({displacement})" if legs else displacement
+
+
+# ---------------------------------------------------------------------------
+# Stage 6.3: in-app notifications and notification settings
+# ---------------------------------------------------------------------------
+
+NOTIFICATIONS_ERROR_MESSAGES = {
+    "invalid_input": "The request was invalid.",
+    "notification_not_found": "Notification was not found.",
+    "invalid_settings": "The settings could not be saved; check the values.",
+}
+NOTIFICATIONS_VALID_ERRORS = frozenset(NOTIFICATIONS_ERROR_MESSAGES)
+
+_SETTINGS_SAVED_NOTE = "Settings saved."
+
+# Sent later than any unread row; keeps unread notifications on top.
+_READ_SENTINEL = datetime.max.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class NotificationRow:
+    notification: Any
+    company_name: str
+    event_type_label: str
+    utc_label: str
+    utc_iso: str
+    local_label: str
+    local_set: bool
+
+
+def _notification_time_fields(user: User, value: datetime) -> tuple[str, str, str, bool]:
+    utc_label = value.strftime("%Y-%m-%d %H:%M UTC")
+    utc_iso = value.isoformat()
+    timezone_value = (getattr(user, "timezone", None) or "").strip()
+    if timezone_value:
+        try:
+            zone = ZoneInfo(timezone_value)
+        except Exception:
+            return utc_label, utc_iso, "", False
+        local = value.astimezone(zone)
+        return utc_label, utc_iso, local.strftime("%b %d, %Y %H:%M %Z"), True
+    return utc_label, utc_iso, "", False
+
+
+def _notifications_context(request: HttpRequest, *, error_code: str = "") -> dict[str, Any]:
+    user = _authenticated_user(request)
+    notifications = list(notifications_for_user(user))
+    company_names = resolve_company_names(notifications)
+    event_labels = dict(ReminderRule.EventType.choices)
+    rows = []
+    for notification in notifications:
+        utc_label, utc_iso, local_label, local_set = _notification_time_fields(
+            user, notification.created_at
+        )
+        rows.append(
+            NotificationRow(
+                notification=notification,
+                company_name=company_names.get(notification.related_object_id, ""),
+                event_type_label=event_labels.get(notification.event_type, notification.event_type),
+                utc_label=utc_label,
+                utc_iso=utc_iso,
+                local_label=local_label,
+                local_set=local_set,
+            )
+        )
+    return {
+        "rows": rows,
+        "error_message": NOTIFICATIONS_ERROR_MESSAGES.get(error_code, ""),
+        "saved_note": _SETTINGS_SAVED_NOTE if request.GET.get("saved") == "1" else "",
+    }
+
+
+@login_required
+def notifications_page(request: HttpRequest) -> HttpResponse:
+    return render(request, "pages/notifications.html", _notifications_context(request))
+
+
+@login_required
+def notification_read(request: HttpRequest) -> HttpResponse:
+    if request.method != "POST":
+        return redirect("notifications")
+    notification_id = _parse_uuid(request.POST.get("notification_id"))
+    if notification_id is None:
+        return _notifications_action_failure(request, error_code="invalid_input")
+    try:
+        mark_notification_read(user=_authenticated_user(request), notification_id=notification_id)
+    except NotificationSettingsError:
+        # Foreign rows must behave exactly like missing ones.
+        return _notifications_action_failure(request, error_code="notification_not_found")
+    return _notifications_action_success(request)
+
+
+def _notifications_action_success(request: HttpRequest) -> HttpResponse:
+    if request.headers.get("HX-Request"):
+        return render(request, "pages/_notification_rows.html", _notifications_context(request))
+    return redirect("notifications")
+
+
+def _notifications_action_failure(request: HttpRequest, *, error_code: str) -> HttpResponse:
+    if request.headers.get("HX-Request"):
+        return render(
+            request,
+            "pages/_notification_rows.html",
+            _notifications_context(request, error_code=error_code),
+            status=400,
+        )
+    return redirect(f"{reverse('notifications')}?error={error_code}")
+
+
+def _event_type_enabled_state(user: User, event_type: str) -> bool:
+    rules = ReminderRule.objects.filter(user=user, company__isnull=True, event_type=event_type)
+    if not rules.exists():
+        return True  # built-in default is enabled (ADR-024)
+    return any(rule.is_enabled for rule in rules)
+
+
+def _notification_settings_context(request: HttpRequest, *, error_code: str = "") -> dict[str, Any]:
+    user = _authenticated_user(request)
+    preference = get_or_create_notification_preference(user)
+    event_types = [
+        (event_type, label, _event_type_enabled_state(user, event_type))
+        for event_type, label in ReminderRule.EventType.choices
+    ]
+    return {
+        "preference": preference,
+        "preference_lead_days": preference.default_lead_time_minutes // 1440,
+        "event_types": event_types,
+        "timezone_value": (getattr(user, "timezone", None) or ""),
+        "error_message": NOTIFICATIONS_ERROR_MESSAGES.get(error_code, ""),
+        "saved_note": _SETTINGS_SAVED_NOTE if request.GET.get("saved") == "1" else "",
+    }
+
+
+@login_required
+def notification_settings(request: HttpRequest) -> HttpResponse:
+    if request.method != "POST":
+        return render(
+            request, "pages/notification_settings.html", _notification_settings_context(request)
+        )
+    user = _authenticated_user(request)
+    try:
+        lead_raw = (request.POST.get("default_lead_time_days") or "").strip()
+        lead_days = int(lead_raw) if lead_raw else None
+        update_notification_preference(
+            user,
+            email_enabled=request.POST.get("email_enabled") == "on",
+            in_app_enabled=request.POST.get("in_app_enabled") == "on",
+            default_lead_time_days=lead_days,
+        )
+        for event_type, _label in ReminderRule.EventType.choices:
+            enabled = request.POST.get(f"event_{event_type}") == "on"
+            set_event_type_enabled(user, event_type, enabled)
+        set_user_timezone(user, request.POST.get("timezone") or "")
+    except (NotificationSettingsError, AccountServiceError, ValueError):
+        return redirect(f"{reverse('notification_settings')}?error=invalid_settings")
+    return redirect(f"{reverse('notification_settings')}?saved=1")
