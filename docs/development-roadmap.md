@@ -1,6 +1,6 @@
 # Earnings Radar 开发路线图
 
-> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；Stage 5.1A 已实现、验证并 merge，Stage 5.1B Watchlist / Monitoring-Pool v2 已实现并完成 Completion / Hardening，并 merge（PR #68，merge `41eac30`），状态为 `IMPLEMENTED / VERIFIED / MERGED`；Stage 5.2 仪表盘和自选股页面已实现、验证并 merge（PR #71，merge `6ea3214`），状态为 `IMPLEMENTED / VERIFIED / MERGED`；Stage 6.1 提醒规则与优先级已实现、验证并 merge（PR #72，merge `645052c`），状态为 `IMPLEMENTED / VERIFIED / MERGED`；6.2 起尚未开始。
+> 状态：规划稿。阶段 0–4.4 的既有能力已完成并 merge（含 4.1 财报事件基础、4.2 fixture-first calendar / replay / reconciliation、4.2F-A / 4.2F-B、4.3 财报页面与 4.4 SEC Filing）。Stage 4.5 拆分为 4.5A 与 4.5B：4.5A Filing ↔ Earnings Link & Classification、4.5A-I1 SEC Filing Dependency Boundary Repair、4.5A-I2 SEC Filing Matching Orchestration 均已实现、验证并 merge（PR #58 / #60 / #62）；4.5B IR Confirmation 的 fixture-first 能力已实现、验证并 merge（PR #64，merge `0c35173`），状态为 `FIXTURE-FIRST IMPLEMENTED / VERIFIED / MERGED / LIVE BLOCKED`，真实 IR live source 仍受实际公司 allowlist 与逐来源许可 gate 阻塞；Stage 5.1A 已实现、验证并 merge，Stage 5.1B Watchlist / Monitoring-Pool v2 已实现并完成 Completion / Hardening，并 merge（PR #68，merge `41eac30`），状态为 `IMPLEMENTED / VERIFIED / MERGED`；Stage 5.2 仪表盘和自选股页面已实现、验证并 merge（PR #71，merge `6ea3214`），状态为 `IMPLEMENTED / VERIFIED / MERGED`；Stage 6.1 提醒规则与优先级已实现、验证并 merge（PR #72，merge `645052c`），状态为 `IMPLEMENTED / VERIFIED / MERGED`；Stage 6.2 Notification 入队与去重已实现、验证并 merge（PR #73，merge `7ac7242`），状态为 `IMPLEMENTED / VERIFIED / MERGED`；通知接线（6.2W）与 6.3 起尚未开始。
 >
 > 执行原则：一次开发任务只选择一个“小阶段”，满足该阶段验收标准后停止并汇报；不得顺手实现后续阶段。
 
@@ -800,6 +800,9 @@ Stage 5.1 实施拆分为两个可独立审查的切片：
 - 不实现市场/Reddit 热度权重。
 
 #### 6.2 Notification 入队与去重
+
+状态：`IMPLEMENTED / VERIFIED / MERGED`（PR #73，merge `7ac7242`）。
+备注：dispatch 的生产接线与提前一天扫描命令由紧随的 6.2W 小阶段交付（评审 Findings P1）。
 
 交付：Notification、稳定幂等键和领域变化到通知的映射。
 
