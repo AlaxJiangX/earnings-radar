@@ -102,6 +102,83 @@ class TestEventTypeToggle:
         company_rule = ReminderRule.objects.get(user=user, company=company)
         assert company_rule.is_enabled is True
 
+    def test_lead_change_removes_stale_enabled_row(self, user: User) -> None:
+        # P2: save with default lead 1, then change the preference to 2
+        # days and save again; the old 1440 row must not survive.
+        update_notification_preference(user, default_lead_time_days=1)
+        set_event_type_enabled(user, ReminderRule.EventType.EARNINGS_UPCOMING, True)
+        update_notification_preference(user, default_lead_time_days=2)
+        set_event_type_enabled(user, ReminderRule.EventType.EARNINGS_UPCOMING, True)
+
+        rules = ReminderRule.objects.filter(
+            user=user, event_type=ReminderRule.EventType.EARNINGS_UPCOMING
+        )
+        assert {(rule.channel, rule.lead_time_minutes) for rule in rules} == {
+            ("email", 2880),
+            ("in_app", 2880),
+        }
+        assert all(rule.is_enabled is True for rule in rules)
+
+    def test_disable_normalizes_preexisting_dirty_rows(self, user: User) -> None:
+        update_notification_preference(user, default_lead_time_days=2)
+        for lead in (1440, 2880, 4320):
+            ReminderRule.objects.create(
+                user=user,
+                event_type=ReminderRule.EventType.EARNINGS_UPCOMING,
+                channel=ReminderRule.Channel.EMAIL,
+                lead_time_minutes=lead,
+                is_enabled=True,
+            )
+
+        set_event_type_enabled(user, ReminderRule.EventType.EARNINGS_UPCOMING, False)
+
+        rules = ReminderRule.objects.filter(
+            user=user, event_type=ReminderRule.EventType.EARNINGS_UPCOMING
+        )
+        assert sorted(
+            (rule.channel, rule.lead_time_minutes, rule.is_enabled) for rule in rules
+        ) == [
+            ("email", 2880, False),
+            ("in_app", 2880, False),
+        ]
+
+    def test_company_override_rows_survive_normalization(self, user: User) -> None:
+        from companies.models import Company
+
+        company = Company.objects.create(legal_name="Norm Co", display_name="Norm Co")
+        for lead in (1440, 2880):
+            ReminderRule.objects.create(
+                user=user,
+                company=company,
+                event_type=ReminderRule.EventType.EARNINGS_UPCOMING,
+                channel=ReminderRule.Channel.EMAIL,
+                lead_time_minutes=lead,
+                is_enabled=True,
+            )
+
+        update_notification_preference(user, default_lead_time_days=1)
+        set_event_type_enabled(user, ReminderRule.EventType.EARNINGS_UPCOMING, True)
+
+        overrides = ReminderRule.objects.filter(
+            user=user, company=company, event_type=ReminderRule.EventType.EARNINGS_UPCOMING
+        )
+        assert {(rule.channel, rule.lead_time_minutes) for rule in overrides} == {
+            ("email", 1440),
+            ("email", 2880),
+        }
+
+    def test_repeated_toggling_is_idempotent(self, user: User) -> None:
+        update_notification_preference(user, default_lead_time_days=1)
+        for _round in range(3):
+            set_event_type_enabled(user, ReminderRule.EventType.FILING, False)
+            set_event_type_enabled(user, ReminderRule.EventType.FILING, True)
+
+        rules = ReminderRule.objects.filter(user=user, event_type=ReminderRule.EventType.FILING)
+        assert {(rule.channel, rule.lead_time_minutes, rule.is_enabled) for rule in rules} == {
+            ("email", 0, True),
+            ("in_app", 0, True),
+        }
+
     def test_unknown_event_type_rejected(self, user: User) -> None:
         with pytest.raises(NotificationSettingsError, match="Unknown event_type"):
             set_event_type_enabled(user, "market_trending", True)

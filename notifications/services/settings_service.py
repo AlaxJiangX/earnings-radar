@@ -6,11 +6,15 @@ idempotent: submitting the same settings twice leaves the same rows.
 
 Toggle semantics (PRD section 10.9, one toggle per event type):
 
-- disabling a type sets ``is_enabled=False`` on **all** of the user's
-  default rules of that type (both channels, every lead);
-- enabling a type upserts one enabled default rule per channel at the
-  preference's default lead (1 day for ``earnings_upcoming``, 0 for every
-  other type).  Per-company override rules are never touched here.
+- after every save, each (event_type, channel) pair has **exactly one**
+  user-default rule (``company IS NULL``): an enabled row for an enabled
+  toggle, a disabled row for a disabled one (a disabled row is required
+  to override the ADR-024 built-in default), stored at the canonical
+  lead position (the preference's default lead for ``earnings_upcoming``,
+  0 for every other type);
+- rows at any other lead position for the same type + channel are stale
+  (e.g. left behind by an earlier default-lead change) and are removed;
+- per-company override rules (``company IS NOT NULL``) are never touched.
 
 Read state is fully independent of the send status (roadmap 6.3): any
 notification in any status can be marked read, and marking twice keeps
@@ -88,11 +92,12 @@ def update_notification_preference(
 
 
 def set_event_type_enabled(user: User, event_type: str, enabled: bool) -> None:
-    """Enable / disable one reminder type at the user-default level.
+    """Enable / disable one reminder type, normalizing its default rules.
 
-    Both branches upsert one explicit rule per channel: with no rules at
-    all the built-in default (enabled, ADR-024) would apply, so disabling
-    must materialize ``is_enabled=False`` rows for the toggle to bite.
+    Guarantees exactly one user-default rule per channel at the canonical
+    lead position (``is_enabled=enabled``), deleting any other-lead rows
+    so a changed default lead cannot leave a second advance reminder
+    behind.  Per-company override rules are untouched.
     """
 
     if event_type not in SETTING_EVENT_TYPES:
@@ -105,18 +110,16 @@ def set_event_type_enabled(user: User, event_type: str, enabled: bool) -> None:
     )
     with transaction.atomic():
         for channel in CHANNELS:
-            rule = (
-                ReminderRule.objects.select_for_update()
-                .filter(
+            existing = list(
+                ReminderRule.objects.select_for_update().filter(
                     user=user,
                     company__isnull=True,
                     event_type=event_type,
                     channel=channel,
-                    lead_time_minutes=lead,
                 )
-                .first()
             )
-            if rule is None:
+            target = next((rule for rule in existing if rule.lead_time_minutes == lead), None)
+            if target is None:
                 ReminderRule.objects.create(
                     user=user,
                     company=None,
@@ -125,9 +128,12 @@ def set_event_type_enabled(user: User, event_type: str, enabled: bool) -> None:
                     lead_time_minutes=lead,
                     is_enabled=enabled,
                 )
-            elif rule.is_enabled != enabled:
-                rule.is_enabled = enabled
-                rule.save(update_fields=("is_enabled", "updated_at"))
+            elif target.is_enabled != enabled:
+                target.is_enabled = enabled
+                target.save(update_fields=("is_enabled", "updated_at"))
+            for stale in existing:
+                if stale.pk != (target.pk if target is not None else None):
+                    stale.delete()
 
 
 def mark_notification_read(
