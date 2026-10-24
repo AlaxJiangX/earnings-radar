@@ -2142,45 +2142,71 @@ def classify_index_change_event(
 
     Idempotent: same result on repeated calls.
     Raises IndexChangeIntegrityError if existing classification differs.
+
+    Stage 6.2W (ADR-026): the classification commit and the notification
+    enqueue share one transaction, so callers without their own
+    transaction still get the outbox atomicity.
     """
-    if event.status != IndexChangeEvent.Status.ACTIVE:
-        raise InvalidIndexChangeInput(
-            f"Only ACTIVE events can be classified, got status={event.status}."
-        )
 
-    displacement = _compute_displacement(event)
-    impact = _compute_monitoring_impact(event)
+    with transaction.atomic():
+        if event.status != IndexChangeEvent.Status.ACTIVE:
+            raise InvalidIndexChangeInput(
+                f"Only ACTIVE events can be classified, got status={event.status}."
+            )
 
-    disp_changed = event.displacement != displacement
-    impact_changed = event.monitoring_impact != impact
+        displacement = _compute_displacement(event)
+        impact = _compute_monitoring_impact(event)
 
-    if not disp_changed and not impact_changed:
+        disp_changed = event.displacement != displacement
+        impact_changed = event.monitoring_impact != impact
+
+        if not disp_changed and not impact_changed:
+            _dispatch_index_event_notification(event)
+            return EventClassificationResult(
+                event=event,
+                displacement=displacement,
+                monitoring_impact=impact,
+                displacement_changed=False,
+                monitoring_impact_changed=False,
+            )
+
+        if disp_changed and event.displacement != IndexChangeEvent.Displacement.NONE:
+            _raise_if_conflict(event, "displacement", event.displacement, displacement)
+        if (
+            impact_changed
+            and event.monitoring_impact != IndexChangeEvent.MonitoringImpact.CONTINUES
+        ):
+            _raise_if_conflict(event, "monitoring_impact", event.monitoring_impact, impact)
+
+        if disp_changed:
+            event.displacement = displacement
+        if impact_changed:
+            event.monitoring_impact = impact
+        event.save(update_fields=["displacement", "monitoring_impact"])
+
+        _dispatch_index_event_notification(event)
+
         return EventClassificationResult(
             event=event,
             displacement=displacement,
             monitoring_impact=impact,
-            displacement_changed=False,
-            monitoring_impact_changed=False,
+            displacement_changed=disp_changed,
+            monitoring_impact_changed=impact_changed,
         )
 
-    if disp_changed and event.displacement != IndexChangeEvent.Displacement.NONE:
-        _raise_if_conflict(event, "displacement", event.displacement, displacement)
-    if impact_changed and event.monitoring_impact != IndexChangeEvent.MonitoringImpact.CONTINUES:
-        _raise_if_conflict(event, "monitoring_impact", event.monitoring_impact, impact)
 
-    if disp_changed:
-        event.displacement = displacement
-    if impact_changed:
-        event.monitoring_impact = impact
-    event.save(update_fields=["displacement", "monitoring_impact"])
+def _dispatch_index_event_notification(event: IndexChangeEvent) -> None:
+    """Stage 6.2W wiring: enqueue index-change notifications in-transaction.
 
-    return EventClassificationResult(
-        event=event,
-        displacement=displacement,
-        monitoring_impact=impact,
-        displacement_changed=disp_changed,
-        monitoring_impact_changed=impact_changed,
-    )
+    Dispatch is unconditional at this flow boundary — the idempotency key
+    of Stage 6.2 makes reclassification reruns converge on the same rows.
+    """
+
+    from notifications.services.dispatch import dispatch_index_change_event
+    from notifications.services.lead_time import market_date_from_utc
+
+    as_of = market_date_from_utc(timezone.now())
+    dispatch_index_change_event(event.pk, as_of=as_of)
 
 
 def _raise_if_conflict(

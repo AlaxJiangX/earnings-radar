@@ -139,6 +139,13 @@ def record_filing(
                 after=_filing_values(metadata),
                 request_id=f"sec-filing:{metadata.accession_number}",
             )
+            # Stage 6.2W wiring (ADR-026): the notification is enqueued inside
+            # this same transaction so a rollback of the filing also rolls
+            # back its notifications.
+            from notifications.services.dispatch import dispatch_filing
+            from notifications.services.lead_time import market_date_from_utc
+
+            dispatch_filing(filing.pk, as_of=market_date_from_utc(metadata.accepted_at))
         elif filing.source_evidence_id is None:
             raise FilingIntegrityError("Existing Filing is missing its source evidence.")
 

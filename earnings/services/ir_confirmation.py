@@ -18,6 +18,7 @@ from django.db import transaction
 from audit.models import AuditRecord, DataChange, RawDataObservation, SourceEvidence, SyncRun
 from audit.services import record_source_evidence, record_system_action, record_user_action
 from earnings.models import (
+    EarningsDateChangeKind,
     EarningsDatePrecision,
     EarningsEvent,
     EarningsReconciliationDecision,
@@ -825,6 +826,9 @@ def _apply_planned_fields(
             reason=reason,
             request_id=request_id,
         )
+        _dispatch_schedule_notifications(
+            event=event, schedule_result=schedule_result, observation=observation
+        )
 
     status_result: EarningsStatusWriteResult | None = None
     if planned.target_status is not None:
@@ -859,6 +863,9 @@ def _apply_planned_fields(
                 reason=reason,
                 request_id=request_id,
             )
+            _dispatch_release_notification(
+                event=event, status_result=status_result, observation=observation
+            )
         else:
             status_result = confirm_earnings_event(
                 earnings_event=event,
@@ -869,6 +876,54 @@ def _apply_planned_fields(
                 request_id=request_id,
             )
     return schedule_result, status_result, primary_evidence
+
+
+def _dispatch_as_of(observation: InvestorRelationsObservation) -> date:
+    """Market natural day of the observation, for notification facts (ADR-026)."""
+
+    from notifications.services.lead_time import market_date_from_utc
+
+    observed_at = observation.source_observed_at or observation.created_at
+    if observed_at is not None and observed_at.tzinfo is not None:
+        return market_date_from_utc(observed_at)
+    from earnings.presentation import business_date
+
+    return business_date()
+
+
+def _dispatch_schedule_notifications(
+    *,
+    event: EarningsEvent,
+    schedule_result: EarningsScheduleWriteResult,
+    observation: InvestorRelationsObservation,
+) -> None:
+    """Stage 6.2W wiring: enqueue date-change notifications in-transaction."""
+
+    from notifications.services.dispatch import dispatch_earnings_date_change
+
+    as_of = _dispatch_as_of(observation)
+    for change in schedule_result.date_changes:
+        if change.change_kind == EarningsDateChangeKind.VALUE_CHANGE:
+            dispatch_earnings_date_change(change.pk, as_of=as_of)
+
+
+def _dispatch_release_notification(
+    *,
+    event: EarningsEvent,
+    status_result: EarningsStatusWriteResult,
+    observation: InvestorRelationsObservation,
+) -> None:
+    """Stage 6.2W wiring: enqueue release notifications in-transaction."""
+
+    from notifications.services.dispatch import dispatch_earnings_released
+
+    if status_result.data_change is None or status_result.data_change.change is None:
+        return
+    dispatch_earnings_released(
+        event.pk,
+        status_result.data_change.change.pk,
+        as_of=_dispatch_as_of(observation),
+    )
 
 
 def _observation_schedule_value(
