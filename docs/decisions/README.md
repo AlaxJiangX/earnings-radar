@@ -37,4 +37,4 @@
 | [ADR-025](ADR-025-notification-enqueue-idempotency.md) | 通知入队：同事务 outbox、稳定业务键幂等/和解、7 类事件映射；PD-4 关闭为发送前复查 | notifications（6.2+） | 已接受；ADR-023 §13 PD-4 随之关闭 |
 | [ADR-026](ADR-026-notification-wiring-points.md) | 通知接线：earnings/filings/indexes 同步编排层同事务调用 dispatch 的定向例外与接线点清单 | earnings、filings、indexes、notifications（6.2W） | 已接受 |
 | [ADR-027](ADR-027-email-delivery-digest-retry.md) | 邮件投递：通用 SMTP 零依赖、P3 按用户本地日桶聚合（键 v2）、3 次尝试/15 分钟重试与永久失败停止、发送前复查三门与 in_app 统一 sent 语义 | notifications（6.4+） | 已接受 |
-| [ADR-028](ADR-028-data-retention-and-cleanup-contract.md) | 数据保留：RawData 正文 180 天清空（行/哈希/大小保留）、通知与投递尝试 365 天删除、追加式审计与领域历史永久保留、备份每日 30 天；清理任务只落契约（追加式/幂等/审计可见），实现属后续 | audit、notifications、earnings、运维（8.1+） | 草案：数字待产品负责人合并前认可；PD-6 保留部分关闭，账号删除/匿名化延至 8.4 前另议 |
+| [ADR-028](ADR-028-data-retention-and-cleanup-contract.md) | 数据保留：RawData 正文 180 天清空（行/哈希/大小保留）、通知与投递尝试 365 天删除、追加式审计与领域历史永久保留、备份每日 30 天；清理任务只落契约（追加式/幂等/审计可见），实现属后续 | audit、notifications、earnings、运维（8.1+） | 已接受（2026-10-25）；PD-6 保留部分关闭，账号删除/匿名化延至 8.4 前另议 |

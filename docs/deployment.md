@@ -21,25 +21,20 @@
 代价（cron 最小 5 分钟、执行漂移）不影响 8.1 配置，但列入 §10 的 8.2 实测与
 ADR-004 审计观察点。
 
-## 2. 第 0 步：批准并加入两个生产依赖（合并后、首次部署前）
+## 2. 生产依赖（已随 8.2-A 进入 requirements.txt）
 
-本 PR（8.1）不携带新依赖（任务纪律：依赖须获合并批准后才进锁文件）。部署前
-在 `requirements.txt` 追加两行（已获说明与许可证，见 PR 描述）：
-
-```text
-gunicorn==26.2.0
-whitenoise==6.12.0
-```
+8.1 报告承诺的「第 0 步」已完成：产品负责人批准的两个生产依赖（精确 pin，
+均为 MIT 许可）已进入 `requirements.txt`，部署时无需再手工添加：
 
 - **gunicorn**（MIT 许可）：生产 WSGI 服务器，替换开发用 `runserver`；
-  配置文件 `deploy/gunicorn.conf.py` 已随本 PR 就绪（`$PORT`、workers、超时
+  配置文件 `deploy/gunicorn.conf.py` 已随 8.1 就绪（`$PORT`、workers、超时
   全部环境变量可调）。
 - **whitenoise**（MIT 许可）：让单个 Web 容器自己服务 `collectstatic` 产物
   （当前只有 Django Admin 的静态文件；站点模板没有自定义静态资源）。
   settings 已内置接线：`DJANGO_USE_WHITENOISE=true` 时启用；包未安装时
   **拒绝启动并报错**，无静默降级。
 
-随后在部署环境变量中设置 `DJANGO_USE_WHITENOISE=true`（§4 表格已含）。
+部署时在环境变量中设置 `DJANGO_USE_WHITENOISE=true`（§4 表格已含）。
 
 ## 3. 用户手工步骤（照做即可，均为只有账号所有者能做的事）
 
@@ -97,7 +92,7 @@ whitenoise==6.12.0
 | `DJANGO_ALLOWED_HOSTS` | ✅ | `<app>.up.railway.app`（加逗号可多域名） | DEBUG=False 下严格校验 Host |
 | `DATABASE_URL` | ✅ | `${{Postgres.DATABASE_URL}}` | Railway 引用语法；settings 内置解析（含 URL 编码密码与 `?sslmode=` 参数），本地 compose 的 `POSTGRES_*` 组件方式继续可用且被它覆盖 |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | ✅ | `https://<app>.up.railway.app` | HTTPS 表单 CSRF 校验 |
-| `DJANGO_USE_WHITENOISE` | ✅ | `true`（第 0 步完成后） | 包缺失时启动即报错 |
+| `DJANGO_USE_WHITENOISE` | ✅ | `true`（whitenoise 已在 requirements.txt，见 §2） | 包缺失时启动即报错 |
 | `SEC_USER_AGENT` | ✅ | `真实姓名 联系邮箱`（如 `Alice Zhang alice@example.com`） | SEC 访问政策要求可识别 UA；缺失时 SEC 同步无法合规运行 |
 | `EMAIL_HOST` | ✅ | `smtp-relay.brevo.com` | 缺失时发送命令领取任何通知前报错退出（ADR-027） |
 | `EMAIL_PORT` | ✅ | `587` | Brevo SMTP（STARTTLS） |
