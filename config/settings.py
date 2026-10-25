@@ -1,5 +1,7 @@
+import importlib
 import os
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -106,6 +108,27 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+# Stage 8.1: serving collectstatic output (currently only Django Admin
+# assets) from a single web container requires whitenoise.  The dependency
+# itself is pending merge-gate approval (docs/deployment.md section 0), so
+# the flag defaults to off and fails loudly when enabled without the
+# package installed -- no silent fallback.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
+_USE_WHITENOISE = env_bool("DJANGO_USE_WHITENOISE", default=False)
+if _USE_WHITENOISE:
+    try:
+        importlib.import_module("whitenoise")
+    except ImportError as error:
+        raise ImproperlyConfigured(
+            "DJANGO_USE_WHITENOISE=true requires the whitenoise package; "
+            "add it to requirements.txt first (docs/deployment.md section 0)."
+        ) from error
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+    STORAGES["staticfiles"]["BACKEND"] = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
 ROOT_URLCONF = "config.urls"
 
 TEMPLATES = [
@@ -127,18 +150,57 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-DATABASES = {
-    "default": {
+
+def _database_url_config(raw_url: str) -> dict[str, object]:
+    # Stage 8.1: managed-PaaS connection strings (Railway/Render style) are
+    # accepted verbatim; error messages never embed the URL because it
+    # contains the database password.
+    parsed = urlparse(raw_url)
+    if parsed.scheme.lower() not in {"postgres", "postgresql"}:
+        raise ImproperlyConfigured("DATABASE_URL must use the postgres:// or postgresql:// scheme.")
+    database_name = parsed.path.lstrip("/")
+    if not parsed.hostname or parsed.username is None or not database_name:
+        raise ImproperlyConfigured("DATABASE_URL must include user, host and database name.")
+    try:
+        port = str(parsed.port) if parsed.port else "5432"
+    except ValueError as error:
+        raise ImproperlyConfigured("DATABASE_URL has an invalid port.") from error
+    options: dict[str, str] = {}
+    for key, values in parse_qs(parsed.query, keep_blank_values=True).items():
+        if len(values) != 1:
+            raise ImproperlyConfigured(
+                f"DATABASE_URL query parameter {key!r} must appear exactly once."
+            )
+        options[key] = values[0]
+    return {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("POSTGRES_DB", "earnings_radar"),
-        "USER": os.getenv("POSTGRES_USER", "earnings_radar"),
-        "PASSWORD": os.getenv("POSTGRES_PASSWORD", "local-development-password"),
-        "HOST": os.getenv("POSTGRES_HOST", "localhost"),
-        "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        "NAME": unquote(database_name),
+        "USER": unquote(parsed.username),
+        "PASSWORD": unquote(parsed.password) if parsed.password else "",
+        "HOST": parsed.hostname,
+        "PORT": port,
         "CONN_MAX_AGE": 60,
         "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": options,
     }
-}
+
+
+_database_url = os.getenv("DATABASE_URL", "").strip()
+if _database_url:
+    DATABASES = {"default": _database_url_config(_database_url)}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("POSTGRES_DB", "earnings_radar"),
+            "USER": os.getenv("POSTGRES_USER", "earnings_radar"),
+            "PASSWORD": os.getenv("POSTGRES_PASSWORD", "local-development-password"),
+            "HOST": os.getenv("POSTGRES_HOST", "localhost"),
+            "PORT": os.getenv("POSTGRES_PORT", "5432"),
+            "CONN_MAX_AGE": 60,
+            "CONN_HEALTH_CHECKS": True,
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -153,6 +215,8 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+# Stage 8.1: collectstatic target for production deploys (gitignored).
+STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
@@ -202,3 +266,24 @@ if EMAIL_USE_TLS and EMAIL_USE_SSL:
     raise ImproperlyConfigured("EMAIL_USE_TLS and EMAIL_USE_SSL are mutually exclusive.")
 EMAIL_TIMEOUT = env_positive_int("EMAIL_TIMEOUT", default=15, maximum=300)
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "").strip()
+
+# Stage 8.1 production deployment hardening.  PaaS edge proxies terminate
+# TLS, so Django must trust the forwarded-protocol header and secure the
+# session/CSRF cookies; SSL redirect itself stays opt-in because the
+# Railway/Render edge already forces HTTPS and internal platform probes
+# speak plain HTTP without the forwarded header.
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+if DJANGO_ENV not in _local_environments:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = env_bool("DJANGO_SECURE_SSL_REDIRECT", default=False)
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = env_positive_int(
+        "DJANGO_SECURE_HSTS_SECONDS", default=3600, maximum=31536000
+    )
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", default=True)

@@ -362,5 +362,9 @@ display、redistribution、rate limits、deletion、reviewer、reviewed_at、con
 - release filing metadata-only classification 与 `EX-99.1` / `EX-99` allowlist 已由
   ADR-021 冻结；REVIEW_REQUIRED 的展示范围与复核时限仍待产品确认；
 - Provider 限速、失败重试和成本阈值；
-- 原始响应保留期限、长期容量/删除政策，以及 1 MiB 初始保护值是否需要按已许可数据源调整；
-- 生产平台是否能支持计划频率及最长运行时间。
+- 原始响应保留期限与删除政策：已由 ADR-028 关闭（正文 180 天清空，行、哈希、
+  大小与指纹保留；通知与投递尝试 365 天删除；追加式历史永久保留）；1 MiB
+  初始保护值是否需要按已许可数据源调整仍待复核；
+- 生产平台：产品负责人 2026-10-25 拍板 PaaS，工程对比后选定 Railway（选型、
+  Cron 能力与备份对比见 `docs/deployment.md` §1）；计划频率与最长运行时间的
+  平台实测属 Stage 8.2。
