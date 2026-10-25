@@ -7,7 +7,16 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-extend-exclude = ["accounts/migrations", "audit/migrations", "earnings/migrations", "filings/migrations", "indexes/migrations"]
+extend-exclude = [
+    "accounts/migrations",
+    "audit/migrations",
+    "companies/migrations",
+    "earnings/migrations",
+    "filings/migrations",
+    "indexes/migrations",
+    "notifications/migrations",
+    "watchlists/migrations",
+]
 
 [tool.ruff.lint]
 select = ["B", "DJ", "E", "F", "I", "UP"]

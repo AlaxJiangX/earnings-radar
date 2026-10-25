@@ -803,6 +803,12 @@ class EarningsReconciliationDecision(AppendOnlyAuditModel):
 
     class Meta:
         ordering = ("-decided_at", "-created_at", "-id")
+        permissions = (
+            (
+                "manual_reconciliation",
+                "Can resolve earnings reconciliation manually via the admin",
+            ),
+        )
         indexes = [
             models.Index(fields=("observation", "decided_at")),
             models.Index(fields=("decision_type", "status", "decided_at")),
@@ -1236,6 +1242,7 @@ class FilingEarningsLink(models.Model):
 
     class Meta:
         ordering = ("-created_at", "-id")
+        permissions = (("trigger_sec_sync", "Can trigger a manual SEC filing sync via the admin"),)
         indexes = [
             models.Index(fields=("earnings_event", "relation_type", "review_status")),
             models.Index(fields=("filing", "relation_type")),
