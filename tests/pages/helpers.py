@@ -11,7 +11,7 @@ from accounts.models import User
 from companies.models import Company, SecurityListing
 from earnings.models import EarningsDateChange, EarningsEvent
 from filings.models import Filing
-from indexes.models import IndexChangeEvent, IndexChangeLeg, MarketIndex
+from indexes.models import IndexChangeEvent, IndexChangeLeg, IndexMembership, MarketIndex
 from tests.earnings.helpers import make_company, make_data_change, make_event
 from watchlists.models import WatchlistItem
 from watchlists.services import add_watchlist_item
@@ -165,6 +165,20 @@ def make_index_change(
         effective_date=effective_date,
     )
     return event
+
+
+def make_membership(
+    listing: SecurityListing,
+    *,
+    index_code: str = "SP500",
+    effective_from: date = date(2026, 1, 1),
+) -> IndexMembership:
+    return IndexMembership.objects.create(
+        index=MarketIndex.objects.get(code=index_code),
+        security_listing=listing,
+        status="active",
+        effective_from=effective_from,
+    )
 
 
 def login_client(user: User) -> Client:

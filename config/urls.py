@@ -4,9 +4,11 @@ from django.urls import include, path
 from config.health import health_check
 from config.pages import (
     dashboard,
+    home,
     notification_read,
     notification_settings,
     notifications_page,
+    sources_page,
     watchlist_add,
     watchlist_alerts,
     watchlist_page,
@@ -20,6 +22,8 @@ urlpatterns = [
     path("", include("indexes.urls")),
     path("", include("earnings.urls")),
     path("", include("companies.urls")),
+    path("", home, name="home"),
+    path("sources/", sources_page, name="sources"),
     path("dashboard/", dashboard, name="dashboard"),
     path("watchlist/", watchlist_page, name="watchlist"),
     path("watchlist/add/", watchlist_add, name="watchlist_add"),

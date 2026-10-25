@@ -22,3 +22,9 @@ def recent_filings_for_companies(
         .select_related("company")
         .order_by("-accepted_at", "id")[:limit]
     )
+
+
+def recent_filings(*, limit: int) -> QuerySet[Filing]:
+    """Return the most recently accepted SEC filings across all Companies."""
+
+    return Filing.objects.select_related("company").order_by("-accepted_at", "id")[:limit]

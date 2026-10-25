@@ -1,4 +1,8 @@
-"""Stage 5.2 login-required composition pages: /dashboard and /watchlist.
+"""Project-level composition pages.
+
+Stage 5.2 added the login-required ``/dashboard`` and ``/watchlist`` pages,
+Stage 6.3 the in-app notification pages, and Stage 7.1 the public home page
+and data-sources page.
 
 This module is the project-level composition root.  The views only handle
 HTTP, permissions, input parsing and rendering; every domain read goes
@@ -17,6 +21,7 @@ from typing import Any
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
@@ -36,17 +41,22 @@ from earnings.presentation import (
     build_event_display,
     business_date,
     resolve_user_timezone,
+    window_bounds,
 )
 from earnings.selectors import (
+    get_earnings_events,
+    get_earnings_events_for_indexes,
     next_earnings_events_for_companies,
+    recent_earnings_date_changes,
     recent_earnings_date_changes_for_companies,
     recent_released_earnings_for_companies,
     upcoming_earnings_events_for_companies,
 )
 from filings.models import Filing
-from filings.selectors import recent_filings_for_companies
+from filings.selectors import recent_filings, recent_filings_for_companies
 from indexes.models import IndexChangeEvent
-from indexes.selectors import recent_index_changes_for_companies
+from indexes.selectors import get_change_events, recent_index_changes_for_companies
+from indexes.services import LARGE_INDEX_CODES
 from notifications.models import ReminderRule
 from notifications.selectors import (
     notifications_for_user,
@@ -640,3 +650,110 @@ def notification_settings(request: HttpRequest) -> HttpResponse:
     except (NotificationSettingsError, AccountServiceError, ValueError):
         return redirect(f"{reverse('notification_settings')}?error=invalid_settings")
     return redirect(f"{reverse('notification_settings')}?saved=1")
+
+
+# ---------------------------------------------------------------------------
+# Stage 7.1: public home page and data-sources page
+# ---------------------------------------------------------------------------
+
+HOME_SECTION_LIMIT = 10
+HOME_WATCHLIST_WINDOW_DAYS = 7
+
+
+def home(request: HttpRequest) -> HttpResponse:
+    """Public home page (PRD §10.1): the nine MVP blocks, nothing from phase 2."""
+
+    as_of = business_date()
+    user_timezone = resolve_user_timezone(request)
+    include_candidates = request.user.is_authenticated
+    week_start, week_end = window_bounds(as_of, "week")
+
+    today_events = list(
+        get_earnings_events(as_of=as_of, window="today", include_candidates=include_candidates)[
+            :HOME_SECTION_LIMIT
+        ]
+    )
+    important_events = list(
+        get_earnings_events_for_indexes(
+            as_of=as_of,
+            window="week",
+            index_codes=sorted(LARGE_INDEX_CODES),
+            include_candidates=include_candidates,
+        )[:HOME_SECTION_LIMIT]
+    )
+    event_listings = company_listings(
+        company_ids=tuple({event.company_id for event in (*today_events, *important_events)}),
+        as_of=as_of,
+    )
+    today_rows = _event_rows(today_events, event_listings, user_timezone)
+    important_rows = _event_rows(important_events, event_listings, user_timezone)
+
+    user = request.user if isinstance(request.user, User) else None
+    watchlist_rows: list[EventRow] = []
+    watchlist_has_items = False
+    if user is not None:
+        items = list(get_watchlist_items_for_user(user).filter(is_active=True))
+        watchlist_has_items = bool(items)
+        company_ids = tuple(item.company_id for item in items)
+        upcoming = list(
+            upcoming_earnings_events_for_companies(
+                company_ids=company_ids, as_of=as_of, days=HOME_WATCHLIST_WINDOW_DAYS
+            )
+        )
+        watchlist_rows = _event_rows(
+            upcoming, company_listings(company_ids=company_ids, as_of=as_of), user_timezone
+        )
+
+    date_change_rows = [
+        DateChangeRow(change=change, summary=_date_change_summary(change))
+        for change in recent_earnings_date_changes(limit=HOME_SECTION_LIMIT)
+    ]
+    filing_rows = [
+        FilingRow(filing=filing, summary=_filing_summary(filing))
+        for filing in recent_filings(limit=HOME_SECTION_LIMIT)
+    ]
+    recent_index_rows = [
+        IndexChangeRow(event=event, summary=_index_change_summary(event))
+        for event in get_change_events(effective_to=as_of)[:HOME_SECTION_LIMIT]
+    ]
+    upcoming_index_rows = [
+        IndexChangeRow(event=event, summary=_index_change_summary(event))
+        for event in get_change_events(effective_from=as_of + timedelta(days=1)).order_by(
+            "effective_date", "company__display_name", "id"
+        )[:HOME_SECTION_LIMIT]
+    ]
+
+    context: dict[str, Any] = {
+        "today_rows": today_rows,
+        "today_label": as_of.isoformat(),
+        "important_rows": important_rows,
+        "important_label": f"{week_start.isoformat()} to {week_end.isoformat()}",
+        "important_index_codes": ", ".join(sorted(LARGE_INDEX_CODES)),
+        "watchlist_rows": watchlist_rows,
+        "watchlist_signed_in": user is not None,
+        "watchlist_has_items": watchlist_has_items,
+        "watchlist_window_label": (
+            f"{as_of.isoformat()} to "
+            f"{(as_of + timedelta(days=HOME_WATCHLIST_WINDOW_DAYS - 1)).isoformat()}"
+        ),
+        "date_change_rows": date_change_rows,
+        "filing_rows": filing_rows,
+        "recent_index_rows": recent_index_rows,
+        "upcoming_index_rows": upcoming_index_rows,
+        "section_limit": HOME_SECTION_LIMIT,
+        "market_timezone_label": "America/New_York (ET)",
+        "login_url": settings.LOGIN_URL,
+    }
+    return render(request, "pages/home.html", context)
+
+
+def sources_page(request: HttpRequest) -> HttpResponse:
+    """Public data-sources page (architecture §7).
+
+    The template carries the static content; it mirrors the MVP source table
+    (§2) and the freshness targets (§6) of ``docs/data-sources.md`` and must
+    be updated together with that document.  Measured freshness is Stage 7.3
+    and is intentionally absent here.
+    """
+
+    return render(request, "pages/sources.html")
