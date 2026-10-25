@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from django.db.models import Prefetch, Q, QuerySet
 
+from audit.selectors import (
+    DEFAULT_FRESHNESS_LOOKBACK_HOURS,
+    FreshnessMeasurement,
+    measure_latencies,
+)
 from indexes.models import (
     NORMATIVE_MEMBERSHIP_STATUSES,
     IndexChangeEvent,
@@ -16,6 +21,8 @@ from indexes.models import (
 
 if TYPE_CHECKING:
     from indexes.models import MarketIndex
+
+INDEX_ANNOUNCEMENT_TARGET_SECONDS = 24 * 60 * 60
 
 
 def recent_index_changes_for_companies(
@@ -309,3 +316,43 @@ def get_change_events(
     )
 
     return qs
+
+
+def measure_index_announcement_freshness(
+    *,
+    now: datetime,
+    lookback_hours: int = DEFAULT_FRESHNESS_LOOKBACK_HOURS,
+    target_seconds: float = INDEX_ANNOUNCEMENT_TARGET_SECONDS,
+) -> FreshnessMeasurement:
+    """Measure index-announcement freshness (data-sources.md section 6).
+
+    Latency is ``IndexChangeEvent.created_at - announcement_published_at``.
+    Only a date-precision ``announcement_date`` is modeled (on the legs),
+    so the start point is that date at midnight UTC: the resulting latency
+    is a date-precision upper bound, per ADR-004's "mark the measurement
+    precision" rule.  Events whose legs carry no announcement date are
+    unmeasured.
+    """
+
+    window_start = now - timedelta(hours=lookback_hours)
+    events = IndexChangeEvent.objects.filter(created_at__gte=window_start).prefetch_related("legs")
+    latencies: list[float] = []
+    unmeasured = 0
+    latest_sample_at: datetime | None = None
+    for event in events:
+        if latest_sample_at is None or event.created_at > latest_sample_at:
+            latest_sample_at = event.created_at
+        announcement_dates = [
+            leg.announcement_date for leg in event.legs.all() if leg.announcement_date is not None
+        ]
+        if not announcement_dates:
+            unmeasured += 1
+            continue
+        announced_at = datetime.combine(min(announcement_dates), time.min, tzinfo=UTC)
+        latencies.append((event.created_at - announced_at).total_seconds())
+    return measure_latencies(
+        latencies=latencies,
+        unmeasured_count=unmeasured,
+        target_seconds=target_seconds,
+        latest_sample_at=latest_sample_at,
+    )

@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.urls import include, path
 
+from config.data_health import data_health_view
 from config.health import health_check
 from config.pages import (
     dashboard,
@@ -19,6 +20,7 @@ from config.pages import (
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("health/", health_check, name="health"),
+    path("health/data/", data_health_view, name="data_health"),
     path("", include("indexes.urls")),
     path("", include("earnings.urls")),
     path("", include("companies.urls")),

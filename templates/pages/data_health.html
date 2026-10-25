@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{# Staff-only data-health page (roadmap 7.3).  Functional skeleton only:
+   visual styling is a separate, later decision.  Every timestamp below is
+   UTC; ages are lookback-relative values computed at generated_at. #}
+
+{% block title %}Data Health - Earnings Radar{% endblock %}
+
+{% block content %}
+  <h1>Data Health</h1>
+  <p class="page-note">
+    Operator view of pipeline freshness, sync-task currency, source failures
+    and notification backlog. All times are UTC. Generated at
+    {{ report.generated_at|date:"Y-m-d H:i:s" }} UTC; freshness windows span
+    the last {{ report.lookback_hours }} hours. Freshness targets follow
+    docs/data-sources.md &sect;6; expected task frequencies follow
+    docs/data-sources.md &sect;7. This page reports status only &mdash; it does not
+    send alerts.
+  </p>
+
+  <section class="section">
+    <h2>Freshness by pipeline</h2>
+    <p class="page-note">
+      Status vocabulary: <strong>fresh</strong> (all measured samples met the
+      target) &middot; <strong>stale</strong> (some samples missed the target) &middot;
+      <strong>no_data</strong> (enabled source, no measurable samples) &middot;
+      <strong>not_configured</strong> (no enabled source for the route) &middot;
+      <strong>blocked</strong> (known non-live gate; any data shown is
+      fixture/dev data, never a live measurement).
+    </p>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Pipeline</th><th>Target</th><th>Status</th><th>Measured</th>
+          <th>Within target</th><th>Over target</th><th>Unmeasured</th>
+          <th>Anomalies</th><th>Max latency</th><th>Latest sample (UTC)</th><th>Gate</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for route in report.routes %}
+          <tr>
+            <td>{{ route.label }}</td>
+            <td>&le; {{ route.target }}</td>
+            <td><strong>{{ route.status }}</strong></td>
+            <td>{{ route.measured_count }}</td>
+            <td>{{ route.within_target_count }}</td>
+            <td>{{ route.over_target_count }}</td>
+            <td>{{ route.unmeasured_count }}</td>
+            <td>{{ route.anomaly_count }}</td>
+            <td>{{ route.max_latency }}</td>
+            <td>{{ route.latest_sample_at|date:"Y-m-d H:i:s"|default:"—" }}</td>
+            <td>{{ route.gate }} <span class="page-note">({{ route.gate_doc_ref }})</span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="page-note">
+      Measurement units: SEC = Filing.created_at &minus; accepted_at; calendar and IR =
+      normalized row created_at &minus; source_observed_at (missing upstream time counts as
+      unmeasured, never as zero); index = IndexChangeEvent.created_at &minus; leg
+      announcement_date (date precision, midnight-UTC start, so values are
+      date-precision upper bounds); P0/P1 = sent_at &minus; created_at (enqueue is
+      transactional with the domain change, ADR-025).
+    </p>
+  </section>
+
+  <section class="section">
+    <h2>Sync tasks</h2>
+    <p class="page-note">
+      A task is <strong>overdue</strong> when its last ingestion run started
+      more than one full grace cycle past the documented frequency (2&times;).
+      <strong>never_run</strong> is reported as-is: cron registration is a
+      Stage 8 deployment step. Job types with no documented frequency are
+      listed as <strong>unmapped</strong> and are never judged overdue.
+    </p>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Job type</th><th>Expected</th><th>Status</th><th>Last run (UTC)</th>
+          <th>Last status</th><th>Last source</th><th>Running</th>
+          <th>Failed/partial (24h)</th><th>Last error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for task in report.tasks %}
+          <tr>
+            <td>{{ task.job_type }}</td>
+            <td>{{ task.expected }}</td>
+            <td><strong>{{ task.status }}</strong></td>
+            <td>{{ task.last_run_started_at|date:"Y-m-d H:i:s"|default:"—" }}</td>
+            <td>{{ task.last_run_status|default:"—" }}</td>
+            <td>{{ task.last_run_source_key|default:"—" }}</td>
+            <td>{{ task.running_count }}</td>
+            <td>{{ task.failed_partial_count_24h }}</td>
+            <td>{{ task.last_run_error_summary|default:"—" }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="9">No ingestion SyncRuns recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="section">
+    <h2>Sources</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Source</th><th>Job type</th><th>Last run (UTC)</th>
+          <th>Last status</th><th>Failed/partial (24h)</th><th>Last error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for source in report.sources %}
+          <tr>
+            <td>{{ source.source_key }}</td>
+            <td>{{ source.job_type }}</td>
+            <td>{{ source.last_run_started_at|date:"Y-m-d H:i:s"|default:"—" }}</td>
+            <td><strong>{{ source.last_run_status|default:"—" }}</strong></td>
+            <td>{{ source.failed_partial_count_24h }}</td>
+            <td>{{ source.last_run_error_summary|default:"—" }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="6">No sources with ingestion runs.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="section">
+    <h2>Notification backlog</h2>
+    <table class="data-table">
+      <thead>
+        <tr><th>Bucket</th><th>Total</th><th>P0/P1</th><th>Oldest age</th></tr>
+      </thead>
+      <tbody>
+        {% for row in report.backlog_rows %}
+          <tr>
+            <td>{{ row.label }}</td>
+            <td>{{ row.total }}</td>
+            <td>{{ row.p0p1 }}</td>
+            <td>{{ row.oldest }}{% if row.oldest_note %} ({{ row.oldest_note }}){% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="page-note">
+      P0/P1 notifications are due within 5 minutes of enqueue (ADR-025/ADR-027);
+      a growing pending bucket or aged processing residue means the send
+      command is not running or is crashing mid-batch.
+    </p>
+  </section>
+{% endblock %}
