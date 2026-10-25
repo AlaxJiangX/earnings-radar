@@ -10,12 +10,19 @@ from uuid import UUID
 from django.db.models import Case, DateField, F, IntegerField, Q, QuerySet, Value, When
 from django.db.models.functions import Coalesce
 
+from audit.selectors import (
+    DEFAULT_FRESHNESS_LOOKBACK_HOURS,
+    FreshnessMeasurement,
+    measure_latencies,
+)
 from earnings.models import (
+    EarningsCalendarObservation,
     EarningsDateChange,
     EarningsEvent,
     FilingEarningsLink,
     FilingEarningsRelationType,
     FilingReleaseClassification,
+    InvestorRelationsObservation,
 )
 from earnings.presentation import window_bounds
 from indexes.models import ALLOWED_CODES, NORMATIVE_MEMBERSHIP_STATUSES, IndexMembership
@@ -388,4 +395,85 @@ def _display_date_at_or_after(as_of: date) -> Q:
             earnings_release_date__isnull=True,
             estimated_release_date__gte=as_of,
         )
+    )
+
+
+CALENDAR_FRESHNESS_TARGET_SECONDS = 24 * 60 * 60
+IR_FRESHNESS_TARGET_SECONDS = 6 * 60 * 60
+
+
+def _measure_observation_latency(
+    *,
+    queryset: QuerySet[EarningsCalendarObservation] | QuerySet[InvestorRelationsObservation],
+    now: datetime,
+    lookback_hours: int,
+    target_seconds: float,
+) -> FreshnessMeasurement:
+    """Measure ``normalized_at - source_observed_at`` over a window.
+
+    Shared implementation for the calendar and IR routes of
+    ``docs/data-sources.md`` section 6: the normalized record's
+    ``created_at`` is ``normalized_at`` and the source-provided
+    ``source_observed_at`` is the upstream observable time.  Rows without
+    ``source_observed_at`` are counted as unmeasured rather than assuming
+    a zero delay; adjacent-snapshot estimation is not implemented here.
+    """
+
+    window_start = now - timedelta(hours=lookback_hours)
+    latencies: list[float] = []
+    unmeasured = 0
+    latest_sample_at: datetime | None = None
+    for created_at, source_observed_at in queryset.filter(created_at__gte=window_start).values_list(
+        "created_at", "source_observed_at"
+    ):
+        if latest_sample_at is None or created_at > latest_sample_at:
+            latest_sample_at = created_at
+        if source_observed_at is None:
+            unmeasured += 1
+            continue
+        latencies.append((created_at - source_observed_at).total_seconds())
+    return measure_latencies(
+        latencies=latencies,
+        unmeasured_count=unmeasured,
+        target_seconds=target_seconds,
+        latest_sample_at=latest_sample_at,
+    )
+
+
+def measure_earnings_calendar_freshness(
+    *,
+    now: datetime,
+    lookback_hours: int = DEFAULT_FRESHNESS_LOOKBACK_HOURS,
+    target_seconds: float = CALENDAR_FRESHNESS_TARGET_SECONDS,
+) -> FreshnessMeasurement:
+    """Measure earnings-calendar update freshness (data-sources.md section 6)."""
+
+    return _measure_observation_latency(
+        queryset=EarningsCalendarObservation.objects.all(),
+        now=now,
+        lookback_hours=lookback_hours,
+        target_seconds=target_seconds,
+    )
+
+
+def measure_investor_relations_freshness(
+    *,
+    now: datetime,
+    lookback_hours: int = DEFAULT_FRESHNESS_LOOKBACK_HOURS,
+    target_seconds: float = IR_FRESHNESS_TARGET_SECONDS,
+) -> FreshnessMeasurement:
+    """Measure IR confirmation freshness (data-sources.md section 6).
+
+    ``official_published_at`` is not modeled (ADR-022 keeps only the
+    source-provided observation time), so the section 6 fallback applies:
+    the measurement starts at the first observation time and rows without
+    it are unmeasured.  The IR route is additionally live-blocked at the
+    license gate (data-sources.md section 8); see config.data_health.
+    """
+
+    return _measure_observation_latency(
+        queryset=InvestorRelationsObservation.objects.all(),
+        now=now,
+        lookback_hours=lookback_hours,
+        target_seconds=target_seconds,
     )
