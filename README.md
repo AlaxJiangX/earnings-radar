@@ -31,7 +31,7 @@ docker compose down
 ./scripts/verify.sh -k <pattern>   # 开发中只跑定向 pytest 子集
 ```
 
-等价于依次运行 `docker compose run --rm web` 的 manage.py check、makemigrations --check、pytest、ruff check、ruff format --check 与 mypy（定义见 `AGENTS.md` 第 11 节）。
+等价于依次运行 `docker compose run --rm web` 的 ruff check、ruff format --check、manage.py check、makemigrations --check、mypy 与 pytest（定义见 `AGENTS.md` 第 11 节）。
 
 ## 开发约束
 

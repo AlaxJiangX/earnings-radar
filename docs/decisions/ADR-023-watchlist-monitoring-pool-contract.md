@@ -665,7 +665,7 @@ Audit 迁移只改 `AuditRecord` 的 choices / check；不得把 `watchlist_item
 5. `DEFERRED PD-5`：全部指数 disabled、只靠 watchlist 的零指数模式；MVP 保持
    `enabled_index_codes` 非空；支持该模式需要同时放开 selector 非空校验并迁移现有
    check constraint；
-6. `CLOSED (PARTIAL) PD-6`：数据保留期限已由 ADR-028 关闭（2026-10-25；草案数字待产品负责人合并前认可）；账号删除与匿名化延至 Stage 8.4 前另议；
+6. `CLOSED (PARTIAL) PD-6`：数据保留期限已由 ADR-028 关闭（2026-10-25；保留数字已获产品负责人认可，ADR-028 已接受）；账号删除与匿名化延至 Stage 8.4 前另议；
 7. `DEFERRED PD-7`：历史 as-of watchlist 重建；若未来需要，必须新增 append-only
    active interval 模型，不能从当前单行推导；
 8. `DEFERRED`：自选分组、备注/标签、CSV 导入导出、共享自选、per-company manual
