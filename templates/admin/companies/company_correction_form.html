@@ -1,0 +1,23 @@
+{% extends "admin/base_site.html" %}
+{% comment %}
+Stage 7.2 manual company correction form: the only admin write path for
+Company data, always through companies.services.update_company.
+{% endcomment %}
+
+{% block content %}
+<h1>Manually correct company data</h1>
+<p>
+  Company <strong>{{ company.display_name }}</strong> (CIK {{ company.cik|default:"—" }}).
+  Every correction requires a reason and appends the before/after values to the
+  audit trail through the domain service.
+</p>
+
+<form method="post">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <p>
+    <input type="submit" name="_save" value="Apply correction">
+    <a href="{% url 'admin:companies_company_changelist' %}">Cancel</a>
+  </p>
+</form>
+{% endblock %}

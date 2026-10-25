@@ -46,6 +46,7 @@ class Company(models.Model):
 
     class Meta:
         ordering = ("display_name", "id")
+        permissions = (("manual_correction", "Can manually correct company data via the admin"),)
         indexes = [
             models.Index(fields=("legal_name",)),
             models.Index(fields=("display_name",)),

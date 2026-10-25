@@ -1,0 +1,31 @@
+{% extends "admin/base_site.html" %}
+{% comment %}
+Stage 7.2 manual SEC sync trigger: runs the existing sync_sec_filings
+management command inside this request; re-entry is refused by the job's
+PostgreSQL advisory lock.
+{% endcomment %}
+
+{% block content %}
+<h1>Trigger one SEC filing sync</h1>
+<p>
+  This runs the existing <code>sync_sec_filings</code> orchestration once,
+  inside this request. Depending on the monitoring-pool size and the SEC rate
+  limit it can take minutes to finish. A second concurrent trigger is refused
+  by the global SEC job lock, and the run itself stays idempotent by its
+  idempotency key.
+</p>
+<p>The triggering admin and the reason are recorded as a manual-sync audit record.</p>
+
+{% if form.non_field_errors %}
+  <ul class="errorlist">{% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}</ul>
+{% endif %}
+
+<form method="post">
+  {% csrf_token %}
+  {{ form.as_p }}
+  <p>
+    <input type="submit" name="_save" value="Run SEC sync now">
+    <a href="{% url 'admin:earnings_filingearningslink_changelist' %}">Cancel</a>
+  </p>
+</form>
+{% endblock %}
