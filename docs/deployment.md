@@ -119,7 +119,7 @@ ADR-004 审计观察点。
 |---|---|---|---|
 | 通知发送 | `*/5 * * * *` | `python manage.py send_pending_notifications` | 领取用 `select_for_update(skip_locked)`，并发命令不会领取同一行（ADR-027 §7）；平台上一轮未结束会跳过本轮，与锁语义一致 |
 | 提前一天提醒入队 | 每小时：`0 * * * *` | `python manage.py enqueue_advance_reminders` | 幂等；按美东自然日锚（ADR-024）到期才生效，重跑零重复 |
-| SEC 文件同步 | 每 10 分钟：`*/10 * * * *` | `python manage.py sync_sec_filings --source-key sec_edgar` | `(source, job_type)` PostgreSQL 运行锁防重叠，重叠与陈旧运行有恢复语义；SEC 内置限速（默认 4 r/s） |
+| SEC 文件同步 | 每 10 分钟：`*/10 * * * *` | `python manage.py sync_sec_filings --source-key sec_edgar` | `(source, job_type)` PostgreSQL 运行锁防重叠，拿不到锁即抛错、本轮不执行；**无陈旧 RUNNING 自动回收**（见 §10）；SEC 内置限速（默认 4 r/s） |
 
 **刻意不注册 cron 的项**：
 
@@ -204,6 +204,11 @@ ADR-004 审计观察点。
   `*/7` 非法）；`*/5`、`*/10`、`0 *` 均合法。
 - **Railway Postgres 版本**：以开通时平台默认版本为准（当前默认 17，与本地
   compose 一致）；升级走 Railway 的 in-place upgrade 流程。
+- **SEC 同步无陈旧 RUNNING 自动回收**：`filings/sync.py` 只有 `pg_try_advisory_lock` 的
+  重叠保护（拿不到锁即抛错），没有 stale-run 回收逻辑；若 cron 容器被硬杀（重启、OOM），
+  遗留的 `RUNNING` SyncRun 需人工处理。自动回收目前只存在于财报日历链
+  （`calendar_execution._retire_stale_runs`、`reference_calendar_sync._retire_stale_reference_runs`）。
+  §9 的 8.2 实测清单未覆盖此项，部署后建议单独确认。
 - **账号删除 / watchlist 匿名化**：延至 8.4 前另议（ADR-028 §6），不影响
   alpha 部署。
 
