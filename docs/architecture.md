@@ -47,7 +47,7 @@ Web 请求不直接访问外部数据源。未来 Cron Job 调用 Django managem
 
 ## 3. 模块划分
 
-| Django app | MVP 职责 | 允许依赖 | 不负责 |
+| 模块 | MVP 职责 | 允许依赖 | 不负责 |
 |---|---|---|---|
 | `accounts` | 自定义用户、认证、时区和用户偏好 | Django auth | 公司及事件业务 |
 | `companies` | 公司、CIK、股票代码/上市身份、公司搜索、监控状态 | `audit` 的来源引用接口 | 直接抓取第三方数据 |
@@ -58,6 +58,8 @@ Web 请求不直接访问外部数据源。未来 Cron Job 调用 Django managem
 | `notifications` | 提醒规则、通知生成、站内通知、邮件投递和重试 | 各领域的稳定公开接口 | 判断外部数据真实性 |
 | `providers` | Provider 协议、安全 HTTP 传输接口、结构化原始结果和测试 Fake/fixture | `audit.security` 的纯安全函数、`audit.constants` 的原始正文硬上限 | 数据库写入、同步编排、页面渲染和用户权限 |
 | `audit` | 数据来源、同步运行、原始数据、字段来源、变更及操作审计 | 尽量不反向依赖业务 app | 修改领域状态 |
+
+上表 9 个模块中，8 个是注册在 `INSTALLED_APPS`（`config/settings.py:84-99`）里的 Django app；`providers` 是纯 Python 包，没有 `apps.py`、不注册为 app、没有模型和迁移，只被其他模块 import。本文件其余处出现的「app」均指前者，涉及 `providers` 时应理解为库包而非 Django app。
 
 第二阶段再启用 `market_trends` 和 `social_signals`。它们只能读取当前监控池和公司主数据，不应侵入 MVP 的财报、SEC 或通知模型。
 
